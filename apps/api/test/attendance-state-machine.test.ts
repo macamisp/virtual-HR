@@ -23,6 +23,7 @@ function makeHeartbeat(overrides: Partial<HeartbeatPayload> = {}): HeartbeatPayl
     orgId: 'org-test-01',
     userId: 'user-test-01',
     deviceId: 'device-test-01',
+    sessionId: 'session-test-01',
     sequenceNumber: 1,
     nonce: 'nonce-001',
     activeSeconds: 30,
@@ -335,6 +336,16 @@ describe('SRS Section 6.2 Attendance State Machine - Row by Row Verification', (
     assert.equal(maxRes.session.status, SessionStatus.CLOSED);
     assert.equal(maxRes.session.clockOutSource, ClockOutSource.MAX_LENGTH);
     assert.ok(maxRes.session.flags.includes('MAX_LENGTH'));
+  });
+
+  it('Edge case: closeLastSegment gracefully returns null if last segment already ended', () => {
+    const clock = new Date(baseServerTime.getTime());
+    const initial = sm.handleHeartbeat(null, makeHeartbeat(), clock, '192.168.1.100');
+    // First logout closes segment
+    const lo1 = sm.handleExplicitLogout(initial.session, new Date(clock.getTime() + 1000));
+    // Second logout on same session encounters already-ended segment
+    const lo2 = sm.handleExplicitLogout(lo1.session, new Date(clock.getTime() + 2000));
+    assert.equal(lo2.currentState, AttendanceState.OFFLINE);
   });
 });
 

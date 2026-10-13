@@ -3,16 +3,19 @@
  * Implements FR-ATT-001 through FR-ATT-005 & Section 6 Architecture
  */
 
+import { randomBytes } from 'node:crypto';
 import { AttendanceStateMachine } from './attendance-state-machine.ts';
 import { HeartbeatValidator } from './heartbeat-validator.ts';
 import {
   AttendanceState,
   SessionStatus,
   DEFAULT_ATTENDANCE_CONFIG,
+  SystemClock,
 } from '../../../../packages/shared/src/attendance/types.ts';
 import type {
   AttendanceConfig,
   AttendanceSession,
+  Clock,
   HeartbeatPayload,
   StateMachineTransitionResult,
 } from '../../../../packages/shared/src/attendance/types.ts';
@@ -21,26 +24,48 @@ export class AttendanceService {
   private stateMachine: AttendanceStateMachine;
   private validator: HeartbeatValidator;
   private config: AttendanceConfig;
+  private clock: Clock;
 
-  // Session storage map: userId -> current session
+  // Active session storage map: userId -> current AttendanceSession
   private sessions = new Map<string, AttendanceSession>();
   // Closed sessions history: sessionId -> AttendanceSession
   private closedSessions = new Map<string, AttendanceSession>();
-  // User secret store (session secret used for HMAC verification): userId -> secret
-  private userSecrets = new Map<string, string>();
+  // Per-Session HMAC secret store: sessionId -> secret (FR-ATT-003, Section 6.3)
+  private sessionSecrets = new Map<string, string>();
 
-  constructor(config: Partial<AttendanceConfig> = {}) {
+  constructor(
+    config: Partial<AttendanceConfig> = {},
+    clock: Clock = new SystemClock(),
+  ) {
     this.config = { ...DEFAULT_ATTENDANCE_CONFIG, ...config };
+    this.clock = clock;
     this.stateMachine = new AttendanceStateMachine(this.config);
-    this.validator = new HeartbeatValidator();
+    this.validator = new HeartbeatValidator(300_000, this.clock);
   }
 
-  public registerUserSecret(userId: string, secret: string): void {
-    this.userSecrets.set(userId, secret);
+  /**
+   * Cryptographically generate a random per-session HMAC secret
+   */
+  public generateSessionSecret(): string {
+    return randomBytes(32).toString('hex');
   }
 
-  public getUserSecret(userId: string): string | undefined {
-    return this.userSecrets.get(userId);
+  /**
+   * Register HMAC secret for a specific login/attendance session
+   */
+  public registerSessionSecret(sessionId: string, secret: string): void {
+    this.sessionSecrets.set(sessionId, secret);
+  }
+
+  /**
+   * Revoke HMAC secret when a session terminates
+   */
+  public revokeSessionSecret(sessionId: string): void {
+    this.sessionSecrets.delete(sessionId);
+  }
+
+  public getSessionSecret(sessionId: string): string | undefined {
+    return this.sessionSecrets.get(sessionId);
   }
 
   public getValidator(): HeartbeatValidator {
@@ -49,6 +74,10 @@ export class AttendanceService {
 
   public getStateMachine(): AttendanceStateMachine {
     return this.stateMachine;
+  }
+
+  public getClock(): Clock {
+    return this.clock;
   }
 
   public getSession(userId: string): AttendanceSession | null {
@@ -70,12 +99,15 @@ export class AttendanceService {
    */
   public ingestHeartbeat(
     payload: HeartbeatPayload,
-    serverTime: Date = new Date(),
+    serverTime: Date = this.clock.now(),
     ip: string = '127.0.0.1',
   ): StateMachineTransitionResult {
-    const secret = this.userSecrets.get(payload.userId);
+    // Secret must be strictly bound to payload.sessionId (per-session secret)
+    const secret = this.sessionSecrets.get(payload.sessionId);
     if (!secret) {
-      throw new Error(`Unauthorized: No active session secret registered for user ${payload.userId}`);
+      throw new Error(
+        `Unauthorized: No active session secret registered for session ${payload.sessionId}`,
+      );
     }
 
     // Cryptographic signature and anti-replay verification
@@ -102,7 +134,7 @@ export class AttendanceService {
    */
   public onSocketDisconnect(
     userId: string,
-    serverTime: Date = new Date(),
+    serverTime: Date = this.clock.now(),
   ): StateMachineTransitionResult | null {
     const session = this.sessions.get(userId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
@@ -117,7 +149,7 @@ export class AttendanceService {
    */
   public onSocketReconnect(
     userId: string,
-    serverTime: Date = new Date(),
+    serverTime: Date = this.clock.now(),
   ): StateMachineTransitionResult | null {
     const session = this.sessions.get(userId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
@@ -132,7 +164,7 @@ export class AttendanceService {
    */
   public onExplicitLogout(
     userId: string,
-    serverTime: Date = new Date(),
+    serverTime: Date = this.clock.now(),
   ): StateMachineTransitionResult | null {
     const session = this.sessions.get(userId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
@@ -148,7 +180,7 @@ export class AttendanceService {
    */
   public startBreak(
     userId: string,
-    serverTime: Date = new Date(),
+    serverTime: Date = this.clock.now(),
   ): StateMachineTransitionResult | null {
     const session = this.sessions.get(userId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
@@ -163,7 +195,7 @@ export class AttendanceService {
    */
   public endBreak(
     userId: string,
-    serverTime: Date = new Date(),
+    serverTime: Date = this.clock.now(),
   ): StateMachineTransitionResult | null {
     const session = this.sessions.get(userId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
@@ -179,7 +211,7 @@ export class AttendanceService {
   public joinMeeting(
     userId: string,
     meetingId: string,
-    serverTime: Date = new Date(),
+    serverTime: Date = this.clock.now(),
   ): StateMachineTransitionResult | null {
     const session = this.sessions.get(userId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
@@ -194,7 +226,7 @@ export class AttendanceService {
    */
   public leaveMeeting(
     userId: string,
-    serverTime: Date = new Date(),
+    serverTime: Date = this.clock.now(),
   ): StateMachineTransitionResult | null {
     const session = this.sessions.get(userId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
@@ -207,12 +239,12 @@ export class AttendanceService {
   /**
    * Periodic reconciliation worker (runs every 60 seconds)
    * Section 6.3:
-   * 1. Closes expired disconnected grace sessions
-   * 2. Closes missing heartbeat sessions (> 90s)
-   * 3. Splits midnight sessions
-   * 4. Enforces max session length (14h)
+   * 1. Splits midnight sessions
+   * 2. Enforces max session length (14h)
+   * 3. Closes expired disconnected grace sessions
+   * 4. Closes missing heartbeat sessions (> 90s)
    */
-  public runReconciliation(serverTime: Date = new Date()): {
+  public runReconciliation(serverTime: Date = this.clock.now()): {
     closedCount: number;
     splitCount: number;
   } {

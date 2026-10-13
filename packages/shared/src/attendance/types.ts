@@ -42,10 +42,21 @@ export const SessionStatus = {
 } as const;
 export type SessionStatus = (typeof SessionStatus)[keyof typeof SessionStatus];
 
+export interface Clock {
+  now(): Date;
+}
+
+export class SystemClock implements Clock {
+  now(): Date {
+    return new Date();
+  }
+}
+
 export interface HeartbeatPayload {
   orgId: string;
   userId: string;
   deviceId: string;
+  sessionId: string;      // Bound to the specific user session (FR-ATT-003, Section 6.3)
   sequenceNumber: number;
   nonce: string;
   activeSeconds: number; // Input activity in interval (0..30)

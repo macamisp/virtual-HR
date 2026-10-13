@@ -4,7 +4,8 @@
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { HeartbeatPayload } from '../../../../packages/shared/src/attendance/types.ts';
+import { SystemClock } from '../../../../packages/shared/src/attendance/types.ts';
+import type { Clock, HeartbeatPayload } from '../../../../packages/shared/src/attendance/types.ts';
 
 export interface HeartbeatValidationResult {
   valid: boolean;
@@ -14,13 +15,15 @@ export interface HeartbeatValidationResult {
 export class HeartbeatValidator {
   // In-memory nonce cache with timestamps for replay protection (in production backed by Redis org:{org}:nonces)
   private seenNonces = new Map<string, number>();
-  // Device sequence number tracker: deviceId -> lastSequenceNumber
+  // Device sequence number tracker: orgId:userId:deviceId -> lastSequenceNumber
   private deviceSequences = new Map<string, number>();
 
   private nonceTtlMs: number;
+  private clock: Clock;
 
-  constructor(nonceTtlMs: number = 300_000) {
+  constructor(nonceTtlMs: number = 300_000, clock: Clock = new SystemClock()) {
     this.nonceTtlMs = nonceTtlMs;
+    this.clock = clock;
   }
 
   /**
@@ -31,6 +34,7 @@ export class HeartbeatValidator {
       hb.orgId,
       hb.userId,
       hb.deviceId,
+      hb.sessionId,
       hb.sequenceNumber,
       hb.nonce,
       hb.activeSeconds,
@@ -56,9 +60,9 @@ export class HeartbeatValidator {
   public validate(
     hb: HeartbeatPayload,
     secret: string,
-    now: Date = new Date(),
+    now: Date = this.clock.now(),
   ): HeartbeatValidationResult {
-    // 1. Privacy check: Ensure forbidden content fields are NOT present
+    // 1. Privacy check: Ensure forbidden surveillance content fields are NOT present (FR-ATT-004)
     const raw = hb as Record<string, unknown>;
     if ('keystrokes' in raw || 'screenshots' in raw || 'urls' in raw || 'appName' in raw) {
       return {
@@ -78,8 +82,9 @@ export class HeartbeatValidator {
       };
     }
 
-    // 3. Monotonic sequence number check
-    const lastSeq = this.deviceSequences.get(hb.deviceId) ?? 0;
+    // 3. Monotonic sequence number check per device (scoped by org, user, device)
+    const deviceKey = `${hb.orgId}:${hb.userId}:${hb.deviceId}`;
+    const lastSeq = this.deviceSequences.get(deviceKey) ?? 0;
     if (hb.sequenceNumber <= lastSeq) {
       return {
         valid: false,
@@ -108,7 +113,7 @@ export class HeartbeatValidator {
 
     // Passed all checks! Record state
     this.seenNonces.set(nonceKey, now.getTime());
-    this.deviceSequences.set(hb.deviceId, hb.sequenceNumber);
+    this.deviceSequences.set(deviceKey, hb.sequenceNumber);
 
     return { valid: true };
   }

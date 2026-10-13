@@ -39,9 +39,10 @@ async function runDemo() {
   const userId = 'user-subcontractor-007';
   const orgId = 'org-acme-corp';
   const deviceId = 'device-macbook-pro-m3';
-  const sessionSecret = 'session-hmac-secret-xyz123';
+  const sessionId = 'auth-session-live-007';
+  const sessionSecret = service.generateSessionSecret();
 
-  service.registerUserSecret(userId, sessionSecret);
+  service.registerSessionSecret(sessionId, sessionSecret);
   let seq = 1;
   let virtualClock = new Date('2026-10-13T08:30:00.000Z');
 
@@ -51,8 +52,9 @@ async function runDemo() {
       orgId,
       userId,
       deviceId,
+      sessionId,
       sequenceNumber: seq++,
-      nonce: `nonce-${Date.now()}-${seq}`,
+      nonce: `nonce-${virtualClock.getTime()}-${seq}`,
       activeSeconds: activeSec,
       idleSeconds: idleSec,
       tabVisible: true,
@@ -186,6 +188,7 @@ async function runDemo() {
       orgId,
       userId,
       deviceId,
+      sessionId,
       sequenceNumber: seq++,
       nonce: 'tampered-nonce',
       activeSeconds: 30,
@@ -204,6 +207,7 @@ async function runDemo() {
     orgId,
     userId,
     deviceId,
+    sessionId,
     sequenceNumber: seq++,
     nonce: 'unique-replay-test-nonce',
     activeSeconds: 30,
