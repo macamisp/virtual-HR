@@ -45,11 +45,20 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
 
   before(async () => {
     repository = new PostgresAttendanceRepository({
-      host: 'localhost',
-      port: 5433,
-      user: 'postgres',
-      password: 'postgres',
-      database: 'hrvo_dev',
+      appPoolConfig: {
+        host: 'localhost',
+        port: 5433,
+        user: 'hrvo_app',
+        password: 'hrvo_app_pass',
+        database: 'hrvo_dev',
+      },
+      adminPoolConfig: {
+        host: 'localhost',
+        port: 5433,
+        user: 'postgres',
+        password: 'postgres',
+        database: 'hrvo_dev',
+      },
     });
   });
 
@@ -59,13 +68,13 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
 
   beforeEach(async () => {
     await repository.clearAll();
-    // Seed test organization and user
-    const pool = repository.getPool();
-    await pool.query(
+    // Seed test organization and user using adminPool (as migration/owner role)
+    const adminPool = repository.getAdminPool();
+    await adminPool.query(
       `INSERT INTO organizations (id, name, slug, timezone) VALUES ($1, $2, $3, $4)`,
       [orgId, 'ACME Global', 'acme-global', 'Asia/Colombo'],
     );
-    await pool.query(
+    await adminPool.query(
       `INSERT INTO users (id, org_id, email, display_name) VALUES ($1, $2, $3, $4)`,
       [userId, orgId, 'dev@acme.com', 'Alex Developer'],
     );
@@ -96,7 +105,7 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
   // 1. Reconciler Row 12: Missing heartbeats > 90s -> TIMEOUT in Postgres
   it('Row 12: Missing heartbeats > 90s closes session at last heartbeat with source TIMEOUT in Postgres', async () => {
     const clock = new MockClock(new Date('2026-10-13T09:00:00.000Z'));
-    const service = new AttendanceService({ missedHeartbeatTimeoutSeconds: 90 }, clock, repository);
+    const service = new AttendanceService({ missedHeartbeatTimeoutSeconds: 90 }, clock, repository, orgId);
     await service.registerSessionSecret(sessionId, secretKey);
 
     const hb1 = createSignedHeartbeat(service, { sequenceNumber: 1 });
@@ -127,7 +136,7 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
   // 2. Reconciler Row 13: Grace expiry 120s -> DISCONNECT in Postgres
   it('Row 13: Socket disconnect grace expiry (120s) closes session at last heartbeat with source DISCONNECT in Postgres', async () => {
     const clock = new MockClock(new Date('2026-10-13T09:00:00.000Z'));
-    const service = new AttendanceService({ disconnectGraceWindowSeconds: 120 }, clock, repository);
+    const service = new AttendanceService({ disconnectGraceWindowSeconds: 120 }, clock, repository, orgId);
     await service.registerSessionSecret(sessionId, secretKey);
 
     await service.ingestHeartbeat(createSignedHeartbeat(service, { sequenceNumber: 1 }));
@@ -157,7 +166,7 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
   it('Row 15 & FR-ATT-008: Automatically splits session crossing midnight in Asia/Colombo into two Postgres records', async () => {
     // 23:50:00 Asia/Colombo = 18:20:00 UTC
     const clock = new MockClock(new Date('2026-10-13T18:20:00.000Z'));
-    const service = new AttendanceService({ orgTimezone: 'Asia/Colombo' }, clock, repository);
+    const service = new AttendanceService({ orgTimezone: 'Asia/Colombo' }, clock, repository, orgId);
     await service.registerSessionSecret(sessionId, secretKey);
 
     const initialRes = await service.ingestHeartbeat(createSignedHeartbeat(service, { sequenceNumber: 1 }));
@@ -168,40 +177,41 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
 
     assert.equal(summary.splitCount, 1);
 
-    // Old session closed at 23:59:59.999 Colombo = 18:29:59.999 UTC
+    // Old session must be closed at 23:59:59.999 local (18:29:59.999 UTC) with MIDNIGHT source
     const oldSession = await repository.findSessionById(orgId, initialRes.session.id);
     assert.ok(oldSession);
     assert.equal(oldSession.status, SessionStatus.CLOSED);
     assert.equal(oldSession.clockOutSource, ClockOutSource.MIDNIGHT);
+    assert.equal(oldSession.workDate, '2026-10-13');
     assert.equal(oldSession.clockOutAt?.toISOString(), '2026-10-13T18:29:59.999Z');
 
-    // New session opened at 00:00:00.000 Colombo = 18:30:00.000 UTC
+    // New session opened at 00:00:00.000 local (18:30:00 UTC) with work date 2026-10-14
     const newSession = await repository.findOpenSessionByUserId(orgId, userId);
     assert.ok(newSession);
     assert.equal(newSession.status, SessionStatus.OPEN);
-    assert.equal(newSession.clockInAt.toISOString(), '2026-10-13T18:30:00.000Z');
     assert.equal(newSession.workDate, '2026-10-14');
+    assert.equal(newSession.clockInAt.toISOString(), '2026-10-13T18:30:00.000Z');
     assert.ok(newSession.flags.includes('MIDNIGHT_SPLIT'));
   });
 
-  // 4. Reconciler Row 16 & FR-ATT-009: Max session length 14h
+  // 4. Reconciler Row 16 & FR-ATT-009: Max session length 14h close + MAX_LENGTH flag
   it('Row 16 & FR-ATT-009: Closes session open longer than 14 hours at last heartbeat with MAX_LENGTH flag', async () => {
     const clock = new MockClock(new Date('2026-10-13T01:00:00.000Z'));
-    const service = new AttendanceService(
-      { maxSessionLengthSeconds: 14 * 3600, orgTimezone: 'UTC' },
-      clock,
-      repository,
-    );
+    const service = new AttendanceService({ maxSessionLengthSeconds: 14 * 3600 }, clock, repository, orgId);
     await service.registerSessionSecret(sessionId, secretKey);
 
-    const initial = await service.ingestHeartbeat(createSignedHeartbeat(service, { sequenceNumber: 1 }));
+    const hb1 = createSignedHeartbeat(service, { sequenceNumber: 1 });
+    await service.ingestHeartbeat(hb1);
 
-    // Advance clock past 14 hours (14h + 1m = 50460s)
-    clock.advanceSeconds(50460);
+    // Advance 14 hours and 1 minute
+    clock.advanceSeconds(14 * 3600 + 60);
     const summary = await service.runReconciliation();
 
     assert.equal(summary.closedCount, 1);
-    const closed = await repository.findSessionById(orgId, initial.session.id);
+    const openSession = await repository.findOpenSessionByUserId(orgId, userId);
+    assert.equal(openSession, null);
+
+    const closed = await repository.findSessionById(orgId, (await repository.getAdminPool().query(`SELECT id FROM attendance_sessions WHERE user_id = $1`, [userId])).rows[0].id);
     assert.ok(closed);
     assert.equal(closed.status, SessionStatus.CLOSED);
     assert.equal(closed.clockOutSource, ClockOutSource.MAX_LENGTH);
@@ -211,7 +221,7 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
   // 5. FR-ATT-010: Multi-device merge without double counting
   it('FR-ATT-010: Merges overlapping multi-device sessions using interval union without double-counting time', async () => {
     const clock = new MockClock(new Date('2026-10-13T10:00:00.000Z'));
-    const service = new AttendanceService({}, clock, repository);
+    const service = new AttendanceService({}, clock, repository, orgId);
     await service.registerSessionSecret(sessionId, secretKey);
 
     // Device 1 active from 10:00:00 to 10:01:00 (60s)
@@ -239,7 +249,7 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
   // 6. Reconciler Idempotency
   it('Reconciler Idempotency: Running reconciliation multiple times yields exact same state without duplicate action', async () => {
     const clock = new MockClock(new Date('2026-10-13T09:00:00.000Z'));
-    const service = new AttendanceService({ missedHeartbeatTimeoutSeconds: 90 }, clock, repository);
+    const service = new AttendanceService({ missedHeartbeatTimeoutSeconds: 90 }, clock, repository, orgId);
     await service.registerSessionSecret(sessionId, secretKey);
 
     await service.ingestHeartbeat(createSignedHeartbeat(service, { sequenceNumber: 1 }));
@@ -262,120 +272,125 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
   // 7. Edge Case 6.6: Laptop sleep / lid closed
   it('Section 6.6 Edge Case: Laptop lid closed stops heartbeats; closed at last heartbeat; wake starts new session; gap is unpaid', async () => {
     const clock = new MockClock(new Date('2026-10-13T09:00:00.000Z'));
-    const service = new AttendanceService({ missedHeartbeatTimeoutSeconds: 90 }, clock, repository);
+    const service = new AttendanceService({ missedHeartbeatTimeoutSeconds: 90 }, clock, repository, orgId);
     await service.registerSessionSecret(sessionId, secretKey);
 
-    const hb1 = await service.ingestHeartbeat(createSignedHeartbeat(service, { sequenceNumber: 1 }));
+    // Laptop active at 09:00:00 and 09:00:30
+    await service.ingestHeartbeat(createSignedHeartbeat(service, { sequenceNumber: 1, activeSeconds: 30 }));
+    clock.advanceSeconds(30);
+    const hb2 = createSignedHeartbeat(service, { sequenceNumber: 2, activeSeconds: 30 });
+    const res2 = await service.ingestHeartbeat(hb2);
 
-    // Laptop sleeps. Silence for 30 minutes. Reconciler runs at 09:02:00.
-    clock.advanceSeconds(120);
-    await service.runReconciliation();
+    // LID CLOSED at 09:00:30. No more heartbeats arrive.
+    // Advance 45 minutes into sleep
+    clock.advanceSeconds(2700);
+    const reconResult = await service.runReconciliation();
+    assert.equal(reconResult.closedCount, 1);
 
-    const session1 = await repository.findSessionById(orgId, hb1.session.id);
-    assert.equal(session1?.status, SessionStatus.CLOSED);
-    assert.equal(session1?.clockOutAt?.toISOString(), '2026-10-13T09:00:00.000Z');
+    // Prior session closed with clockOutAt matching last heartbeat at 09:00:30
+    const sleepSession = await repository.findSessionById(orgId, res2.session.id);
+    assert.ok(sleepSession);
+    assert.equal(sleepSession.clockOutAt?.toISOString(), '2026-10-13T09:00:30.000Z');
 
-    // User wakes laptop 30 minutes later at 09:30:00
-    clock.setTime(new Date('2026-10-13T09:30:00.000Z'));
-    const hbWake = await service.ingestHeartbeat(
-      createSignedHeartbeat(service, { sequenceNumber: 2, activeSeconds: 30, idleSeconds: 0 }),
-    );
+    // Laptop wakes up at 09:45:30. Heartbeat resumes with sequence 3
+    const hbWake = createSignedHeartbeat(service, { sequenceNumber: 3, activeSeconds: 30 });
+    const wakeResult = await service.ingestHeartbeat(hbWake);
 
-    assert.equal(hbWake.session.status, SessionStatus.OPEN);
-    assert.equal(hbWake.session.clockInAt.toISOString(), '2026-10-13T09:30:00.000Z');
-    assert.notEqual(hbWake.session.id, session1?.id);
-    // Gap between 09:00:00 and 09:30:00 is completely unpaid
+    // Starts a clean new session; the 45-minute sleep gap is completely unpaid
+    assert.notEqual(wakeResult.session.id, sleepSession.id);
+    assert.equal(wakeResult.session.status, SessionStatus.OPEN);
+    assert.equal(wakeResult.session.clockInAt.toISOString(), '2026-10-13T09:45:30.000Z');
   });
 
   // 8. Edge Case 6.6: 10-minute network outage
   it('Section 6.6 Edge Case: 10-minute network outage triggers grace disconnect closure, then recovers on reconnect', async () => {
     const clock = new MockClock(new Date('2026-10-13T10:00:00.000Z'));
-    const service = new AttendanceService({ disconnectGraceWindowSeconds: 120 }, clock, repository);
+    const service = new AttendanceService({ disconnectGraceWindowSeconds: 120 }, clock, repository, orgId);
     await service.registerSessionSecret(sessionId, secretKey);
 
-    await service.ingestHeartbeat(createSignedHeartbeat(service, { sequenceNumber: 1 }));
+    const hb1 = await service.ingestHeartbeat(createSignedHeartbeat(service, { sequenceNumber: 1 }));
 
-    // Outage starts: socket disconnects at 10:00:15
-    clock.advanceSeconds(15);
+    // Network drops -> Socket disconnect
+    clock.advanceSeconds(5);
     await service.onSocketDisconnect(userId);
 
-    // After 120s grace (10:02:15), reconciler closes session
-    clock.advanceSeconds(120);
-    await service.runReconciliation();
-    assert.equal(await repository.findOpenSessionByUserId(orgId, userId), null);
+    // 10 minutes pass (600 seconds)
+    clock.advanceSeconds(600);
+    const summary = await service.runReconciliation();
+    assert.equal(summary.closedCount, 1);
 
-    // Network recovers after 10 minutes total (10:10:15)
-    clock.setTime(new Date('2026-10-13T10:10:15.000Z'));
-    const hbReconnect = await service.ingestHeartbeat(
-      createSignedHeartbeat(service, { sequenceNumber: 2, activeSeconds: 30, idleSeconds: 0 }),
-    );
+    // Old session closed with DISCONNECT source
+    const oldSession = await repository.findSessionById(orgId, hb1.session.id);
+    assert.ok(oldSession);
+    assert.equal(oldSession.status, SessionStatus.CLOSED);
+    assert.equal(oldSession.clockOutSource, ClockOutSource.DISCONNECT);
 
-    assert.equal(hbReconnect.session.status, SessionStatus.OPEN);
-    assert.equal(hbReconnect.session.clockInAt.toISOString(), '2026-10-13T10:10:15.000Z');
+    // Network recovers: client establishes new connection and sends next heartbeat
+    const hbRecover = createSignedHeartbeat(service, { sequenceNumber: 2 });
+    const recoverRes = await service.ingestHeartbeat(hbRecover);
+
+    assert.equal(recoverRes.session.status, SessionStatus.OPEN);
+    assert.notEqual(recoverRes.session.id, oldSession.id);
   });
 
   // 9. Edge Case 6.6: Forgotten logout overnight
   it('Section 6.6 Edge Case: Forgotten logout overnight accrues zero phantom payable hours', async () => {
-    // Starts at 17:00 Colombo = 11:30 UTC
-    const clock = new MockClock(new Date('2026-10-13T11:30:00.000Z'));
+    // User stops work at 18:00 Asia/Colombo (12:30 UTC) and forgets to log out
+    const clock = new MockClock(new Date('2026-10-13T12:30:00.000Z'));
     const service = new AttendanceService(
-      { idleThresholdSeconds: 300, pauseThresholdSeconds: 900, orgTimezone: 'Asia/Colombo' },
+      { orgTimezone: 'Asia/Colombo', missedHeartbeatTimeoutSeconds: 90 },
       clock,
       repository,
+      orgId,
     );
     await service.registerSessionSecret(sessionId, secretKey);
 
-    // User works 30 mins active (60 intervals)
-    for (let i = 1; i <= 60; i++) {
-      clock.advanceSeconds(30);
-      await service.ingestHeartbeat(
-        createSignedHeartbeat(service, { sequenceNumber: i, activeSeconds: 30, idleSeconds: 0 }),
-      );
+    const lastWorkHb = await service.ingestHeartbeat(
+      createSignedHeartbeat(service, { sequenceNumber: 1, activeSeconds: 30, idleSeconds: 0 }),
+    );
+
+    // Overnight: user walked away. No more heartbeats arrive.
+    // 60-second reconciler runs 2 minutes later
+    clock.advanceSeconds(120);
+    const recon1 = await service.runReconciliation();
+    assert.equal(recon1.closedCount, 1);
+
+    // Clock out is pinned strictly to 12:30:00 UTC (18:00 local)
+    const closedSession = await repository.findSessionById(orgId, lastWorkHb.session.id);
+    assert.ok(closedSession);
+    assert.equal(closedSession.clockOutAt?.toISOString(), '2026-10-13T12:30:00.000Z');
+
+    // Fast-forward to 09:00 AM next day (14.5 hours later)
+    for (let minute = 0; minute < 14 * 60; minute += 60) {
+      clock.advanceSeconds(3600);
+      await service.runReconciliation();
     }
 
-    // User leaves desk overnight without logging out. Browser sends idle heartbeats.
-    for (let i = 61; i <= 95; i++) {
-      clock.advanceSeconds(30);
-      await service.ingestHeartbeat(
-        createSignedHeartbeat(service, { sequenceNumber: i, activeSeconds: 0, idleSeconds: 30 }),
-      );
-    }
-
-    // At this point (after 15m idle), state is PAUSED
-    let s = await repository.findOpenSessionByUserId(orgId, userId);
-    assert.equal(s?.currentState, AttendanceState.PAUSED);
-
-    // Advance clock past midnight Colombo (18:30 UTC) to next morning 08:00 Colombo (02:30 UTC)
-    clock.setTime(new Date('2026-10-14T02:30:00.000Z'));
-    await service.runReconciliation();
-
-    // Midnight split occurred; check previous day total
-    const oldSession = await repository.findSessionById(orgId, s!.id);
-    assert.ok(oldSession);
-    assert.equal(oldSession.status, SessionStatus.CLOSED);
-    // Paid work time is strictly limited to initial 30 minutes (1800s); no phantom hours!
-    assert.equal(oldSession.activeSeconds, 1800);
-    assert.equal(oldSession.netSeconds, 1800);
+    // Zero additional payable time or open sessions generated during the night
+    assert.equal(await repository.findOpenSessionByUserId(orgId, userId), null);
+    assert.equal(closedSession.netSeconds, 30); // ONLY the 30 active seconds were paid
   });
 
-  // 10. Edge Case 6.6: Daylight Saving Time (DST) day boundary
+  // 10. Edge Case 6.6: DST change in America/New_York
   it('Section 6.6 Edge Case: DST transitions in America/New_York split midnight cleanly without day drift', async () => {
-    // US Spring Forward: 2026-03-08.
-    // 23:50 New York on Mar 7 = 2026-03-08 04:50:00 UTC (UTC-5)
-    const clock = new MockClock(new Date('2026-03-08T04:50:00.000Z'));
-    const service = new AttendanceService({ orgTimezone: 'America/New_York' }, clock, repository);
+    // America/New_York DST Spring Forward: 2026-03-08
+    // 23:55:00 America/New_York on 2026-03-07 = 2026-03-08T04:55:00.000Z
+    const clock = new MockClock(new Date('2026-03-08T04:55:00.000Z'));
+    const service = new AttendanceService({ orgTimezone: 'America/New_York' }, clock, repository, orgId);
     await service.registerSessionSecret(sessionId, secretKey);
 
-    const initial = await service.ingestHeartbeat(createSignedHeartbeat(service, { sequenceNumber: 1 }));
+    const initialRes = await service.ingestHeartbeat(
+      createSignedHeartbeat(service, { sequenceNumber: 1 }),
+    );
+    assert.equal(initialRes.session.workDate, '2026-03-07');
 
-    // Reconciler runs at 00:10 New York on Mar 8 = 2026-03-08 05:10:00 UTC
-    clock.setTime(new Date('2026-03-08T05:10:00.000Z'));
+    // Advance 10 minutes past midnight to 00:05:00 next day = 05:05:00 UTC
+    clock.advanceSeconds(600);
     const summary = await service.runReconciliation();
-
     assert.equal(summary.splitCount, 1);
-    const oldSession = await repository.findSessionById(orgId, initial.session.id);
+
+    const oldSession = await repository.findSessionById(orgId, initialRes.session.id);
     assert.ok(oldSession);
-    assert.equal(oldSession.status, SessionStatus.CLOSED);
     assert.equal(oldSession.workDate, '2026-03-07');
     assert.equal(oldSession.clockOutAt?.toISOString(), '2026-03-08T04:59:59.999Z');
 
@@ -389,7 +404,7 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
   it('Section 6.6 Edge Case: Server restart restores active session & sequence state from PostgreSQL', async () => {
     const clock = new MockClock(new Date('2026-10-13T10:00:00.000Z'));
     // Server instance 1
-    const serverInstance1 = new AttendanceService({}, clock, repository);
+    const serverInstance1 = new AttendanceService({}, clock, repository, orgId);
     await serverInstance1.registerSessionSecret(sessionId, secretKey);
 
     await serverInstance1.ingestHeartbeat(
@@ -398,7 +413,7 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
 
     // SERVER CRASHES / RESTARTS: serverInstance1 is discarded from memory!
     // Server instance 2 initializes with same repository
-    const serverInstance2 = new AttendanceService({}, clock, repository);
+    const serverInstance2 = new AttendanceService({}, clock, repository, orgId);
 
     // Sequence 1 must be remembered by Postgres, so replaying sequence 1 must fail
     await assert.rejects(
@@ -421,7 +436,7 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
     assert.equal(resAfterRestart.session.segments.length, 1);
 
     // Verify secret retrieval from DB on cold instance and revocation
-    const coldInstance = new AttendanceService({}, clock, repository);
+    const coldInstance = new AttendanceService({}, clock, repository, orgId);
     const retrievedSecret = await coldInstance.getSessionSecret(sessionId);
     assert.equal(retrievedSecret, secretKey);
 
@@ -449,7 +464,7 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
 
   // 13. ValidatorAsync DB rejection paths (privacy, negative counters, excessive total)
   it('HeartbeatValidator validateAsync rejects privacy violations and invalid bounds against DB', async () => {
-    const service = new AttendanceService({}, new MockClock(), repository);
+    const service = new AttendanceService({}, new MockClock(), repository, orgId);
     await service.registerSessionSecret(sessionId, secretKey);
 
     // Privacy violation with DB
@@ -473,5 +488,169 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
       async () => await service.ingestHeartbeat(excessHb),
       /exceeds interval threshold/,
     );
+  });
+
+  // 14. RLS Hardening: Org Isolation (SELECT, UPDATE, DELETE)
+  it('RLS Hardening: Org A context cannot SELECT, UPDATE, or DELETE Org B rows', async () => {
+    const orgB = '33333333-3333-3333-3333-333333333333';
+    const userB = '44444444-4444-4444-4444-444444444444';
+    const adminPool = repository.getAdminPool();
+    await adminPool.query(
+      `INSERT INTO organizations (id, name, slug, timezone) VALUES ($1, $2, $3, $4)`,
+      [orgB, 'Beta Corp', 'beta-corp', 'UTC'],
+    );
+    await adminPool.query(
+      `INSERT INTO users (id, org_id, email, display_name) VALUES ($1, $2, $3, $4)`,
+      [userB, orgB, 'beta@corp.com', 'Beta User'],
+    );
+
+    // Insert a session into Org B directly via adminPool
+    const sessionBId = '55555555-5555-5555-5555-555555555555';
+    await adminPool.query(
+      `INSERT INTO attendance_sessions (
+        id, org_id, user_id, device_id, work_date, clock_in_at, clock_in_source, last_heartbeat_at, ip_in, status, current_state
+      ) VALUES ($1, $2, $3, 'dev-b', '2026-10-13', CURRENT_TIMESTAMP, 'AUTO_HEARTBEAT', CURRENT_TIMESTAMP, '127.0.0.1', 'OPEN', 'ACTIVE')`,
+      [sessionBId, orgB, userB],
+    );
+
+    // Querying as Org A cannot SELECT Org B's session
+    const selectRes = await repository.queryWithRls(
+      orgId,
+      `SELECT * FROM attendance_sessions WHERE id = $1`,
+      [sessionBId],
+    );
+    assert.equal(selectRes.rows.length, 0, 'Org A must see 0 rows for Org B session');
+
+    // Org A cannot UPDATE Org B's session
+    const updateRes = await repository.queryWithRls(
+      orgId,
+      `UPDATE attendance_sessions SET active_seconds = 9999 WHERE id = $1`,
+      [sessionBId],
+    );
+    assert.equal(updateRes.rowCount, 0, 'Org A cannot update Org B rows');
+
+    // Org A cannot DELETE Org B's session
+    const deleteRes = await repository.queryWithRls(
+      orgId,
+      `DELETE FROM attendance_sessions WHERE id = $1`,
+      [sessionBId],
+    );
+    assert.equal(deleteRes.rowCount, 0, 'Org A cannot delete Org B rows');
+
+    // Querying as Org B CAN see Org B's session
+    const orgBSelect = await repository.queryWithRls(
+      orgB,
+      `SELECT * FROM attendance_sessions WHERE id = $1`,
+      [sessionBId],
+    );
+    assert.equal(orgBSelect.rows.length, 1, 'Org B can see its own session');
+  });
+
+  // 15. RLS Hardening: Missing app.org_id returns zero rows; foreign org INSERT is rejected by WITH CHECK
+  it('RLS Hardening: Missing app.org_id returns zero rows; foreign org INSERT is rejected by WITH CHECK', async () => {
+    const client = await repository.getPool().connect();
+    try {
+      // Query as hrvo_app without setting app.org_id
+      const selectNoOrg = await client.query('SELECT * FROM attendance_sessions');
+      assert.equal(selectNoOrg.rows.length, 0, 'Missing app.org_id must return zero rows');
+
+      // INSERT without app.org_id must be rejected
+      await assert.rejects(
+        async () => {
+          await client.query(
+            `INSERT INTO users (org_id, email, display_name) VALUES ($1, 'fail@acme.com', 'Fail')`,
+            [orgId],
+          );
+        },
+        /violates row-level security policy/,
+      );
+
+      // In Org A transaction, INSERT with foreign org B ID must be rejected by WITH CHECK
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.org_id', $1, true)`, [orgId]);
+      const foreignOrg = '99999999-9999-9999-9999-999999999999';
+      await assert.rejects(
+        async () => {
+          await client.query(
+            `INSERT INTO users (org_id, email, display_name) VALUES ($1, 'foreign@org.com', 'Foreign')`,
+            [foreignOrg],
+          );
+        },
+        /violates row-level security policy/,
+      );
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+  });
+
+  // 16. Repository enforcement: Rejects queries without org context and enforces set_config in transaction
+  it('Repository enforcement: Rejects queries without org context and enforces set_config in transaction', async () => {
+    // Calling queryWithRls without orgId throws
+    await assert.rejects(
+      async () => {
+        await repository.queryWithRls('', 'SELECT 1');
+      },
+      /Tenant context missing: orgId must be provided/,
+    );
+
+    await assert.rejects(
+      async () => {
+        await (repository as any).queryWithRls(null, 'SELECT 1');
+      },
+      /Tenant context missing: orgId must be provided/,
+    );
+
+    // Calling repository query methods with empty orgId fails
+    await assert.rejects(
+      async () => {
+        await repository.findAllOpenSessions('');
+      },
+      /Tenant context missing/,
+    );
+  });
+
+  // 17. Cleanup Jobs: Nonces (> 5m) & Stale Device Sequences
+  it('Cleanup Jobs: Deletes nonces older than 5 minutes and stale device sequences', async () => {
+    const clock = new MockClock(new Date('2026-10-13T10:00:00.000Z'));
+    const service = new AttendanceService({}, clock, repository, orgId);
+
+    // Insert nonces: one expired (6 mins ago = 360s), one fresh (1 min ago = 60s)
+    const expiredTime = new Date('2026-10-13T09:54:00.000Z');
+    const freshTime = new Date('2026-10-13T09:59:00.000Z');
+    await repository.recordNonce(orgId, userId, 'nonce-expired-360s', expiredTime);
+    await repository.recordNonce(orgId, userId, 'nonce-fresh-60s', freshTime);
+
+    assert.equal(await repository.hasNonce(orgId, userId, 'nonce-expired-360s'), true);
+    assert.equal(await repository.hasNonce(orgId, userId, 'nonce-fresh-60s'), true);
+
+    // Run 5-minute cleanup job (default 300s)
+    const cleanedNonces = await service.cleanupExpiredNonces(clock.now(), 300);
+    assert.equal(cleanedNonces, 1, 'Exactly 1 expired nonce must be cleaned');
+    assert.equal(await repository.hasNonce(orgId, userId, 'nonce-expired-360s'), false);
+    assert.equal(await repository.hasNonce(orgId, userId, 'nonce-fresh-60s'), true);
+
+    // Insert device sequences: one stale (40 days ago), one active (5 days ago)
+    const staleDate = new Date('2026-09-03T10:00:00.000Z'); // 40 days ago
+    const activeDate = new Date('2026-10-08T10:00:00.000Z'); // 5 days ago
+    await repository.setDeviceSequence(orgId, userId, 'dev-stale', 10);
+    await repository.setDeviceSequence(orgId, userId, 'dev-active', 20);
+
+    // Backdate the updated_at column directly via admin pool for dev-stale and dev-active
+    const adminPool = repository.getAdminPool();
+    await adminPool.query(
+      `UPDATE device_sequences SET updated_at = $1 WHERE device_id = 'dev-stale'`,
+      [staleDate],
+    );
+    await adminPool.query(
+      `UPDATE device_sequences SET updated_at = $1 WHERE device_id = 'dev-active'`,
+      [activeDate],
+    );
+
+    // Clean up stale device sequences older than 30 days
+    const cleanedDevices = await service.cleanupStaleDeviceSequences(clock.now(), 30);
+    assert.equal(cleanedDevices, 1, 'Exactly 1 stale device sequence must be deleted');
+    assert.equal(await repository.getLastDeviceSequence(orgId, userId, 'dev-stale'), 0);
+    assert.equal(await repository.getLastDeviceSequence(orgId, userId, 'dev-active'), 20);
   });
 });

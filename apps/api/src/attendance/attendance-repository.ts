@@ -1,51 +1,103 @@
 /**
- * HRVO Attendance Repository Interface and PostgreSQL Implementation
- * Ref: docs/SRS.md Section 7.4, Section 3.4 (RLS)
+ * PostgreSQL Implementation of IAttendanceRepository with Row-Level Security (RLS)
+ * Ref: docs/SRS.md Section 7.4, Security Rules & AGENTS.md
+ *
+ * Rules Enforced:
+ * 1. Connects as non-superuser application role 'hrvo_app' (NOBYPASSRLS, not table owner).
+ * 2. Every query runs inside a transaction (BEGIN ... COMMIT/ROLLBACK).
+ * 3. Calls SELECT set_config('app.org_id', $1, true) BEFORE executing any query.
+ * 4. Rejects any query attempt without a valid org context.
+ * 5. FORCE ROW LEVEL SECURITY enabled on every tenant table.
  */
 
 import pg from 'pg';
-import type {
-  AttendanceSegment,
-  AttendanceSession,
+const { Pool } = pg;
+import {
   AttendanceState,
   ClockInSource,
   ClockOutSource,
   SessionStatus,
 } from '../../../../packages/shared/src/attendance/types.ts';
-
-const { Pool } = pg;
+import type {
+  AttendanceSegment,
+  AttendanceSession,
+} from '../../../../packages/shared/src/attendance/types.ts';
 
 export interface IAttendanceRepository {
   findOpenSessionByUserId(orgId: string, userId: string): Promise<AttendanceSession | null>;
   findSessionById(orgId: string, sessionId: string): Promise<AttendanceSession | null>;
+  findAllOpenSessions(orgId: string): Promise<AttendanceSession[]>;
   saveSession(session: AttendanceSession): Promise<void>;
-  findAllOpenSessions(orgId?: string): Promise<AttendanceSession[]>;
-  saveSegment(orgId: string, segment: AttendanceSegment, sessionId: string): Promise<void>;
+  saveSegment(orgId: string, seg: AttendanceSegment, sessionId: string): Promise<void>;
   findSegmentsBySessionId(orgId: string, sessionId: string): Promise<AttendanceSegment[]>;
   hasNonce(orgId: string, userId: string, nonce: string): Promise<boolean>;
   recordNonce(orgId: string, userId: string, nonce: string, now: Date): Promise<void>;
   getLastDeviceSequence(orgId: string, userId: string, deviceId: string): Promise<number>;
   setDeviceSequence(orgId: string, userId: string, deviceId: string, seq: number): Promise<void>;
-  saveSessionSecret(sessionId: string, secret: string): Promise<void>;
-  findSessionSecret(sessionId: string): Promise<string | null>;
-  revokeSessionSecret(sessionId: string): Promise<void>;
+  saveSessionSecret(orgId: string, sessionId: string, secret: string): Promise<void>;
+  findSessionSecret(orgId: string, sessionId: string): Promise<string | null>;
+  revokeSessionSecret(orgId: string, sessionId: string): Promise<void>;
+  cleanupExpiredNonces(orgId: string, olderThan: Date): Promise<number>;
+  cleanupStaleDeviceSequences(orgId: string, olderThan: Date): Promise<number>;
   clearAll(): Promise<void>;
+  close(): Promise<void>;
+}
+
+export interface PostgresRepositoryOptions {
+  appPoolConfig?: pg.PoolConfig;
+  adminPoolConfig?: pg.PoolConfig;
 }
 
 export class PostgresAttendanceRepository implements IAttendanceRepository {
-  private pool: pg.Pool;
+  private pool: pg.Pool;      // Application pool (runs as non-superuser 'hrvo_app' with NOBYPASSRLS)
+  private adminPool: pg.Pool; // Admin pool (runs as owner 'postgres' for migrations & test wipe ONLY)
 
-  constructor(connectionStringOrConfig?: string | pg.PoolConfig) {
-    if (typeof connectionStringOrConfig === 'string') {
-      this.pool = new Pool({ connectionString: connectionStringOrConfig });
-    } else if (connectionStringOrConfig) {
-      this.pool = new Pool(connectionStringOrConfig);
+  constructor(options?: string | pg.PoolConfig | PostgresRepositoryOptions) {
+    if (typeof options === 'string') {
+      this.pool = new Pool({ connectionString: options });
+      this.adminPool = new Pool({ connectionString: options });
+    } else if (options && ('appPoolConfig' in options || 'adminPoolConfig' in options)) {
+      const opts = options as PostgresRepositoryOptions;
+      this.pool = new Pool(
+        opts.appPoolConfig || {
+          host: process.env.PGHOST || 'localhost',
+          port: parseInt(process.env.PGPORT || '5433', 10),
+          user: process.env.PGAPP_USER || 'hrvo_app',
+          password: process.env.PGAPP_PASSWORD || 'hrvo_app_pass',
+          database: process.env.PGDATABASE || 'hrvo_dev',
+        },
+      );
+      this.adminPool = new Pool(
+        opts.adminPoolConfig || {
+          host: process.env.PGHOST || 'localhost',
+          port: parseInt(process.env.PGPORT || '5433', 10),
+          user: process.env.PGADMIN_USER || process.env.PGUSER || 'postgres',
+          password: process.env.PGADMIN_PASSWORD || process.env.PGPASSWORD || 'postgres',
+          database: process.env.PGDATABASE || 'hrvo_dev',
+        },
+      );
+    } else if (options) {
+      // Direct PoolConfig passed
+      this.pool = new Pool(options as pg.PoolConfig);
+      this.adminPool = new Pool({
+        ...(options as pg.PoolConfig),
+        user: process.env.PGADMIN_USER || process.env.PGUSER || 'postgres',
+        password: process.env.PGADMIN_PASSWORD || process.env.PGPASSWORD || 'postgres',
+      });
     } else {
+      // Default: Connect as non-superuser hrvo_app
       this.pool = new Pool({
         host: process.env.PGHOST || 'localhost',
         port: parseInt(process.env.PGPORT || '5433', 10),
-        user: process.env.PGUSER || 'postgres',
-        password: process.env.PGPASSWORD || 'postgres',
+        user: process.env.PGAPP_USER || 'hrvo_app',
+        password: process.env.PGAPP_PASSWORD || 'hrvo_app_pass',
+        database: process.env.PGDATABASE || 'hrvo_dev',
+      });
+      this.adminPool = new Pool({
+        host: process.env.PGHOST || 'localhost',
+        port: parseInt(process.env.PGPORT || '5433', 10),
+        user: process.env.PGADMIN_USER || process.env.PGUSER || 'postgres',
+        password: process.env.PGADMIN_PASSWORD || process.env.PGPASSWORD || 'postgres',
         database: process.env.PGDATABASE || 'hrvo_dev',
       });
     }
@@ -55,24 +107,36 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     return this.pool;
   }
 
+  public getAdminPool(): pg.Pool {
+    return this.adminPool;
+  }
+
   public async close(): Promise<void> {
     await this.pool.end();
+    await this.adminPool.end();
   }
 
   /**
-   * Run query within PostgreSQL Row-Level Security tenant context
+   * Run query within PostgreSQL Row-Level Security tenant context.
+   *
+   * Enforces:
+   * 1. Transaction wrapping (BEGIN ... COMMIT/ROLLBACK)
+   * 2. Mandatory orgId validation (fails immediately if orgId is missing or empty)
+   * 3. Calling SELECT set_config('app.org_id', $1, true) BEFORE executing any query
    */
-  private async queryWithRls<T extends pg.QueryResultRow = any>(
-    orgId: string | null,
+  public async queryWithRls<T extends pg.QueryResultRow = any>(
+    orgId: string,
     text: string,
     params: any[] = [],
   ): Promise<pg.QueryResult<T>> {
+    if (!orgId || typeof orgId !== 'string' || orgId.trim() === '') {
+      throw new Error('Tenant context missing: orgId must be provided for all repository queries');
+    }
+
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      if (orgId) {
-        await client.query(`SELECT set_config('app.org_id', $1, true)`, [orgId]);
-      }
+      await client.query(`SELECT set_config('app.org_id', $1, true)`, [orgId]);
       const res = await client.query<T>(text, params);
       await client.query('COMMIT');
       return res;
@@ -114,12 +178,12 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     return this.mapRowToSession(row, segments);
   }
 
-  public async findAllOpenSessions(orgId?: string): Promise<AttendanceSession[]> {
-    const query = orgId
-      ? `SELECT * FROM attendance_sessions WHERE org_id = $1 AND status = 'OPEN'`
-      : `SELECT * FROM attendance_sessions WHERE status = 'OPEN'`;
-    const params = orgId ? [orgId] : [];
-    const res = await this.queryWithRls(orgId || null, query, params);
+  public async findAllOpenSessions(orgId: string): Promise<AttendanceSession[]> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT * FROM attendance_sessions WHERE org_id = $1 AND status = 'OPEN'`,
+      [orgId],
+    );
 
     const sessions: AttendanceSession[] = [];
     for (const row of res.rows) {
@@ -290,37 +354,68 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     );
   }
 
-  public async saveSessionSecret(sessionId: string, secret: string): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO session_secrets (session_id, secret, created_at)
-       VALUES ($1, $2, CURRENT_TIMESTAMP)
-       ON CONFLICT (session_id) DO UPDATE SET secret = EXCLUDED.secret`,
-      [sessionId, secret],
+  public async saveSessionSecret(orgId: string, sessionId: string, secret: string): Promise<void> {
+    await this.queryWithRls(
+      orgId,
+      `INSERT INTO session_secrets (session_id, org_id, secret, created_at)
+       VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+       ON CONFLICT (session_id) DO UPDATE SET secret = EXCLUDED.secret, org_id = EXCLUDED.org_id`,
+      [sessionId, orgId, secret],
     );
   }
 
-  public async findSessionSecret(sessionId: string): Promise<string | null> {
-    const res = await this.pool.query(
-      `SELECT secret FROM session_secrets WHERE session_id = $1`,
-      [sessionId],
+  public async findSessionSecret(orgId: string, sessionId: string): Promise<string | null> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT secret FROM session_secrets WHERE org_id = $1 AND session_id = $2`,
+      [orgId, sessionId],
     );
     return res.rows.length > 0 ? res.rows[0].secret : null;
   }
 
-  public async revokeSessionSecret(sessionId: string): Promise<void> {
-    await this.pool.query(`DELETE FROM session_secrets WHERE session_id = $1`, [
-      sessionId,
-    ]);
+  public async revokeSessionSecret(orgId: string, sessionId: string): Promise<void> {
+    await this.queryWithRls(
+      orgId,
+      `DELETE FROM session_secrets WHERE org_id = $1 AND session_id = $2`,
+      [orgId, sessionId],
+    );
   }
 
+  /**
+   * Cleanup job for heartbeat_nonces: Deletes nonces older than specified date (e.g. 5 minutes)
+   */
+  public async cleanupExpiredNonces(orgId: string, olderThan: Date): Promise<number> {
+    const res = await this.queryWithRls(
+      orgId,
+      `DELETE FROM heartbeat_nonces WHERE org_id = $1 AND created_at < $2`,
+      [orgId, olderThan],
+    );
+    return res.rowCount || 0;
+  }
+
+  /**
+   * Cleanup job for device_sequences: Deletes stale device sequences inactive past threshold
+   */
+  public async cleanupStaleDeviceSequences(orgId: string, olderThan: Date): Promise<number> {
+    const res = await this.queryWithRls(
+      orgId,
+      `DELETE FROM device_sequences WHERE org_id = $1 AND updated_at < $2`,
+      [orgId, olderThan],
+    );
+    return res.rowCount || 0;
+  }
+
+  /**
+   * Admin wipe used ONLY for test teardown and fixture reset (runs via adminPool)
+   */
   public async clearAll(): Promise<void> {
-    await this.pool.query(`DELETE FROM attendance_segments`);
-    await this.pool.query(`DELETE FROM attendance_sessions`);
-    await this.pool.query(`DELETE FROM heartbeat_nonces`);
-    await this.pool.query(`DELETE FROM device_sequences`);
-    await this.pool.query(`DELETE FROM session_secrets`);
-    await this.pool.query(`DELETE FROM users`);
-    await this.pool.query(`DELETE FROM organizations`);
+    await this.adminPool.query(`DELETE FROM attendance_segments`);
+    await this.adminPool.query(`DELETE FROM attendance_sessions`);
+    await this.adminPool.query(`DELETE FROM heartbeat_nonces`);
+    await this.adminPool.query(`DELETE FROM device_sequences`);
+    await this.adminPool.query(`DELETE FROM session_secrets`);
+    await this.adminPool.query(`DELETE FROM users`);
+    await this.adminPool.query(`DELETE FROM organizations`);
   }
 
   private mapRowToSession(row: any, segments: AttendanceSegment[]): AttendanceSession {

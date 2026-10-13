@@ -27,20 +27,24 @@ export class AttendanceService {
   private config: AttendanceConfig;
   private clock: Clock;
   private repository?: IAttendanceRepository;
+  private defaultOrgId?: string;
 
   // In-memory fallback stores (used when repository is not provided)
   private sessions = new Map<string, AttendanceSession>();
   private closedSessions = new Map<string, AttendanceSession>();
   private sessionSecrets = new Map<string, string>();
+  private sessionSecretOrgs = new Map<string, string>();
 
   constructor(
     config: Partial<AttendanceConfig> = {},
     clock: Clock = new SystemClock(),
     repository?: IAttendanceRepository,
+    defaultOrgId?: string,
   ) {
     this.config = { ...DEFAULT_ATTENDANCE_CONFIG, ...config };
     this.clock = clock;
     this.repository = repository;
+    this.defaultOrgId = defaultOrgId;
     this.stateMachine = new AttendanceStateMachine(this.config);
     this.validator = new HeartbeatValidator(300_000, this.clock);
   }
@@ -55,30 +59,42 @@ export class AttendanceService {
   /**
    * Register HMAC secret for a specific login/attendance session
    */
-  public async registerSessionSecret(sessionId: string, secret: string): Promise<void> {
+  public async registerSessionSecret(
+    sessionId: string,
+    secret: string,
+    orgId?: string,
+  ): Promise<void> {
+    const targetOrgId = orgId || this.defaultOrgId;
     this.sessionSecrets.set(sessionId, secret);
-    if (this.repository) {
-      await this.repository.saveSessionSecret(sessionId, secret);
+    if (targetOrgId) {
+      this.sessionSecretOrgs.set(sessionId, targetOrgId);
+    }
+    if (this.repository && targetOrgId) {
+      await this.repository.saveSessionSecret(targetOrgId, sessionId, secret);
     }
   }
 
   /**
    * Revoke HMAC secret when a session terminates
    */
-  public async revokeSessionSecret(sessionId: string): Promise<void> {
+  public async revokeSessionSecret(sessionId: string, orgId?: string): Promise<void> {
+    const targetOrgId = orgId || this.sessionSecretOrgs.get(sessionId) || this.defaultOrgId;
     this.sessionSecrets.delete(sessionId);
-    if (this.repository) {
-      await this.repository.revokeSessionSecret(sessionId);
+    this.sessionSecretOrgs.delete(sessionId);
+    if (this.repository && targetOrgId) {
+      await this.repository.revokeSessionSecret(targetOrgId, sessionId);
     }
   }
 
-  public async getSessionSecret(sessionId: string): Promise<string | undefined> {
+  public async getSessionSecret(sessionId: string, orgId?: string): Promise<string | undefined> {
     const mem = this.sessionSecrets.get(sessionId);
     if (mem) return mem;
-    if (this.repository) {
-      const dbSecret = await this.repository.findSessionSecret(sessionId);
+    const targetOrgId = orgId || this.sessionSecretOrgs.get(sessionId) || this.defaultOrgId;
+    if (this.repository && targetOrgId) {
+      const dbSecret = await this.repository.findSessionSecret(targetOrgId, sessionId);
       if (dbSecret) {
         this.sessionSecrets.set(sessionId, dbSecret);
+        this.sessionSecretOrgs.set(sessionId, targetOrgId);
         return dbSecret;
       }
     }
@@ -98,24 +114,33 @@ export class AttendanceService {
   }
 
   public async getSession(userId: string, orgId?: string): Promise<AttendanceSession | null> {
-    if (this.repository && orgId) {
-      return await this.repository.findOpenSessionByUserId(orgId, userId);
+    const targetOrgId = orgId || this.defaultOrgId;
+    if (this.repository && targetOrgId) {
+      return await this.repository.findOpenSessionByUserId(targetOrgId, userId);
     }
     return this.sessions.get(userId) ?? null;
   }
 
   public async getAllOpenSessions(orgId?: string): Promise<AttendanceSession[]> {
+    const targetOrgId = orgId || this.defaultOrgId;
     if (this.repository) {
-      return await this.repository.findAllOpenSessions(orgId);
+      if (!targetOrgId) {
+        throw new Error('Tenant context missing: orgId must be provided to query open sessions');
+      }
+      return await this.repository.findAllOpenSessions(targetOrgId);
     }
     return Array.from(this.sessions.values()).filter(
-      (s) => s.status === SessionStatus.OPEN,
+      (s) => s.status === SessionStatus.OPEN && (!targetOrgId || s.orgId === targetOrgId),
     );
   }
 
-  public async getClosedSession(sessionId: string, orgId?: string): Promise<AttendanceSession | null> {
-    if (this.repository && orgId) {
-      return await this.repository.findSessionById(orgId, sessionId);
+  public async getClosedSession(
+    sessionId: string,
+    orgId?: string,
+  ): Promise<AttendanceSession | null> {
+    const targetOrgId = orgId || this.defaultOrgId;
+    if (this.repository && targetOrgId) {
+      return await this.repository.findSessionById(targetOrgId, sessionId);
     }
     return this.closedSessions.get(sessionId) ?? null;
   }
@@ -128,8 +153,8 @@ export class AttendanceService {
     serverTime: Date = this.clock.now(),
     ip: string = '127.0.0.1',
   ): Promise<StateMachineTransitionResult> {
-    // Secret must be strictly bound to payload.sessionId (per-session secret)
-    const secret = await this.getSessionSecret(payload.sessionId);
+    // Secret must be strictly bound to payload.sessionId & payload.orgId (per-session secret)
+    const secret = await this.getSessionSecret(payload.sessionId, payload.orgId);
     if (!secret) {
       throw new Error(
         `Unauthorized: No active session secret registered for session ${payload.sessionId}`,
@@ -150,7 +175,10 @@ export class AttendanceService {
     // Ingest into state machine
     let existingSession: AttendanceSession | null = null;
     if (this.repository) {
-      existingSession = await this.repository.findOpenSessionByUserId(payload.orgId, payload.userId);
+      existingSession = await this.repository.findOpenSessionByUserId(
+        payload.orgId,
+        payload.userId,
+      );
     } else {
       existingSession = this.sessions.get(payload.userId) ?? null;
     }
@@ -178,7 +206,8 @@ export class AttendanceService {
     serverTime: Date = this.clock.now(),
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
-    let session = await this.getSession(userId, orgId);
+    const targetOrgId = orgId || this.defaultOrgId;
+    let session = await this.getSession(userId, targetOrgId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
 
     const result = this.stateMachine.handleSocketDisconnect(session, serverTime);
@@ -197,7 +226,8 @@ export class AttendanceService {
     serverTime: Date = this.clock.now(),
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
-    let session = await this.getSession(userId, orgId);
+    const targetOrgId = orgId || this.defaultOrgId;
+    let session = await this.getSession(userId, targetOrgId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
 
     const result = this.stateMachine.handleSocketReconnect(session, serverTime);
@@ -216,7 +246,8 @@ export class AttendanceService {
     serverTime: Date = this.clock.now(),
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
-    let session = await this.getSession(userId, orgId);
+    const targetOrgId = orgId || this.defaultOrgId;
+    let session = await this.getSession(userId, targetOrgId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
 
     const result = this.stateMachine.handleExplicitLogout(session, serverTime);
@@ -236,7 +267,8 @@ export class AttendanceService {
     serverTime: Date = this.clock.now(),
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
-    let session = await this.getSession(userId, orgId);
+    const targetOrgId = orgId || this.defaultOrgId;
+    let session = await this.getSession(userId, targetOrgId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
 
     const result = this.stateMachine.handleUserStartsBreak(session, serverTime);
@@ -255,7 +287,8 @@ export class AttendanceService {
     serverTime: Date = this.clock.now(),
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
-    let session = await this.getSession(userId, orgId);
+    const targetOrgId = orgId || this.defaultOrgId;
+    let session = await this.getSession(userId, targetOrgId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
 
     const result = this.stateMachine.handleUserEndsBreak(session, serverTime);
@@ -275,7 +308,8 @@ export class AttendanceService {
     serverTime: Date = this.clock.now(),
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
-    let session = await this.getSession(userId, orgId);
+    const targetOrgId = orgId || this.defaultOrgId;
+    let session = await this.getSession(userId, targetOrgId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
 
     const result = this.stateMachine.handleJoinMeeting(session, meetingId, serverTime);
@@ -294,7 +328,8 @@ export class AttendanceService {
     serverTime: Date = this.clock.now(),
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
-    let session = await this.getSession(userId, orgId);
+    const targetOrgId = orgId || this.defaultOrgId;
+    let session = await this.getSession(userId, targetOrgId);
     if (!session || session.status !== SessionStatus.OPEN) return null;
 
     const result = this.stateMachine.handleLeaveMeeting(session, serverTime);
@@ -308,26 +343,38 @@ export class AttendanceService {
   /**
    * Periodic reconciliation worker (runs every 60 seconds)
    * Section 6.3:
-   * 1. Midnight boundary split (FR-ATT-008, Row 15)
-   * 2. Max session length capping (FR-ATT-009, Row 16)
-   * 3. Grace expiration check (Row 12)
-   * 4. Missing heartbeat timeout (Row 13)
+   * 1. Heartbeat nonce cleanup (> 5 minutes old)
+   * 2. Midnight boundary split (FR-ATT-008, Row 15)
+   * 3. Max session length capping (FR-ATT-009, Row 16)
+   * 4. Grace expiration check (Row 12)
+   * 5. Missing heartbeat timeout (Row 13)
    *
    * Idempotency guarantee: Running twice produces 0 additional changes
    */
   public async runReconciliation(
     serverTime: Date = this.clock.now(),
     orgId?: string,
-  ): Promise<{ closedCount: number; splitCount: number }> {
+  ): Promise<{ closedCount: number; splitCount: number; cleanedNoncesCount: number }> {
+    const targetOrgId = orgId || this.defaultOrgId;
     let closedCount = 0;
     let splitCount = 0;
+    let cleanedNoncesCount = 0;
 
-    const openSessions = await this.getAllOpenSessions(orgId);
+    // 1. Cleanup expired nonces (> 5 minutes = 300s)
+    if (this.repository && targetOrgId) {
+      const fiveMinutesAgo = new Date(serverTime.getTime() - 300_000);
+      cleanedNoncesCount = await this.repository.cleanupExpiredNonces(
+        targetOrgId,
+        fiveMinutesAgo,
+      );
+    }
+
+    const openSessions = await this.getAllOpenSessions(targetOrgId);
 
     for (const session of openSessions) {
       if (session.status !== SessionStatus.OPEN) continue;
 
-      // 1. Midnight boundary split (must precede timeout so cross-midnight sessions split cleanly)
+      // 2. Midnight boundary split (must precede timeout so cross-midnight sessions split cleanly)
       const midRes = this.stateMachine.handleMidnightCheck(session, serverTime);
       let currentSession = session;
       if (midRes.splitSession) {
@@ -341,7 +388,7 @@ export class AttendanceService {
         currentSession = midRes.splitSession;
       }
 
-      // 2. Max session length (>14 hours)
+      // 3. Max session length (>14 hours)
       const maxRes = this.stateMachine.handleMaxLengthCheck(currentSession, serverTime);
       if (maxRes.session.status === SessionStatus.CLOSED) {
         if (this.repository) {
@@ -353,7 +400,7 @@ export class AttendanceService {
         continue;
       }
 
-      // 3. Grace expiration check (Row 12: disconnect grace expired)
+      // 4. Grace expiration check (Row 12: disconnect grace expired)
       if (
         currentSession.currentState === AttendanceState.DISCONNECTED &&
         currentSession.graceTimerExpiresAt &&
@@ -369,7 +416,7 @@ export class AttendanceService {
         continue;
       }
 
-      // 4. Missing heartbeat timeout (Row 13: >90s silence)
+      // 5. Missing heartbeat timeout (Row 13: >90s silence)
       const silenceSeconds =
         (serverTime.getTime() - currentSession.lastHeartbeatAt.getTime()) / 1000;
       if (
@@ -387,6 +434,38 @@ export class AttendanceService {
       }
     }
 
-    return { closedCount, splitCount };
+    return { closedCount, splitCount, cleanedNoncesCount };
+  }
+
+  /**
+   * Cleanup job for heartbeat nonces older than maxAgeSeconds (default 300s = 5m)
+   */
+  public async cleanupExpiredNonces(
+    serverTime: Date = this.clock.now(),
+    maxAgeSeconds: number = 300,
+    orgId?: string,
+  ): Promise<number> {
+    const targetOrgId = orgId || this.defaultOrgId;
+    if (this.repository && targetOrgId) {
+      const threshold = new Date(serverTime.getTime() - maxAgeSeconds * 1000);
+      return await this.repository.cleanupExpiredNonces(targetOrgId, threshold);
+    }
+    return 0;
+  }
+
+  /**
+   * Cleanup job for device sequences inactive older than staleDays (default 30 days)
+   */
+  public async cleanupStaleDeviceSequences(
+    serverTime: Date = this.clock.now(),
+    staleDays: number = 30,
+    orgId?: string,
+  ): Promise<number> {
+    const targetOrgId = orgId || this.defaultOrgId;
+    if (this.repository && targetOrgId) {
+      const threshold = new Date(serverTime.getTime() - staleDays * 86400 * 1000);
+      return await this.repository.cleanupStaleDeviceSequences(targetOrgId, threshold);
+    }
+    return 0;
   }
 }

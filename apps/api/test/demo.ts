@@ -107,19 +107,19 @@ async function runDemo() {
 
   if (repository) {
     await repository.clearAll();
-    const pool = repository.getPool();
-    await pool.query(
+    const adminPool = repository.getAdminPool();
+    await adminPool.query(
       `INSERT INTO organizations (id, name, slug, timezone) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
       [orgId, 'ACME Global HQ', 'acme-global', 'Asia/Colombo'],
     );
-    await pool.query(
+    await adminPool.query(
       `INSERT INTO users (id, org_id, email, display_name) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
       [userId, orgId, 'dev@acme.com', 'Alex Dev'],
     );
   }
 
   const clock = new VirtualClock(new Date('2026-10-13T08:30:00.000Z'));
-  const service = new AttendanceService({ orgTimezone: 'Asia/Colombo' }, clock, repository);
+  const service = new AttendanceService({ orgTimezone: 'Asia/Colombo' }, clock, repository, orgId);
   const sessionSecret = service.generateSessionSecret();
   await service.registerSessionSecret(sessionId, sessionSecret);
 
@@ -328,7 +328,7 @@ async function runDemo() {
       'Simulating total server crash: memory is wiped!\nNew AttendanceService instance loads state & monotonic sequence directly from PostgreSQL.',
     );
     // Cold new service instance with no in-memory state
-    const restoredService = new AttendanceService({ orgTimezone: 'Asia/Colombo' }, clock, repository);
+    const restoredService = new AttendanceService({ orgTimezone: 'Asia/Colombo' }, clock, repository, orgId);
     const secretFromDb = await restoredService.getSessionSecret(sessionId);
     console.log(`  Cryptographic session secret restored from PostgreSQL: ${secretFromDb ? 'YES (Verified)' : 'NO'}`);
 
