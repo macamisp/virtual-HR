@@ -113,6 +113,7 @@ export interface AttendanceConfig {
   idleThresholdSeconds: number;          // default 300 (5 min)
   pauseThresholdSeconds: number;         // default 900 (15 min)
   maxSessionLengthSeconds: number;       // default 50400 (14 hours)
+  paidBreakMinutesPerDay: number;        // default 60 (FR-ATT-007 paid break allowance)
   orgTimezone: string;                   // default Asia/Colombo
 }
 
@@ -123,6 +124,7 @@ export const DEFAULT_ATTENDANCE_CONFIG: AttendanceConfig = {
   idleThresholdSeconds: 300,
   pauseThresholdSeconds: 900,
   maxSessionLengthSeconds: 14 * 3600,
+  paidBreakMinutesPerDay: 60,
   orgTimezone: 'Asia/Colombo',
 };
 

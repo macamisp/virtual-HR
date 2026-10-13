@@ -6,6 +6,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { SystemClock } from '../../../../packages/shared/src/attendance/types.ts';
 import type { Clock, HeartbeatPayload } from '../../../../packages/shared/src/attendance/types.ts';
+import type { IAttendanceRepository } from './attendance-repository.ts';
 
 export interface HeartbeatValidationResult {
   valid: boolean;
@@ -13,7 +14,7 @@ export interface HeartbeatValidationResult {
 }
 
 export class HeartbeatValidator {
-  // In-memory nonce cache with timestamps for replay protection (in production backed by Redis org:{org}:nonces)
+  // In-memory nonce cache with timestamps for replay protection (when repository not injected)
   private seenNonces = new Map<string, number>();
   // Device sequence number tracker: orgId:userId:deviceId -> lastSequenceNumber
   private deviceSequences = new Map<string, number>();
@@ -55,7 +56,7 @@ export class HeartbeatValidator {
   }
 
   /**
-   * Validate incoming heartbeat against signature, replay, sequence, and privacy rules
+   * Validate incoming heartbeat synchronously (in-memory)
    */
   public validate(
     hb: HeartbeatPayload,
@@ -114,6 +115,73 @@ export class HeartbeatValidator {
     // Passed all checks! Record state
     this.seenNonces.set(nonceKey, now.getTime());
     this.deviceSequences.set(deviceKey, hb.sequenceNumber);
+
+    return { valid: true };
+  }
+
+  /**
+   * Validate incoming heartbeat asynchronously against PostgreSQL repository
+   */
+  public async validateAsync(
+    hb: HeartbeatPayload,
+    secret: string,
+    now: Date = this.clock.now(),
+    repository?: IAttendanceRepository,
+  ): Promise<HeartbeatValidationResult> {
+    if (!repository) {
+      return this.validate(hb, secret, now);
+    }
+
+    // 1. Privacy check
+    const raw = hb as Record<string, unknown>;
+    if ('keystrokes' in raw || 'screenshots' in raw || 'urls' in raw || 'appName' in raw) {
+      return {
+        valid: false,
+        reason: 'Privacy violation: Heartbeat must contain counters only (FR-ATT-004)',
+      };
+    }
+
+    // 2. Interval bounds validation
+    if (hb.activeSeconds < 0 || hb.idleSeconds < 0) {
+      return { valid: false, reason: 'Invalid counter values: cannot be negative' };
+    }
+    if (hb.activeSeconds + hb.idleSeconds > 35) {
+      return {
+        valid: false,
+        reason: `Invalid counter total: ${hb.activeSeconds + hb.idleSeconds}s exceeds interval threshold`,
+      };
+    }
+
+    // 3. Monotonic sequence check from PostgreSQL
+    const lastSeq = await repository.getLastDeviceSequence(hb.orgId, hb.userId, hb.deviceId);
+    if (hb.sequenceNumber <= lastSeq) {
+      return {
+        valid: false,
+        reason: `Sequence violation: sequence ${hb.sequenceNumber} <= last seen ${lastSeq}`,
+      };
+    }
+
+    // 4. Nonce replay check from PostgreSQL
+    const hasNonce = await repository.hasNonce(hb.orgId, hb.userId, hb.nonce);
+    if (hasNonce) {
+      return { valid: false, reason: `Replay attack detected: nonce ${hb.nonce} already used` };
+    }
+
+    // 5. Cryptographic signature check
+    const expectedSig = this.signHeartbeat(hb, secret);
+    const expectedBuffer = Buffer.from(expectedSig, 'hex');
+    const providedBuffer = Buffer.from(hb.signature || '', 'hex');
+
+    if (
+      expectedBuffer.length !== providedBuffer.length ||
+      !timingSafeEqual(expectedBuffer, providedBuffer)
+    ) {
+      return { valid: false, reason: 'Invalid HMAC signature: payload tampered or unauthorized' };
+    }
+
+    // Passed all checks! Record in PostgreSQL
+    await repository.recordNonce(hb.orgId, hb.userId, hb.nonce, now);
+    await repository.setDeviceSequence(hb.orgId, hb.userId, hb.deviceId, hb.sequenceNumber);
 
     return { valid: true };
   }

@@ -68,119 +68,119 @@ describe('AttendanceService & Heartbeat Cryptographic Ingestion', () => {
     return { ...unsigned, signature };
   }
 
-  it('FR-ATT-001 & FR-ATT-004: Ingests valid signed heartbeat and establishes session using per-session secret', () => {
+  it('FR-ATT-001 & FR-ATT-004: Ingests valid signed heartbeat and establishes session using per-session secret', async () => {
     const mockClock = new MockClock(new Date('2026-10-13T10:00:00.000Z'));
     const service = new AttendanceService({}, mockClock);
     const sessionSecret = service.generateSessionSecret();
-    service.registerSessionSecret(sessionId, sessionSecret);
+    await service.registerSessionSecret(sessionId, sessionSecret);
 
-    assert.equal(service.getSessionSecret(sessionId), sessionSecret);
+    assert.equal(await service.getSessionSecret(sessionId), sessionSecret);
 
     const hb = createSignedPayload(service, sessionSecret, { sequenceNumber: 1, nonce: 'nonce-1' });
-    const res = service.ingestHeartbeat(hb);
+    const res = await service.ingestHeartbeat(hb);
 
     assert.equal(res.currentState, AttendanceState.ACTIVE);
     assert.equal(res.session.status, SessionStatus.OPEN);
     assert.equal(res.session.userId, userId);
     assert.equal(res.session.clockInAt.toISOString(), '2026-10-13T10:00:00.000Z');
-    assert.equal(service.getSession(userId)?.id, res.session.id);
+    assert.equal((await service.getSession(userId))?.id, res.session.id);
   });
 
-  it('Audit Item 3: Rejects heartbeat when session secret is missing or revoked', () => {
+  it('Audit Item 3: Rejects heartbeat when session secret is missing or revoked', async () => {
     const service = new AttendanceService();
     const hb = createSignedPayload(service, 'unregistered-key', { sessionId: 'revoked-session' });
 
-    assert.throws(
-      () => service.ingestHeartbeat(hb),
+    await assert.rejects(
+      async () => await service.ingestHeartbeat(hb),
       /No active session secret registered for session revoked-session/,
     );
 
     // Register then revoke
-    service.registerSessionSecret('temp-session', 'temp-secret');
-    service.revokeSessionSecret('temp-session');
+    await service.registerSessionSecret('temp-session', 'temp-secret');
+    await service.revokeSessionSecret('temp-session');
     const hbTemp = createSignedPayload(service, 'temp-secret', { sessionId: 'temp-session' });
-    assert.throws(
-      () => service.ingestHeartbeat(hbTemp),
+    await assert.rejects(
+      async () => await service.ingestHeartbeat(hbTemp),
       /No active session secret registered for session temp-session/,
     );
   });
 
-  it('FR-ATT-004: Rejects tampered signature', () => {
+  it('FR-ATT-004: Rejects tampered signature', async () => {
     const service = new AttendanceService();
     const sessionSecret = 'test-secret';
-    service.registerSessionSecret(sessionId, sessionSecret);
+    await service.registerSessionSecret(sessionId, sessionSecret);
 
     const hb = createSignedPayload(service, sessionSecret, { sequenceNumber: 1, nonce: 'nonce-tamper' });
     hb.signature = 'deadbeef0000111122223333444455556666777788889999aaaabbbbccccdddd';
 
-    assert.throws(
-      () => service.ingestHeartbeat(hb),
+    await assert.rejects(
+      async () => await service.ingestHeartbeat(hb),
       /Invalid HMAC signature/,
     );
   });
 
-  it('FR-ATT-017 / Anti-spoofing: Rejects replayed nonce within TTL', () => {
+  it('FR-ATT-017 / Anti-spoofing: Rejects replayed nonce within TTL', async () => {
     const service = new AttendanceService();
     const sessionSecret = 'test-secret';
-    service.registerSessionSecret(sessionId, sessionSecret);
+    await service.registerSessionSecret(sessionId, sessionSecret);
 
     const hb1 = createSignedPayload(service, sessionSecret, { sequenceNumber: 1, nonce: 'replayed-nonce' });
-    service.ingestHeartbeat(hb1);
+    await service.ingestHeartbeat(hb1);
 
     const hb2 = createSignedPayload(service, sessionSecret, { sequenceNumber: 2, nonce: 'replayed-nonce' });
-    assert.throws(
-      () => service.ingestHeartbeat(hb2),
+    await assert.rejects(
+      async () => await service.ingestHeartbeat(hb2),
       /Replay attack detected: nonce replayed-nonce already used/,
     );
   });
 
-  it('Audit Item 2: seq monotonicity is enforced per device independently', () => {
+  it('Audit Item 2: seq monotonicity is enforced per device independently', async () => {
     const service = new AttendanceService();
     const sessionSecret = 'test-secret';
-    service.registerSessionSecret(sessionId, sessionSecret);
+    await service.registerSessionSecret(sessionId, sessionSecret);
 
     // Device 1: seq 1, then seq 5
     const hbDev1Seq1 = createSignedPayload(service, sessionSecret, { deviceId: 'dev-1', sequenceNumber: 1, nonce: 'd1-1' });
-    service.ingestHeartbeat(hbDev1Seq1);
+    await service.ingestHeartbeat(hbDev1Seq1);
     const hbDev1Seq5 = createSignedPayload(service, sessionSecret, { deviceId: 'dev-1', sequenceNumber: 5, nonce: 'd1-5' });
-    service.ingestHeartbeat(hbDev1Seq5);
+    await service.ingestHeartbeat(hbDev1Seq5);
 
     // Device 2 sends seq 2 (which is < 5, but Device 2's own last seq is 0 -> MUST SUCCEED)
     const hbDev2Seq2 = createSignedPayload(service, sessionSecret, { deviceId: 'dev-2', sequenceNumber: 2, nonce: 'd2-2' });
-    const resDev2 = service.ingestHeartbeat(hbDev2Seq2);
+    const resDev2 = await service.ingestHeartbeat(hbDev2Seq2);
     assert.equal(resDev2.currentState, AttendanceState.ACTIVE);
 
     // Device 1 attempts seq 4 (<= 5) -> MUST FAIL on Device 1
     const hbDev1Seq4 = createSignedPayload(service, sessionSecret, { deviceId: 'dev-1', sequenceNumber: 4, nonce: 'd1-4' });
-    assert.throws(
-      () => service.ingestHeartbeat(hbDev1Seq4),
+    await assert.rejects(
+      async () => await service.ingestHeartbeat(hbDev1Seq4),
       /Sequence violation: sequence 4 <= last seen 5/,
     );
   });
 
-  it('FR-ATT-004: Privacy guardrail rejects forbidden surveillance content fields', () => {
+  it('FR-ATT-004: Privacy guardrail rejects forbidden surveillance content fields', async () => {
     const service = new AttendanceService();
     const sessionSecret = 'test-secret';
-    service.registerSessionSecret(sessionId, sessionSecret);
+    await service.registerSessionSecret(sessionId, sessionSecret);
 
     const hb = createSignedPayload(service, sessionSecret, { sequenceNumber: 1, nonce: 'nonce-priv' });
     (hb as any).keystrokes = 'user password';
 
-    assert.throws(
-      () => service.ingestHeartbeat(hb),
+    await assert.rejects(
+      async () => await service.ingestHeartbeat(hb),
       /Privacy violation/,
     );
   });
 });
 
 describe('Audit Item 4 & 5: Injectable Clock & Proof that Client Timestamps are Ignored', () => {
-  it('Audit Item 4: Client timestamps in past or future are completely ignored; only injected Clock is authoritative', () => {
+  it('Audit Item 4: Client timestamps in past or future are completely ignored; only injected Clock is authoritative', async () => {
     const fixedServerTime = new Date('2026-10-13T14:00:00.000Z');
     const mockClock = new MockClock(fixedServerTime);
     const service = new AttendanceService({}, mockClock);
     const sessionSecret = 'clock-secret';
     const sessionId = 'session-clock-01';
-    service.registerSessionSecret(sessionId, sessionSecret);
+    await service.registerSessionSecret(sessionId, sessionSecret);
 
     // Client timestamp is 10 years in the past
     const bogusPastTime = new Date('2016-01-01T00:00:00.000Z').getTime();
@@ -199,7 +199,7 @@ describe('Audit Item 4 & 5: Injectable Clock & Proof that Client Timestamps are 
       clientTimestamp: bogusPastTime,
     };
     const sig1 = service.getValidator().signHeartbeat(unsigned1, sessionSecret);
-    const res1 = service.ingestHeartbeat({ ...unsigned1, signature: sig1 });
+    const res1 = await service.ingestHeartbeat({ ...unsigned1, signature: sig1 });
 
     // Stamped time MUST match injected server clock, NOT client timestamp
     assert.equal(res1.session.clockInAt.toISOString(), '2026-10-13T14:00:00.000Z');
@@ -217,7 +217,7 @@ describe('Audit Item 4 & 5: Injectable Clock & Proof that Client Timestamps are 
       clientTimestamp: bogusFutureTime,
     };
     const sig2 = service.getValidator().signHeartbeat(unsigned2, sessionSecret);
-    const res2 = service.ingestHeartbeat({ ...unsigned2, signature: sig2 });
+    const res2 = await service.ingestHeartbeat({ ...unsigned2, signature: sig2 });
 
     assert.equal(res2.session.lastHeartbeatAt.toISOString(), '2026-10-13T14:00:30.000Z');
     assert.notEqual(res2.session.lastHeartbeatAt.getTime(), bogusFutureTime);
@@ -242,20 +242,20 @@ describe('AttendanceService Full State Lifecycle (Breaks, Meetings, Disconnects)
   const sessionId = 'session-lifecycle';
   const sessionSecret = 'lifecycle-secret';
 
-  it('Verifies breaks, meetings, disconnect reconnect, and graceful no-op calls', () => {
+  it('Verifies breaks, meetings, disconnect reconnect, and graceful no-op calls', async () => {
     const mockClock = new MockClock(new Date('2026-10-13T09:00:00.000Z'));
     const service = new AttendanceService({}, mockClock);
-    service.registerSessionSecret(sessionId, sessionSecret);
+    await service.registerSessionSecret(sessionId, sessionSecret);
 
     // Calling lifecycle methods on non-existent user returns null
-    assert.equal(service.onSocketDisconnect('non-existent'), null);
-    assert.equal(service.onSocketReconnect('non-existent'), null);
-    assert.equal(service.onExplicitLogout('non-existent'), null);
-    assert.equal(service.startBreak('non-existent'), null);
-    assert.equal(service.endBreak('non-existent'), null);
-    assert.equal(service.joinMeeting('non-existent', 'm-1'), null);
-    assert.equal(service.leaveMeeting('non-existent'), null);
-    assert.equal(service.getClosedSession('non-existent'), null);
+    assert.equal(await service.onSocketDisconnect('non-existent'), null);
+    assert.equal(await service.onSocketReconnect('non-existent'), null);
+    assert.equal(await service.onExplicitLogout('non-existent'), null);
+    assert.equal(await service.startBreak('non-existent'), null);
+    assert.equal(await service.endBreak('non-existent'), null);
+    assert.equal(await service.joinMeeting('non-existent', 'm-1'), null);
+    assert.equal(await service.leaveMeeting('non-existent'), null);
+    assert.equal(await service.getClosedSession('non-existent'), null);
 
     // Start session
     const unsigned: Omit<HeartbeatPayload, 'signature'> = {
@@ -272,48 +272,48 @@ describe('AttendanceService Full State Lifecycle (Breaks, Meetings, Disconnects)
       inCall: false,
     };
     const sig = service.getValidator().signHeartbeat(unsigned, sessionSecret);
-    service.ingestHeartbeat({ ...unsigned, signature: sig });
+    await service.ingestHeartbeat({ ...unsigned, signature: sig });
 
     // Join meeting
     mockClock.advanceSeconds(10);
-    const mRes = service.joinMeeting(userId, 'room-101');
+    const mRes = await service.joinMeeting(userId, 'room-101');
     assert.equal(mRes?.currentState, AttendanceState.IN_MEETING);
 
     // Leave meeting
     mockClock.advanceSeconds(600); // 10 minutes
-    const leaveRes = service.leaveMeeting(userId);
+    const leaveRes = await service.leaveMeeting(userId);
     assert.equal(leaveRes?.currentState, AttendanceState.ACTIVE);
     assert.equal(leaveRes?.session.meetingSeconds, 600);
 
     // Start break
     mockClock.advanceSeconds(10);
-    const bRes = service.startBreak(userId);
+    const bRes = await service.startBreak(userId);
     assert.equal(bRes?.currentState, AttendanceState.ON_BREAK);
 
     // End break
     mockClock.advanceSeconds(300); // 5 minutes
-    const endBRes = service.endBreak(userId);
+    const endBRes = await service.endBreak(userId);
     assert.equal(endBRes?.currentState, AttendanceState.ACTIVE);
     assert.equal(endBRes?.session.breakSeconds, 300);
 
     // Socket disconnect and reconnect through service
     mockClock.advanceSeconds(10);
-    const dcRes = service.onSocketDisconnect(userId);
+    const dcRes = await service.onSocketDisconnect(userId);
     assert.equal(dcRes?.currentState, AttendanceState.DISCONNECTED);
 
     mockClock.advanceSeconds(20);
-    const rcRes = service.onSocketReconnect(userId);
+    const rcRes = await service.onSocketReconnect(userId);
     assert.equal(rcRes?.currentState, AttendanceState.ACTIVE);
 
     // Explicit logout
     mockClock.advanceSeconds(60);
-    const logoutRes = service.onExplicitLogout(userId);
+    const logoutRes = await service.onExplicitLogout(userId);
     assert.equal(logoutRes?.currentState, AttendanceState.OFFLINE);
     assert.equal(logoutRes?.session.status, SessionStatus.CLOSED);
-    assert.equal(service.getSession(userId), null);
+    assert.equal(await service.getSession(userId), null);
 
     // Session is archived in closedSessions
-    assert.ok(service.getClosedSession(logoutRes!.session.id));
+    assert.ok(await service.getClosedSession(logoutRes!.session.id));
   });
 });
 
@@ -396,10 +396,10 @@ describe('AttendanceService Section 6.3 60-Second Reconciliation Worker', () => 
   const deviceId = 'dev-rec-01';
   const sessionId = 'session-rec-01';
 
-  it('Reconciliation runs cleanly with active normal sessions (no timeouts)', () => {
+  it('Reconciliation runs cleanly with active normal sessions (no timeouts)', async () => {
     const mockClock = new MockClock(new Date('2026-10-13T09:00:00.000Z'));
     const service = new AttendanceService({}, mockClock);
-    service.registerSessionSecret(sessionId, secretKey);
+    await service.registerSessionSecret(sessionId, secretKey);
 
     const unsigned = {
       orgId,
@@ -415,20 +415,20 @@ describe('AttendanceService Section 6.3 60-Second Reconciliation Worker', () => 
       inCall: false,
     };
     const signature = service.getValidator().signHeartbeat(unsigned, secretKey);
-    service.ingestHeartbeat({ ...unsigned, signature });
+    await service.ingestHeartbeat({ ...unsigned, signature });
 
     // Reconciler runs after only 15 seconds (normal silence, no action)
     mockClock.advanceSeconds(15);
-    const summary = service.runReconciliation();
+    const summary = await service.runReconciliation();
     assert.equal(summary.closedCount, 0);
     assert.equal(summary.splitCount, 0);
-    assert.equal(service.getAllOpenSessions().length, 1);
+    assert.equal((await service.getAllOpenSessions()).length, 1);
   });
 
-  it('FR-ATT-002: Reconciler closes sessions when heartbeats are missing for > 90s', () => {
+  it('FR-ATT-002: Reconciler closes sessions when heartbeats are missing for > 90s', async () => {
     const mockClock = new MockClock(new Date('2026-10-13T09:00:00.000Z'));
     const service = new AttendanceService({ missedHeartbeatTimeoutSeconds: 90 }, mockClock);
-    service.registerSessionSecret(sessionId, secretKey);
+    await service.registerSessionSecret(sessionId, secretKey);
 
     const unsigned = {
       orgId,
@@ -444,23 +444,23 @@ describe('AttendanceService Section 6.3 60-Second Reconciliation Worker', () => 
       inCall: false,
     };
     const signature = service.getValidator().signHeartbeat(unsigned, secretKey);
-    service.ingestHeartbeat({ ...unsigned, signature });
+    await service.ingestHeartbeat({ ...unsigned, signature });
 
-    assert.equal(service.getSession(userId)?.status, SessionStatus.OPEN);
+    assert.equal((await service.getSession(userId))?.status, SessionStatus.OPEN);
 
     // Advance clock by 95 seconds without new heartbeats
     mockClock.advanceSeconds(95);
-    const summary = service.runReconciliation();
+    const summary = await service.runReconciliation();
 
     assert.equal(summary.closedCount, 1);
-    assert.equal(service.getSession(userId), null);
-    assert.equal(service.getAllOpenSessions().length, 0);
+    assert.equal(await service.getSession(userId), null);
+    assert.equal((await service.getAllOpenSessions()).length, 0);
   });
 
-  it('FR-ATT-002: Reconciler closes disconnected sessions when 120s grace expires', () => {
+  it('FR-ATT-002: Reconciler closes disconnected sessions when 120s grace expires', async () => {
     const mockClock = new MockClock(new Date('2026-10-13T09:00:00.000Z'));
     const service = new AttendanceService({ disconnectGraceWindowSeconds: 120 }, mockClock);
-    service.registerSessionSecret(sessionId, secretKey);
+    await service.registerSessionSecret(sessionId, secretKey);
 
     const unsigned = {
       orgId,
@@ -476,30 +476,31 @@ describe('AttendanceService Section 6.3 60-Second Reconciliation Worker', () => 
       inCall: false,
     };
     const signature = service.getValidator().signHeartbeat(unsigned, secretKey);
-    service.ingestHeartbeat({ ...unsigned, signature });
+    await service.ingestHeartbeat({ ...unsigned, signature });
 
     // Socket disconnect occurs
     mockClock.advanceSeconds(10);
-    service.onSocketDisconnect(userId);
-    assert.equal(service.getSession(userId)?.currentState, AttendanceState.DISCONNECTED);
+    await service.onSocketDisconnect(userId);
+    assert.equal((await service.getSession(userId))?.currentState, AttendanceState.DISCONNECTED);
 
     // Reconciler runs after 40s (grace still active)
     mockClock.advanceSeconds(40);
-    service.runReconciliation();
-    assert.equal(service.getSession(userId)?.status, SessionStatus.OPEN);
+    await service.runReconciliation();
+    assert.equal((await service.getSession(userId))?.status, SessionStatus.OPEN);
 
     // Reconciler runs after grace expires (> 120s from disconnect)
     mockClock.advanceSeconds(85);
-    const summary = service.runReconciliation();
+    const summary = await service.runReconciliation();
+
     assert.equal(summary.closedCount, 1);
-    assert.equal(service.getSession(userId), null);
+    assert.equal(await service.getSession(userId), null);
   });
 
-  it('FR-ATT-008 & Section 6.2 Row 15: Reconciler automatically splits session crossing midnight', () => {
+  it('FR-ATT-008 & Section 6.2 Row 15: Reconciler automatically splits session crossing midnight', async () => {
     // 23:50:00 Asia/Colombo = 18:20:00 UTC
     const mockClock = new MockClock(new Date('2026-10-13T18:20:00.000Z'));
     const service = new AttendanceService({ orgTimezone: 'Asia/Colombo' }, mockClock);
-    service.registerSessionSecret(sessionId, secretKey);
+    await service.registerSessionSecret(sessionId, secretKey);
 
     const unsigned = {
       orgId,
@@ -515,33 +516,33 @@ describe('AttendanceService Section 6.3 60-Second Reconciliation Worker', () => 
       inCall: false,
     };
     const signature = service.getValidator().signHeartbeat(unsigned, secretKey);
-    const initialRes = service.ingestHeartbeat({ ...unsigned, signature });
+    const initialRes = await service.ingestHeartbeat({ ...unsigned, signature });
 
     // Advance clock to 00:05:00 next day (Colombo) = 18:35:00 UTC (15 mins = 900s)
     mockClock.advanceSeconds(900);
-    const summary = service.runReconciliation();
+    const summary = await service.runReconciliation();
 
     assert.equal(summary.splitCount, 1);
-    const newSession = service.getSession(userId);
+    const newSession = await service.getSession(userId);
     assert.ok(newSession);
     assert.equal(newSession.status, SessionStatus.OPEN);
     assert.notEqual(newSession.id, initialRes.session.id);
     assert.ok(newSession.flags.includes('MIDNIGHT_SPLIT'));
 
     // Check that previous session was archived as closed with MIDNIGHT source
-    const oldSession = service.getClosedSession(initialRes.session.id);
+    const oldSession = await service.getClosedSession(initialRes.session.id);
     assert.ok(oldSession);
     assert.equal(oldSession.status, SessionStatus.CLOSED);
     assert.equal(oldSession.clockOutSource, ClockOutSource.MIDNIGHT);
   });
 
-  it('Section 6.2 Row 16: Reconciler closes session exceeding 14 hours with MAX_LENGTH flag', () => {
+  it('Section 6.2 Row 16: Reconciler closes session exceeding 14 hours with MAX_LENGTH flag', async () => {
     const mockClock = new MockClock(new Date('2026-10-13T01:00:00.000Z'));
     const service = new AttendanceService(
       { maxSessionLengthSeconds: 14 * 3600, orgTimezone: 'UTC' },
       mockClock,
     );
-    service.registerSessionSecret(sessionId, secretKey);
+    await service.registerSessionSecret(sessionId, secretKey);
 
     const unsigned = {
       orgId,
@@ -557,15 +558,15 @@ describe('AttendanceService Section 6.3 60-Second Reconciliation Worker', () => 
       inCall: false,
     };
     const signature = service.getValidator().signHeartbeat(unsigned, secretKey);
-    service.ingestHeartbeat({ ...unsigned, signature });
+    await service.ingestHeartbeat({ ...unsigned, signature });
 
     // Advance clock past 14 hours (14h + 1m = 50460s)
     mockClock.advanceSeconds(50460);
-    const summary = service.runReconciliation();
+    const summary = await service.runReconciliation();
 
     assert.equal(summary.closedCount, 1);
-    assert.equal(service.getSession(userId), null);
-    const closed = service.getAllOpenSessions();
+    assert.equal(await service.getSession(userId), null);
+    const closed = await service.getAllOpenSessions();
     assert.equal(closed.length, 0);
   });
 });

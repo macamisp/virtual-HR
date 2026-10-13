@@ -1,9 +1,11 @@
 /**
  * Attendance State Machine Implementation
- * Reference: docs/SRS.md Section 6.2 (State Machine Table) & Section 5.5 (FR-ATT-001..005)
+ * Reference: docs/SRS.md Section 6.2 (State Machine Table), Section 5.5 (FR-ATT-001..010) & Section 6.6
  */
 
 import { randomUUID } from 'node:crypto';
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
+import { computeIntervalUnionDurationSeconds } from './interval-merger.ts';
 import {
   AttendanceState,
   ClockInSource,
@@ -27,40 +29,29 @@ export class AttendanceStateMachine {
   }
 
   /**
-   * Helper to format YYYY-MM-DD in the organisation's configured timezone
+   * Helper to format YYYY-MM-DD in the organisation's configured IANA timezone
+   * Tested library: date-fns-tz
    */
   public getWorkDate(date: Date, timeZone: string = this.config.orgTimezone): string {
-    const formatter = new Intl.DateTimeFormat('en-CA', {
-      timeZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    });
-    return formatter.format(date);
+    return formatInTimeZone(date, timeZone, 'yyyy-MM-dd');
   }
 
   /**
-   * Compute midnight boundary for a given date in organisation timezone
+   * Compute midnight boundaries in organisation's IANA timezone
+   * Handles DST transitions (Spring forward, Fall back) and standard timezones accurately
    */
   public getMidnightBoundaries(date: Date, timeZone: string = this.config.orgTimezone): {
     endOfDay: Date;
     startOfNextDay: Date;
   } {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      hour: 'numeric',
-      minute: 'numeric',
-      second: 'numeric',
-      hour12: false,
-    }).formatToParts(date);
+    const currentYmd = this.getWorkDate(date, timeZone);
+    const [y, m, d] = currentYmd.split('-').map(Number);
+    // Find next day in YYYY-MM-DD
+    const nextDate = new Date(Date.UTC(y!, m! - 1, d! + 1));
+    const nextYmd = formatInTimeZone(nextDate, 'UTC', 'yyyy-MM-dd');
 
-    const h = parseInt(parts.find((p) => p.type === 'hour')?.value ?? '0', 10) % 24;
-    const m = parseInt(parts.find((p) => p.type === 'minute')?.value ?? '0', 10);
-    const s = parseInt(parts.find((p) => p.type === 'second')?.value ?? '0', 10);
-
-    const msToMidnight =
-      ((23 - h) * 3600 + (59 - m) * 60 + (60 - s)) * 1000 - date.getMilliseconds();
-    const startOfNextDay = new Date(date.getTime() + msToMidnight);
+    // In IANA timezone, 00:00:00 of next day converted to UTC
+    const startOfNextDay = fromZonedTime(`${nextYmd} 00:00:00`, timeZone);
     const endOfDay = new Date(startOfNextDay.getTime() - 1);
 
     return { endOfDay, startOfNextDay };
@@ -128,6 +119,13 @@ export class AttendanceStateMachine {
     const prev = updatedSession.currentState;
     updatedSession.lastHeartbeatAt = serverTime;
 
+    // Multi-device detection (FR-ATT-010)
+    if (heartbeat.deviceId !== updatedSession.deviceId) {
+      if (!updatedSession.flags.includes('MULTI_DEVICE')) {
+        updatedSession.flags.push('MULTI_DEVICE');
+      }
+    }
+
     // Accumulate total counters
     updatedSession.activeSeconds += heartbeat.activeSeconds;
     updatedSession.idleSeconds += heartbeat.idleSeconds;
@@ -142,7 +140,7 @@ export class AttendanceStateMachine {
         this.openSegment(updatedSession, AttendanceState.ACTIVE, serverTime);
         updatedSession.currentState = AttendanceState.ACTIVE;
         updatedSession.previousState = AttendanceState.IDLE;
-        updatedSession.netSeconds = updatedSession.activeSeconds + updatedSession.meetingSeconds;
+        this.recomputeNetSeconds(updatedSession, serverTime);
 
         return {
           session: updatedSession,
@@ -159,7 +157,7 @@ export class AttendanceStateMachine {
         this.openSegment(updatedSession, AttendanceState.ACTIVE, serverTime);
         updatedSession.currentState = AttendanceState.ACTIVE;
         updatedSession.previousState = AttendanceState.PAUSED;
-        updatedSession.netSeconds = updatedSession.activeSeconds + updatedSession.meetingSeconds;
+        this.recomputeNetSeconds(updatedSession, serverTime);
 
         return {
           session: updatedSession,
@@ -207,7 +205,7 @@ export class AttendanceStateMachine {
       }
     }
 
-    updatedSession.netSeconds = updatedSession.activeSeconds + updatedSession.meetingSeconds;
+    this.recomputeNetSeconds(updatedSession, serverTime);
 
     return {
       session: updatedSession,
@@ -255,7 +253,7 @@ export class AttendanceStateMachine {
     this.openSegment(updated, AttendanceState.ACTIVE, serverTime);
     updated.previousState = AttendanceState.IN_MEETING;
     updated.currentState = AttendanceState.ACTIVE;
-    updated.netSeconds = updated.activeSeconds + updated.meetingSeconds;
+    this.recomputeNetSeconds(updated, serverTime);
 
     return {
       session: updated,
@@ -266,7 +264,7 @@ export class AttendanceStateMachine {
   }
 
   /**
-   * Row 8: ACTIVE -> User starts break -> ON_BREAK
+   * Row 8 & FR-ATT-007: User starts break -> ON_BREAK
    */
   public handleUserStartsBreak(
     session: AttendanceSession,
@@ -288,7 +286,7 @@ export class AttendanceStateMachine {
   }
 
   /**
-   * Row 9: ON_BREAK -> User ends break -> ACTIVE
+   * Row 9 & FR-ATT-007: User ends break -> ACTIVE (apply paid/unpaid break policy)
    */
   public handleUserEndsBreak(
     session: AttendanceSession,
@@ -302,6 +300,7 @@ export class AttendanceStateMachine {
     this.openSegment(updated, AttendanceState.ACTIVE, serverTime);
     updated.previousState = AttendanceState.ON_BREAK;
     updated.currentState = AttendanceState.ACTIVE;
+    this.recomputeNetSeconds(updated, serverTime);
 
     return {
       session: updated,
@@ -430,7 +429,7 @@ export class AttendanceStateMachine {
   }
 
   /**
-   * Row 15: Any open state -> Org-timezone midnight -> splits session
+   * Row 15 & FR-ATT-008: Org-timezone midnight -> splits session
    */
   public handleMidnightCheck(
     session: AttendanceSession,
@@ -504,7 +503,7 @@ export class AttendanceStateMachine {
   }
 
   /**
-   * Row 16: Any open state -> Session length > 14 h -> OFFLINE with MAX_LENGTH flag
+   * Row 16 & FR-ATT-009: Session length > 14 h -> OFFLINE with MAX_LENGTH flag
    */
   public handleMaxLengthCheck(
     session: AttendanceSession,
@@ -539,7 +538,29 @@ export class AttendanceStateMachine {
     };
   }
 
-  // --- Private Helper Methods ---
+  // --- Helper Methods ---
+
+  /**
+   * Recompute net seconds factoring in paid break allowances and multi-device union
+   */
+  private recomputeNetSeconds(session: AttendanceSession, serverTime: Date): void {
+    const paidBreakLimitSeconds = this.config.paidBreakMinutesPerDay * 60;
+    const paidBreakSeconds = Math.min(session.breakSeconds, paidBreakLimitSeconds);
+
+    if (session.flags.includes('MULTI_DEVICE')) {
+      // Use wall-clock interval union across segments to eliminate double counting
+      const intervals = session.segments
+        .filter((s) => s.state === AttendanceState.ACTIVE || s.state === AttendanceState.IN_MEETING)
+        .map((s) => ({
+          start: s.startedAt,
+          end: s.endedAt ? s.endedAt : serverTime,
+        }));
+      const unionDuration = computeIntervalUnionDurationSeconds(intervals);
+      session.netSeconds = unionDuration + paidBreakSeconds;
+    } else {
+      session.netSeconds = session.activeSeconds + session.meetingSeconds + paidBreakSeconds;
+    }
+  }
 
   private closeLastSegment(
     session: AttendanceSession,
