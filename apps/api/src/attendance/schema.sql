@@ -245,7 +245,8 @@ CREATE TABLE IF NOT EXISTS draft_timesheets (
   billable_minutes INT NOT NULL DEFAULT 0,
   variance_minutes INT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (org_id, user_id, work_date)
 );
 
 -- 9. Presence Events Raw Stream (FR-ATT-020, Section 7.4)
@@ -366,7 +367,23 @@ CREATE POLICY monitoring_consents_org_policy ON monitoring_consents
   USING (org_id = NULLIF(current_setting('app.org_id', true), '')::uuid)
   WITH CHECK (org_id = NULLIF(current_setting('app.org_id', true), '')::uuid);
 
--- Grant permissions to hrvo_app
+-- Grant permissions to hrvo_app (standard tables)
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO hrvo_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO hrvo_app;
+
+-- Append-only tables: REVOKE UPDATE, DELETE, TRUNCATE from application role (INSERT + SELECT only)
+REVOKE UPDATE, DELETE, TRUNCATE ON audit_logs FROM hrvo_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON presence_events FROM hrvo_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON monitoring_consents FROM hrvo_app;
+GRANT SELECT, INSERT ON audit_logs, presence_events, monitoring_consents TO hrvo_app;
+
+-- Dedicated retention role for presence_events retention pruning
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'hrvo_retention') THEN
+    CREATE ROLE hrvo_retention WITH LOGIN PASSWORD 'hrvo_retention_dev' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+  END IF;
+END $$;
+GRANT USAGE ON SCHEMA public TO hrvo_retention;
+GRANT SELECT, DELETE ON presence_events TO hrvo_retention;
 

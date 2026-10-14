@@ -64,7 +64,7 @@ describe('Advanced Attendance Capabilities (FR-ATT-013..020, FR-TS-001, RLS & Au
   const userOrgB = 'ffff6666-6666-6666-6666-666666666666';
 
   before(async () => {
-    clock = new ControllableClock(new Date('2026-10-14T03:00:00Z')); // 08:30 Asia/Colombo
+    clock = new ControllableClock(new Date('2026-10-14T15:00:00Z')); // 20:30 Asia/Colombo
     holidayProvider = new InMemoryHolidayProvider();
     leaveProvider = new InMemoryLeaveProvider();
 

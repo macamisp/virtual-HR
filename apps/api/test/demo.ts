@@ -129,6 +129,15 @@ async function runDemo() {
   const sessionSecret = service.generateSessionSecret();
   await service.registerSessionSecret(sessionId, sessionSecret);
 
+  // User accepts monitoring notice version v1.0.0 (FR-AUD-004 & FR-ATT-020 consent gate)
+  await service.recordMonitoringConsent({
+    orgId,
+    userId,
+    noticeVersion: 'v1.0.0',
+    ip: '127.0.0.1',
+    userAgent: 'HRVO-Desktop/1.0.0',
+  });
+
   let seq = 1;
   function makeHb(
     activeSec: number,

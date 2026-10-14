@@ -64,6 +64,11 @@ describe('AttendanceService & Heartbeat Cryptographic Ingestion', () => {
       inCall: false,
       ...overrides,
     };
+    service.recordMonitoringConsent({
+      orgId: overrides.orgId || orgId,
+      userId: overrides.userId || userId,
+      noticeVersion: 'v1.0.0',
+    }).catch(() => {});
     const signature = service.getValidator().signHeartbeat(unsigned, secret);
     return { ...unsigned, signature };
   }
@@ -181,6 +186,7 @@ describe('Audit Item 4 & 5: Injectable Clock & Proof that Client Timestamps are 
     const sessionSecret = 'clock-secret';
     const sessionId = 'session-clock-01';
     await service.registerSessionSecret(sessionId, sessionSecret);
+    await service.recordMonitoringConsent({ orgId: 'org-clock', userId: 'user-clock', noticeVersion: 'v1.0.0' });
 
     // Client timestamp is 10 years in the past
     const bogusPastTime = new Date('2016-01-01T00:00:00.000Z').getTime();
@@ -246,6 +252,7 @@ describe('AttendanceService Full State Lifecycle (Breaks, Meetings, Disconnects)
     const mockClock = new MockClock(new Date('2026-10-13T09:00:00.000Z'));
     const service = new AttendanceService({}, mockClock);
     await service.registerSessionSecret(sessionId, sessionSecret);
+    await service.recordMonitoringConsent({ orgId, userId, noticeVersion: 'v1.0.0' });
 
     // Calling lifecycle methods on non-existent user returns null
     assert.equal(await service.onSocketDisconnect('non-existent'), null);
@@ -400,6 +407,7 @@ describe('AttendanceService Section 6.3 60-Second Reconciliation Worker', () => 
     const mockClock = new MockClock(new Date('2026-10-13T09:00:00.000Z'));
     const service = new AttendanceService({}, mockClock);
     await service.registerSessionSecret(sessionId, secretKey);
+    await service.recordMonitoringConsent({ orgId, userId, noticeVersion: 'v1.0.0' });
 
     const unsigned = {
       orgId,
@@ -429,6 +437,7 @@ describe('AttendanceService Section 6.3 60-Second Reconciliation Worker', () => 
     const mockClock = new MockClock(new Date('2026-10-13T09:00:00.000Z'));
     const service = new AttendanceService({ missedHeartbeatTimeoutSeconds: 90 }, mockClock);
     await service.registerSessionSecret(sessionId, secretKey);
+    await service.recordMonitoringConsent({ orgId, userId, noticeVersion: 'v1.0.0' });
 
     const unsigned = {
       orgId,
@@ -461,6 +470,7 @@ describe('AttendanceService Section 6.3 60-Second Reconciliation Worker', () => 
     const mockClock = new MockClock(new Date('2026-10-13T09:00:00.000Z'));
     const service = new AttendanceService({ disconnectGraceWindowSeconds: 120 }, mockClock);
     await service.registerSessionSecret(sessionId, secretKey);
+    await service.recordMonitoringConsent({ orgId, userId, noticeVersion: 'v1.0.0' });
 
     const unsigned = {
       orgId,
@@ -501,6 +511,7 @@ describe('AttendanceService Section 6.3 60-Second Reconciliation Worker', () => 
     const mockClock = new MockClock(new Date('2026-10-13T18:20:00.000Z'));
     const service = new AttendanceService({ orgTimezone: 'Asia/Colombo' }, mockClock);
     await service.registerSessionSecret(sessionId, secretKey);
+    await service.recordMonitoringConsent({ orgId, userId, noticeVersion: 'v1.0.0' });
 
     const unsigned = {
       orgId,
@@ -543,6 +554,7 @@ describe('AttendanceService Section 6.3 60-Second Reconciliation Worker', () => 
       mockClock,
     );
     await service.registerSessionSecret(sessionId, secretKey);
+    await service.recordMonitoringConsent({ orgId, userId, noticeVersion: 'v1.0.0' });
 
     const unsigned = {
       orgId,

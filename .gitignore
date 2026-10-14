@@ -6,3 +6,5 @@ coverage/
 .turbo/
 .DS_Store
 *.log
+coverage.lcov
+v8-coverage/

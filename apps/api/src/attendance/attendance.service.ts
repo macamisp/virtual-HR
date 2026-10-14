@@ -35,7 +35,14 @@ import type {
   IHolidayProvider,
   ILeaveProvider,
 } from '../../../../packages/shared/src/attendance/types.ts';
-import type { IAttendanceRepository } from './attendance-repository.ts';
+export function sanitizeExportCell(val: any): any {
+  if (val === null || val === undefined) return '';
+  const str = String(val);
+  if (/^[=+\-@\t\r]/.test(str)) {
+    return `'${str}`;
+  }
+  return val;
+}
 
 export class AttendanceService {
   private stateMachine: AttendanceStateMachine;
@@ -52,6 +59,7 @@ export class AttendanceService {
   private closedSessions = new Map<string, AttendanceSession>();
   private sessionSecrets = new Map<string, string>();
   private sessionSecretOrgs = new Map<string, string>();
+  private inMemoryConsents = new Map<string, Set<string>>();
 
   constructor(
     configOrRepo?: any,
@@ -211,6 +219,16 @@ export class AttendanceService {
       );
     } else {
       existingSession = this.sessions.get(payload.userId) ?? null;
+    }
+
+    // FR-AUD-004 / FR-ATT-020 Consent Gate:
+    // A user who has not accepted the current monitoring-notice version must not get a session created by heartbeats.
+    if (!existingSession) {
+      const currentVersion = this.config.currentNoticeVersion ?? 'v1.0.0';
+      const hasConsent = await this.hasUserAcceptedNotice(payload.orgId, payload.userId, currentVersion);
+      if (!hasConsent) {
+        throw new Error(`CONSENT_REQUIRED: User has not accepted current monitoring notice (${currentVersion})`);
+      }
     }
 
     const result = this.stateMachine.handleHeartbeat(
@@ -515,9 +533,60 @@ export class AttendanceService {
     if (!this.repository) {
       throw new Error('Repository is required for corrections');
     }
+
+    const now = this.clock.now();
+
+    // 1. Reject future times
+    if (params.requestedIn.getTime() > now.getTime() || params.requestedOut.getTime() > now.getTime()) {
+      throw new Error('Invalid correction request: correction times cannot be in the future');
+    }
+
+    // 2. Reject in >= out
     if (params.requestedIn.getTime() >= params.requestedOut.getTime()) {
       throw new Error('Invalid correction request: requestedIn must precede requestedOut');
     }
+
+    // 3. Reject requests older than maxCorrectionAgeDays (default 7 days)
+    const maxAgeDays = this.config.maxCorrectionAgeDays ?? 7;
+    const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+    if (now.getTime() - params.requestedIn.getTime() > maxAgeMs) {
+      throw new Error(`Correction request exceeds maximum allowed age of ${maxAgeDays} days`);
+    }
+
+    // 4. Reject duplicate pending request for the same session or interval
+    const pending = await this.repository.findPendingCorrections(params.orgId);
+    const duplicate = pending.find(
+      (c) =>
+        c.userId === params.userId &&
+        c.status === CorrectionStatus.PENDING &&
+        ((params.sessionId && c.sessionId === params.sessionId) ||
+          (!params.sessionId &&
+            c.requestedIn.getTime() === params.requestedIn.getTime() &&
+            c.requestedOut.getTime() === params.requestedOut.getTime())),
+    );
+    if (duplicate) {
+      throw new Error('A pending correction request already exists for this session');
+    }
+
+    // 5. Reject overlap with another active/closed session of the user
+    const workDate = formatInTimeZone(params.requestedIn, this.config.orgTimezone, 'yyyy-MM-dd');
+    const existingSessions = await this.repository.findSessionsByDate(params.orgId, workDate);
+    const userSessions = existingSessions.filter((s) => s.userId === params.userId);
+
+    for (const sess of userSessions) {
+      if (params.sessionId && sess.id === params.sessionId) continue;
+      if (sess.status === SessionStatus.CANCELLED || sess.status === SessionStatus.ADJUSTED) continue;
+
+      const sessStart = sess.clockInAt.getTime();
+      const sessEnd = (sess.clockOutAt || sess.lastHeartbeatAt).getTime();
+      const reqStart = params.requestedIn.getTime();
+      const reqEnd = params.requestedOut.getTime();
+
+      if (Math.max(reqStart, sessStart) < Math.min(reqEnd, sessEnd)) {
+        throw new Error(`Correction interval overlaps with existing session ${sess.id}`);
+      }
+    }
+
     const correction: AttendanceCorrection = {
       id: randomUUID(),
       orgId: params.orgId,
@@ -528,7 +597,7 @@ export class AttendanceService {
       reason: params.reason,
       evidenceDocumentId: params.evidenceDocumentId || null,
       status: CorrectionStatus.PENDING,
-      createdAt: this.clock.now(),
+      createdAt: now,
     };
     await this.repository.createCorrection(correction);
 
@@ -544,7 +613,7 @@ export class AttendanceService {
         reason: params.reason,
         sessionId: params.sessionId || null,
       },
-      createdAt: this.clock.now(),
+      createdAt: now,
     });
 
     return correction;
@@ -648,6 +717,14 @@ export class AttendanceService {
         },
         createdAt: reviewedAt,
       });
+
+      // Recompute attendance_daily for the affected date(s)
+      const workDateIn = formatInTimeZone(correction.requestedIn, this.config.orgTimezone, 'yyyy-MM-dd');
+      const workDateOut = formatInTimeZone(correction.requestedOut, this.config.orgTimezone, 'yyyy-MM-dd');
+      const affectedDates = new Set([workDateIn, workDateOut]);
+      for (const d of affectedDates) {
+        await this.recomputeDailySummaryForUser(params.orgId, correction.userId, d);
+      }
 
       return { correction, adjustedSession };
     } else {
@@ -798,84 +875,102 @@ export class AttendanceService {
   // FR-ATT-015 & Section 6.3: Daily Close Job & Draft Timesheets
   // -------------------------------------------------------------
 
+  public async recomputeDailySummaryForUser(
+    orgId: string,
+    userId: string,
+    workDate: string,
+  ): Promise<AttendanceDaily | null> {
+    if (!this.repository) {
+      throw new Error('Repository is required for recomputeDailySummaryForUser');
+    }
+
+    const allSessions = await this.repository.findSessionsByDate(orgId, workDate);
+    const userSessions = allSessions.filter(
+      (s) => s.userId === userId && s.status !== SessionStatus.CANCELLED && s.status !== SessionStatus.ADJUSTED,
+    );
+
+    const compliance = await this.computeScheduleCompliance({
+      orgId,
+      userId,
+      workDate,
+      sessions: userSessions,
+    });
+
+    const firstIn = userSessions.length > 0 ? userSessions[0].clockInAt : null;
+    const lastOut = userSessions.length > 0 ? userSessions[userSessions.length - 1].clockOutAt : null;
+    const activeSeconds = userSessions.reduce((sum, s) => sum + s.activeSeconds, 0);
+    const idleSeconds = userSessions.reduce((sum, s) => sum + s.idleSeconds, 0);
+    const breakSeconds = userSessions.reduce((sum, s) => sum + s.breakSeconds, 0);
+    const meetingSeconds = userSessions.reduce((sum, s) => sum + s.meetingSeconds, 0);
+    const netSeconds = userSessions.reduce((sum, s) => sum + s.netSeconds, 0);
+
+    let dayStatus: DayStatus = DayStatus.PRESENT;
+    if (compliance.isHoliday) {
+      dayStatus = DayStatus.HOLIDAY;
+    } else if (compliance.isOnLeave) {
+      dayStatus = DayStatus.LEAVE;
+    } else if (compliance.isAbsent) {
+      dayStatus = DayStatus.ABSENT;
+    } else if (compliance.expectedSeconds > 0 && netSeconds < compliance.expectedSeconds / 2) {
+      dayStatus = DayStatus.HALF_DAY;
+    } else if (compliance.lateArrivalMinutes > 0) {
+      dayStatus = DayStatus.LATE;
+    } else if (compliance.earlyLeaveMinutes > 0) {
+      dayStatus = DayStatus.EARLY_LEAVE;
+    }
+
+    const daily: AttendanceDaily = {
+      orgId,
+      userId,
+      workDate,
+      firstIn,
+      lastOut,
+      activeSeconds,
+      idleSeconds,
+      breakSeconds,
+      meetingSeconds,
+      netSeconds,
+      expectedSeconds: compliance.expectedSeconds,
+      lateMinutes: compliance.lateArrivalMinutes,
+      earlyLeaveMinutes: compliance.earlyLeaveMinutes,
+      overtimeMinutes: compliance.overtimeMinutes,
+      dayStatus,
+    };
+
+    await this.repository.saveDailyAttendance(daily);
+
+    // FR-TS-001: Auto-generate draft timesheet entry
+    const existingTimesheet = await this.repository.findDraftTimesheet(orgId, userId, workDate);
+    await this.repository.saveDraftTimesheet({
+      id: existingTimesheet?.id || randomUUID(),
+      orgId,
+      userId,
+      workDate,
+      periodStart: workDate,
+      periodEnd: workDate,
+      status: 'DRAFT',
+      attendanceMinutes: Math.floor(netSeconds / 60),
+      loggedMinutes: existingTimesheet?.loggedMinutes || 0,
+      billableMinutes: Math.floor(netSeconds / 60),
+      varianceMinutes: existingTimesheet ? (existingTimesheet.loggedMinutes - Math.floor(netSeconds / 60)) : 0,
+    });
+
+    return daily;
+  }
+
   public async runDailyCloseJob(orgId: string, workDate: string): Promise<AttendanceDaily[]> {
     if (!this.repository) {
       throw new Error('Repository is required for runDailyCloseJob');
     }
 
     const users = await this.repository.findAllUsers(orgId);
-    const allSessions = await this.repository.findSessionsByDate(orgId, workDate);
-
     const summaries: AttendanceDaily[] = [];
 
     for (const user of users) {
-      const userSessions = allSessions.filter((s) => s.userId === user.id);
-      const compliance = await this.computeScheduleCompliance({
-        orgId,
-        userId: user.id,
-        workDate,
-        sessions: userSessions,
-      });
-
-      const firstIn = userSessions.length > 0 ? userSessions[0].clockInAt : null;
-      const lastOut = userSessions.length > 0 ? userSessions[userSessions.length - 1].clockOutAt : null;
-      const activeSeconds = userSessions.reduce((sum, s) => sum + s.activeSeconds, 0);
-      const idleSeconds = userSessions.reduce((sum, s) => sum + s.idleSeconds, 0);
-      const breakSeconds = userSessions.reduce((sum, s) => sum + s.breakSeconds, 0);
-      const meetingSeconds = userSessions.reduce((sum, s) => sum + s.meetingSeconds, 0);
-      const netSeconds = userSessions.reduce((sum, s) => sum + s.netSeconds, 0);
-
-      let dayStatus: DayStatus = DayStatus.PRESENT;
-      if (compliance.isHoliday) {
-        dayStatus = DayStatus.HOLIDAY;
-      } else if (compliance.isOnLeave) {
-        dayStatus = DayStatus.LEAVE;
-      } else if (compliance.isAbsent) {
-        dayStatus = DayStatus.ABSENT;
-      } else if (compliance.expectedSeconds > 0 && netSeconds < compliance.expectedSeconds / 2) {
-        dayStatus = DayStatus.HALF_DAY;
-      } else if (compliance.lateArrivalMinutes > 0) {
-        dayStatus = DayStatus.LATE;
-      } else if (compliance.earlyLeaveMinutes > 0) {
-        dayStatus = DayStatus.EARLY_LEAVE;
+      const daily = await this.recomputeDailySummaryForUser(orgId, user.id, workDate);
+      if (daily) {
+        summaries.push(daily);
       }
-
-      const daily: AttendanceDaily = {
-        orgId,
-        userId: user.id,
-        workDate,
-        firstIn,
-        lastOut,
-        activeSeconds,
-        idleSeconds,
-        breakSeconds,
-        meetingSeconds,
-        netSeconds,
-        expectedSeconds: compliance.expectedSeconds,
-        lateMinutes: compliance.lateArrivalMinutes,
-        earlyLeaveMinutes: compliance.earlyLeaveMinutes,
-        overtimeMinutes: compliance.overtimeMinutes,
-        dayStatus,
-      };
-
-      await this.repository.saveDailyAttendance(daily);
-
-      // FR-TS-001: Auto-generate draft timesheet entry
-      await this.repository.saveDraftTimesheet({
-        id: randomUUID(),
-        orgId,
-        userId: user.id,
-        workDate,
-        periodStart: workDate,
-        periodEnd: workDate,
-        status: 'DRAFT',
-        attendanceMinutes: Math.floor(netSeconds / 60),
-        loggedMinutes: 0,
-        billableMinutes: Math.floor(netSeconds / 60),
-        varianceMinutes: 0,
-      });
-
-      summaries.push(daily);
     }
 
     return summaries;
@@ -1004,7 +1099,12 @@ export class AttendanceService {
       const netHours = (r.netSeconds / 3600).toFixed(2);
       const firstIn = r.firstIn ? r.firstIn.toISOString() : '';
       const lastOut = r.lastOut ? r.lastOut.toISOString() : '';
-      csv += `${r.workDate},${r.userId},"${r.displayName || r.display_name || ''}","${r.email || ''}",${firstIn},${lastOut},${netHours},${r.dayStatus}\n`;
+      const safeWorkDate = sanitizeExportCell(r.workDate);
+      const safeUserId = sanitizeExportCell(r.userId);
+      const safeDisplayName = sanitizeExportCell(r.displayName || '');
+      const safeEmail = sanitizeExportCell(r.email || '');
+      const safeStatus = sanitizeExportCell(r.dayStatus);
+      csv += `${safeWorkDate},${safeUserId},"${String(safeDisplayName).replace(/"/g, '""')}","${String(safeEmail).replace(/"/g, '""')}",${firstIn},${lastOut},${netHours},${safeStatus}\n`;
     }
 
     const exportId = randomUUID();
@@ -1055,14 +1155,14 @@ export class AttendanceService {
 
     for (const r of records as any[]) {
       sheet.addRow({
-        work_date: r.workDate,
-        user_id: r.userId,
-        display_name: r.displayName || r.display_name || '',
-        email: r.email || '',
+        work_date: sanitizeExportCell(r.workDate),
+        user_id: sanitizeExportCell(r.userId),
+        display_name: sanitizeExportCell(r.displayName || ''),
+        email: sanitizeExportCell(r.email || ''),
         first_in: r.firstIn ? r.firstIn.toISOString() : '',
         last_out: r.lastOut ? r.lastOut.toISOString() : '',
         net_hours: Number((r.netSeconds / 3600).toFixed(2)),
-        status: r.dayStatus,
+        status: sanitizeExportCell(r.dayStatus),
       });
     }
 
@@ -1110,6 +1210,15 @@ export class AttendanceService {
     };
   }
 
+  public async hasUserAcceptedNotice(orgId: string, userId: string, version: string): Promise<boolean> {
+    if (this.repository) {
+      const consents = await this.repository.findMonitoringConsentsByUser(orgId, userId);
+      return consents.some((c) => c.noticeVersion === version);
+    }
+    const userConsents = this.inMemoryConsents.get(userId);
+    return userConsents ? userConsents.has(version) : false;
+  }
+
   public async recordMonitoringConsent(params: {
     orgId: string;
     userId: string;
@@ -1117,10 +1226,6 @@ export class AttendanceService {
     ip?: string;
     userAgent?: string;
   }): Promise<MonitoringConsent> {
-    if (!this.repository) {
-      throw new Error('Repository is required for recording consent');
-    }
-
     const consent: MonitoringConsent = {
       id: randomUUID(),
       orgId: params.orgId,
@@ -1131,22 +1236,31 @@ export class AttendanceService {
       userAgent: params.userAgent || null,
     };
 
-    await this.repository.saveMonitoringConsent(consent);
+    if (this.repository) {
+      await this.repository.saveMonitoringConsent(consent);
 
-    await this.repository.recordAuditLog({
-      orgId: params.orgId,
-      actorId: params.userId,
-      action: 'MONITORING_NOTICE_ACCEPTED',
-      entityType: 'MONITORING_CONSENT',
-      entityId: consent.id,
-      after: {
-        noticeVersion: params.noticeVersion,
-        acceptedAt: consent.acceptedAt.toISOString(),
-      },
-      ip: params.ip || null,
-      userAgent: params.userAgent || null,
-      createdAt: this.clock.now(),
-    });
+      await this.repository.recordAuditLog({
+        orgId: params.orgId,
+        actorId: params.userId,
+        action: 'MONITORING_NOTICE_ACCEPTED',
+        entityType: 'MONITORING_CONSENT',
+        entityId: consent.id,
+        after: {
+          noticeVersion: params.noticeVersion,
+          acceptedAt: consent.acceptedAt.toISOString(),
+        },
+        ip: params.ip || null,
+        userAgent: params.userAgent || null,
+        createdAt: this.clock.now(),
+      });
+    }
+
+    let userConsents = this.inMemoryConsents.get(params.userId);
+    if (!userConsents) {
+      userConsents = new Set<string>();
+      this.inMemoryConsents.set(params.userId, userConsents);
+    }
+    userConsents.add(params.noticeVersion);
 
     return consent;
   }

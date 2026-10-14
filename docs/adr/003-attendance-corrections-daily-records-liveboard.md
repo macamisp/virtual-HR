@@ -54,6 +54,7 @@ Per project rules ("Never add a new npm package without asking me first"):
   - Iterates over all active users in the tenant and computes aggregated counters (`first_in`, `last_out`, `active_seconds`, `idle_seconds`, `break_seconds`, `meeting_seconds`, `net_seconds`, `expected_seconds`, `late_arrival_minutes`, `early_leave_minutes`, `overtime_minutes`).
   - Derives `day_status`: `HOLIDAY`, `LEAVE`, `ABSENT` (0 net seconds on working day), `LATE`, `EARLY_LEAVE`, `HALF_DAY`, or `PRESENT`.
   - Auto-generates a `draft_timesheets` row per user (`FR-TS-001`).
+  - *Note:* `draft_timesheets` will be merged into `timesheets`/`time_entries` (SRS 7.4) in the timesheet slice.
   - **Idempotency:** Implemented via PostgreSQL `ON CONFLICT (org_id, user_id, work_date) DO UPDATE` to ensure reruns produce deterministic, identical results without duplicates.
 
 ### 3.4 Role-Scoped Live Board (`FR-ATT-016`)

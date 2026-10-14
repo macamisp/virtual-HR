@@ -79,6 +79,10 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
       `INSERT INTO users (id, org_id, email, display_name) VALUES ($1, $2, $3, $4)`,
       [userId, orgId, 'dev@acme.com', 'Alex Developer'],
     );
+    await adminPool.query(
+      `INSERT INTO monitoring_consents (id, org_id, user_id, notice_version, accepted_at) VALUES (gen_random_uuid(), $1, $2, 'v1.0.0', CURRENT_TIMESTAMP)`,
+      [orgId, userId],
+    );
   });
 
   function createSignedHeartbeat(

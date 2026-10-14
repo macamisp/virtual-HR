@@ -81,6 +81,7 @@ export interface IAttendanceRepository {
   findMonitoringConsentsByUser(orgId: string, userId: string): Promise<MonitoringConsent[]>;
   recordPresenceEvent(event: { orgId: string; userId: string; sessionId?: string; serverTs: Date; clientTs?: Date; eventType: string; state: string; seq: number; ip?: string; meta?: any }): Promise<void>;
   findPresenceEventsByUser(orgId: string, userId: string, limit?: number): Promise<any[]>;
+  cleanupOldPresenceEvents(orgId: string, olderThan: Date): Promise<number>;
 
   clearAll(): Promise<void>;
   close(): Promise<void>;
@@ -89,17 +90,20 @@ export interface IAttendanceRepository {
 export interface PostgresRepositoryOptions {
   appPoolConfig?: pg.PoolConfig;
   adminPoolConfig?: pg.PoolConfig;
+  retentionPoolConfig?: pg.PoolConfig;
 }
 
 export class PostgresAttendanceRepository implements IAttendanceRepository {
-  private pool: pg.Pool;      // Application pool (runs as non-superuser 'hrvo_app' with NOBYPASSRLS)
-  private adminPool: pg.Pool; // Admin pool (runs as owner 'postgres' for migrations & test wipe ONLY)
+  private pool: pg.Pool;          // Application pool (runs as non-superuser 'hrvo_app' with NOBYPASSRLS)
+  private adminPool: pg.Pool;     // Admin pool (runs as owner 'postgres' for migrations & test wipe ONLY)
+  private retentionPool: pg.Pool; // Dedicated retention role pool ('hrvo_retention' for pruning append-only events)
 
   constructor(options?: string | pg.PoolConfig | PostgresRepositoryOptions) {
     if (typeof options === 'string') {
       this.pool = new Pool({ connectionString: options });
       this.adminPool = new Pool({ connectionString: options });
-    } else if (options && ('appPoolConfig' in options || 'adminPoolConfig' in options)) {
+      this.retentionPool = new Pool({ connectionString: options });
+    } else if (options && ('appPoolConfig' in options || 'adminPoolConfig' in options || 'retentionPoolConfig' in options)) {
       const opts = options as PostgresRepositoryOptions;
       this.pool = new Pool(
         opts.appPoolConfig || {
@@ -119,6 +123,15 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
           database: process.env.PGDATABASE || 'hrvo_dev',
         },
       );
+      this.retentionPool = new Pool(
+        opts.retentionPoolConfig || {
+          host: process.env.PGHOST || 'localhost',
+          port: parseInt(process.env.PGPORT || '5433', 10),
+          user: process.env.PGRETENTION_USER || 'hrvo_retention',
+          password: process.env.PGRETENTION_PASSWORD || 'hrvo_retention_dev',
+          database: process.env.PGDATABASE || 'hrvo_dev',
+        },
+      );
     } else if (options) {
       // Direct PoolConfig passed
       this.pool = new Pool(options as pg.PoolConfig);
@@ -126,6 +139,11 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         ...(options as pg.PoolConfig),
         user: process.env.PGADMIN_USER || process.env.PGUSER || 'postgres',
         password: process.env.PGADMIN_PASSWORD || process.env.PGPASSWORD || 'postgres',
+      });
+      this.retentionPool = new Pool({
+        ...(options as pg.PoolConfig),
+        user: process.env.PGRETENTION_USER || 'hrvo_retention',
+        password: process.env.PGRETENTION_PASSWORD || 'hrvo_retention_dev',
       });
     } else {
       // Default: Connect as non-superuser hrvo_app
@@ -143,20 +161,14 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         password: process.env.PGADMIN_PASSWORD || process.env.PGPASSWORD || 'postgres',
         database: process.env.PGDATABASE || 'hrvo_dev',
       });
+      this.retentionPool = new Pool({
+        host: process.env.PGHOST || 'localhost',
+        port: parseInt(process.env.PGPORT || '5433', 10),
+        user: process.env.PGRETENTION_USER || 'hrvo_retention',
+        password: process.env.PGRETENTION_PASSWORD || 'hrvo_retention_dev',
+        database: process.env.PGDATABASE || 'hrvo_dev',
+      });
     }
-  }
-
-  public getPool(): pg.Pool {
-    return this.pool;
-  }
-
-  public getAdminPool(): pg.Pool {
-    return this.adminPool;
-  }
-
-  public async close(): Promise<void> {
-    await this.pool.end();
-    await this.adminPool.end();
   }
 
   /**
@@ -341,7 +353,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       endedAt: r.ended_at ? new Date(r.ended_at) : null,
       durationSeconds: r.duration_seconds,
       meetingId: r.meeting_id || null,
-      flags: r.flags || [],
+      flags: r.flags,
     }));
   }
 
@@ -481,8 +493,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       orgId,
       `SELECT ws.* FROM work_schedules ws
        LEFT JOIN users u ON u.id = $2 AND u.team_id = ws.team_id
-       WHERE ws.org_id = $1 AND (ws.user_id = $2 OR (ws.team_id IS NOT NULL AND ws.team_id = u.team_id))
-       ORDER BY ws.user_id NULLS LAST
+       WHERE ws.org_id = $1 AND (ws.user_id = $2 OR (ws.team_id IS NOT NULL AND ws.team_id = u.team_id) OR (ws.user_id IS NULL AND ws.team_id IS NULL))
+       ORDER BY ws.user_id NULLS LAST, ws.team_id NULLS LAST
        LIMIT 1`,
       [orgId, userId],
     );
@@ -493,11 +505,15 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       orgId: r.org_id,
       userId: r.user_id,
       teamId: r.team_id,
-      days: typeof r.days === 'string' ? JSON.parse(r.days) : r.days,
+      days: r.days,
       flexible: r.flexible,
       graceMinutes: r.grace_minutes,
-      effectiveFrom: r.effective_from instanceof Date ? r.effective_from.toISOString().split('T')[0] : String(r.effective_from),
-      effectiveTo: r.effective_to ? (r.effective_to instanceof Date ? r.effective_to.toISOString().split('T')[0] : String(r.effective_to)) : null,
+      effectiveFrom: r.effective_from instanceof Date
+        ? `${r.effective_from.getFullYear()}-${String(r.effective_from.getMonth() + 1).padStart(2, '0')}-${String(r.effective_from.getDate()).padStart(2, '0')}`
+        : r.effective_from,
+      effectiveTo: r.effective_to instanceof Date
+        ? `${r.effective_to.getFullYear()}-${String(r.effective_to.getMonth() + 1).padStart(2, '0')}-${String(r.effective_to.getDate()).padStart(2, '0')}`
+        : null,
     };
   }
 
@@ -705,7 +721,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
          id, org_id, user_id, work_date, period_start, period_end, status,
          attendance_minutes, logged_minutes, billable_minutes, variance_minutes, updated_at
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
-       ON CONFLICT (id) DO UPDATE SET
+       ON CONFLICT (org_id, user_id, work_date) DO UPDATE SET
          attendance_minutes = EXCLUDED.attendance_minutes,
          logged_minutes = EXCLUDED.logged_minutes,
          billable_minutes = EXCLUDED.billable_minutes,
@@ -741,8 +757,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       orgId: r.org_id,
       userId: r.user_id,
       workDate: r.work_date,
-      periodStart: r.period_start instanceof Date ? r.period_start.toISOString().split('T')[0] : String(r.period_start),
-      periodEnd: r.period_end instanceof Date ? r.period_end.toISOString().split('T')[0] : String(r.period_end),
+      periodStart: String(r.period_start),
+      periodEnd: String(r.period_end),
       status: r.status,
       attendanceMinutes: r.attendance_minutes,
       loggedMinutes: r.logged_minutes,
@@ -809,47 +825,66 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
   }
 
   public async recordAuditLog(entry: Omit<AuditLogEntry, 'id' | 'prevHash' | 'hash'>): Promise<AuditLogEntry> {
-    const lastRes = await this.queryWithRls(
-      entry.orgId,
-      `SELECT hash FROM audit_logs WHERE org_id = $1 ORDER BY id DESC LIMIT 1`,
-      [entry.orgId],
-    );
-    const prevHash = lastRes.rows.length > 0
-      ? lastRes.rows[0].hash
-      : '0000000000000000000000000000000000000000000000000000000000000000';
+    if (!entry.orgId || entry.orgId.trim() === '') {
+      throw new Error('Tenant context missing: orgId is required for audit logs');
+    }
 
-    const beforeStr = PostgresAttendanceRepository.canonicalJson(entry.before);
-    const afterStr = PostgresAttendanceRepository.canonicalJson(entry.after);
-    const payload = `${prevHash}|${entry.orgId}|${entry.actorId}|${entry.action}|${entry.entityType}|${entry.entityId}|${beforeStr}|${afterStr}|${entry.createdAt.toISOString()}`;
-    const hash = crypto.createHash('sha256').update(payload).digest('hex');
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.org_id', $1, true)`, [entry.orgId]);
 
-    const insertRes = await this.queryWithRls(
-      entry.orgId,
-      `INSERT INTO audit_logs (org_id, actor_id, action, entity_type, entity_id, before, after, ip, user_agent, prev_hash, hash, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-       RETURNING id`,
-      [
-        entry.orgId,
-        entry.actorId,
-        entry.action,
-        entry.entityType,
-        entry.entityId,
-        beforeStr,
-        afterStr,
-        entry.ip || null,
-        entry.userAgent || null,
+      // Advisory transaction lock per organization: serializes audit log appends within the same tenant
+      // while allowing parallel appends across different organizations.
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('audit_logs:' || $1::text))`, [entry.orgId]);
+
+      const lastRes = await client.query(
+        `SELECT hash FROM audit_logs WHERE org_id = $1 ORDER BY id DESC LIMIT 1`,
+        [entry.orgId],
+      );
+      const prevHash = lastRes.rows.length > 0
+        ? lastRes.rows[0].hash
+        : '0000000000000000000000000000000000000000000000000000000000000000';
+
+      const beforeStr = PostgresAttendanceRepository.canonicalJson(entry.before);
+      const afterStr = PostgresAttendanceRepository.canonicalJson(entry.after);
+      const payload = `${prevHash}|${entry.orgId}|${entry.actorId}|${entry.action}|${entry.entityType}|${entry.entityId}|${beforeStr}|${afterStr}|${entry.createdAt.toISOString()}`;
+      const hash = crypto.createHash('sha256').update(payload).digest('hex');
+
+      const insertRes = await client.query(
+        `INSERT INTO audit_logs (org_id, actor_id, action, entity_type, entity_id, before, after, ip, user_agent, prev_hash, hash, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         RETURNING id`,
+        [
+          entry.orgId,
+          entry.actorId,
+          entry.action,
+          entry.entityType,
+          entry.entityId,
+          beforeStr,
+          afterStr,
+          entry.ip || null,
+          entry.userAgent || null,
+          prevHash,
+          hash,
+          entry.createdAt,
+        ],
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        id: Number(insertRes.rows[0].id),
+        ...entry,
         prevHash,
         hash,
-        entry.createdAt,
-      ],
-    );
-
-    return {
-      id: Number(insertRes.rows[0].id),
-      ...entry,
-      prevHash,
-      hash,
-    };
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   public async findAuditLogs(orgId: string, entityType?: string, entityId?: string): Promise<AuditLogEntry[]> {
@@ -872,8 +907,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       action: r.action,
       entityType: r.entity_type,
       entityId: r.entity_id,
-      before: typeof r.before === 'string' ? JSON.parse(r.before) : r.before,
-      after: typeof r.after === 'string' ? JSON.parse(r.after) : r.after,
+      before: r.before,
+      after: r.after,
       ip: r.ip,
       userAgent: r.user_agent,
       prevHash: r.prev_hash,
@@ -958,7 +993,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       state: r.state,
       seq: Number(r.seq),
       ip: r.ip,
-      meta: typeof r.meta === 'string' ? JSON.parse(r.meta) : r.meta,
+      meta: r.meta,
     }));
   }
 
@@ -1001,6 +1036,46 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     }
   }
 
+  public getPool(): pg.Pool {
+    return this.pool;
+  }
+
+  public getAdminPool(): pg.Pool {
+    return this.adminPool;
+  }
+
+  public getRetentionPool(): pg.Pool {
+    return this.retentionPool;
+  }
+
+  public async cleanupOldPresenceEvents(orgId: string, olderThan: Date): Promise<number> {
+    if (!orgId || orgId.trim() === '') {
+      throw new Error('Tenant context missing: orgId is required');
+    }
+    const client = await this.retentionPool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.org_id', $1, true)`, [orgId]);
+      const res = await client.query(
+        `DELETE FROM presence_events WHERE org_id = $1 AND server_ts < $2`,
+        [orgId, olderThan],
+      );
+      await client.query('COMMIT');
+      return res.rowCount || 0;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async close(): Promise<void> {
+    await this.pool.end();
+    await this.adminPool.end();
+    await this.retentionPool.end();
+  }
+
   private mapRowToSession(row: any, segments: AttendanceSegment[]): AttendanceSession {
     return {
       id: row.id,
@@ -1020,7 +1095,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       lastHeartbeatAt: new Date(row.last_heartbeat_at),
       ipIn: row.ip_in,
       ipOut: row.ip_out || null,
-      flags: row.flags || [],
+      flags: row.flags,
       status: row.status as SessionStatus,
       currentState: row.current_state as AttendanceState,
       previousState: (row.previous_state as AttendanceState) || undefined,

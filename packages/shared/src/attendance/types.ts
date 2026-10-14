@@ -115,6 +115,8 @@ export interface AttendanceConfig {
   maxSessionLengthSeconds: number;       // default 50400 (14 hours)
   paidBreakMinutesPerDay: number;        // default 60 (FR-ATT-007 paid break allowance)
   orgTimezone: string;                   // default Asia/Colombo
+  maxCorrectionAgeDays?: number;         // default 7 days
+  currentNoticeVersion?: string;         // default 'v1.0.0'
 }
 
 export const DEFAULT_ATTENDANCE_CONFIG: AttendanceConfig = {
@@ -126,6 +128,8 @@ export const DEFAULT_ATTENDANCE_CONFIG: AttendanceConfig = {
   maxSessionLengthSeconds: 14 * 3600,
   paidBreakMinutesPerDay: 60,
   orgTimezone: 'Asia/Colombo',
+  maxCorrectionAgeDays: 7,
+  currentNoticeVersion: 'v1.0.0',
 };
 
 export interface StateMachineTransitionResult {
