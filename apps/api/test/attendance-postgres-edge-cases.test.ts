@@ -63,11 +63,12 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
   });
 
   after(async () => {
+    await repository.clearAll(orgId);
     await repository.close();
   });
 
   beforeEach(async () => {
-    await repository.clearAll();
+    await repository.clearAll(orgId);
     // Seed test organization and user using adminPool (as migration/owner role)
     const adminPool = repository.getAdminPool();
     await adminPool.query(
@@ -495,9 +496,10 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
     const orgB = '33333333-3333-3333-3333-333333333333';
     const userB = '44444444-4444-4444-4444-444444444444';
     const adminPool = repository.getAdminPool();
+    await repository.clearAll(orgB);
     await adminPool.query(
       `INSERT INTO organizations (id, name, slug, timezone) VALUES ($1, $2, $3, $4)`,
-      [orgB, 'Beta Corp', 'beta-corp', 'UTC'],
+      [orgB, 'Beta Corp', 'beta-corp-edge', 'UTC'],
     );
     await adminPool.query(
       `INSERT INTO users (id, org_id, email, display_name) VALUES ($1, $2, $3, $4)`,
@@ -544,6 +546,7 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
       [sessionBId],
     );
     assert.equal(orgBSelect.rows.length, 1, 'Org B can see its own session');
+    await repository.clearAll(orgB);
   });
 
   // 15. RLS Hardening: Missing app.org_id returns zero rows; foreign org INSERT is rejected by WITH CHECK

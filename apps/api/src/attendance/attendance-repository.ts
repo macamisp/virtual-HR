@@ -10,6 +10,7 @@
  * 5. FORCE ROW LEVEL SECURITY enabled on every tenant table.
  */
 
+import crypto from 'node:crypto';
 import pg from 'pg';
 const { Pool } = pg;
 import {
@@ -21,6 +22,13 @@ import {
 import type {
   AttendanceSegment,
   AttendanceSession,
+  WorkSchedule,
+  AttendanceCorrection,
+  AttendanceDaily,
+  DraftTimesheet,
+  AuditLogEntry,
+  MonitoringConsent,
+  AttendanceExportFilter,
 } from '../../../../packages/shared/src/attendance/types.ts';
 
 export interface IAttendanceRepository {
@@ -39,6 +47,41 @@ export interface IAttendanceRepository {
   revokeSessionSecret(orgId: string, sessionId: string): Promise<void>;
   cleanupExpiredNonces(orgId: string, olderThan: Date): Promise<number>;
   cleanupStaleDeviceSequences(orgId: string, olderThan: Date): Promise<number>;
+  
+  // Work Schedules (FR-ATT-014)
+  saveWorkSchedule(schedule: WorkSchedule): Promise<void>;
+  findWorkScheduleForUser(orgId: string, userId: string): Promise<WorkSchedule | null>;
+
+  // Corrections (FR-ATT-013)
+  createCorrection(correction: AttendanceCorrection): Promise<void>;
+  findCorrectionById(orgId: string, id: string): Promise<AttendanceCorrection | null>;
+  updateCorrection(correction: AttendanceCorrection): Promise<void>;
+  findPendingCorrections(orgId: string): Promise<AttendanceCorrection[]>;
+  findCorrectionsByUser(orgId: string, userId: string): Promise<AttendanceCorrection[]>;
+
+  // Daily Records & Timesheets (FR-ATT-015 & FR-TS-001)
+  saveDailyAttendance(record: AttendanceDaily): Promise<void>;
+  findDailyAttendance(orgId: string, userId: string, workDate: string): Promise<AttendanceDaily | null>;
+  findDailyAttendanceInRange(orgId: string, filter: AttendanceExportFilter): Promise<AttendanceDaily[]>;
+  findSessionsByDate(orgId: string, workDate: string): Promise<AttendanceSession[]>;
+  saveDraftTimesheet(timesheet: DraftTimesheet): Promise<void>;
+  findDraftTimesheet(orgId: string, userId: string, workDate: string): Promise<DraftTimesheet | null>;
+
+  // Users & Teams (FR-ATT-016)
+  findUserById(orgId: string, userId: string): Promise<{ id: string; orgId: string; email: string; displayName: string; role: string; teamId: string | null; managerId: string | null } | null>;
+  findAllUsers(orgId: string, teamId?: string): Promise<Array<{ id: string; orgId: string; email: string; displayName: string; role: string; teamId: string | null; managerId: string | null }>>;
+
+  // Audit Logs (FR-AUD-001)
+  recordAuditLog(entry: Omit<AuditLogEntry, 'id' | 'prevHash' | 'hash'>): Promise<AuditLogEntry>;
+  findAuditLogs(orgId: string, entityType?: string, entityId?: string): Promise<AuditLogEntry[]>;
+  verifyAuditLogChain(orgId: string): Promise<boolean>;
+
+  // Transparency & Consent (FR-ATT-020 & FR-AUD-004)
+  saveMonitoringConsent(consent: MonitoringConsent): Promise<void>;
+  findMonitoringConsentsByUser(orgId: string, userId: string): Promise<MonitoringConsent[]>;
+  recordPresenceEvent(event: { orgId: string; userId: string; sessionId?: string; serverTs: Date; clientTs?: Date; eventType: string; state: string; seq: number; ip?: string; meta?: any }): Promise<void>;
+  findPresenceEventsByUser(orgId: string, userId: string, limit?: number): Promise<any[]>;
+
   clearAll(): Promise<void>;
   close(): Promise<void>;
 }
@@ -405,17 +448,557 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     return res.rowCount || 0;
   }
 
+  // Work Schedules (FR-ATT-014)
+  public async saveWorkSchedule(schedule: WorkSchedule): Promise<void> {
+    await this.queryWithRls(
+      schedule.orgId,
+      `INSERT INTO work_schedules (id, org_id, user_id, team_id, days, flexible, grace_minutes, effective_from, effective_to)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (id) DO UPDATE SET
+         user_id = EXCLUDED.user_id,
+         team_id = EXCLUDED.team_id,
+         days = EXCLUDED.days,
+         flexible = EXCLUDED.flexible,
+         grace_minutes = EXCLUDED.grace_minutes,
+         effective_from = EXCLUDED.effective_from,
+         effective_to = EXCLUDED.effective_to`,
+      [
+        schedule.id,
+        schedule.orgId,
+        schedule.userId || null,
+        schedule.teamId || null,
+        JSON.stringify(schedule.days),
+        schedule.flexible,
+        schedule.graceMinutes,
+        schedule.effectiveFrom,
+        schedule.effectiveTo || null,
+      ],
+    );
+  }
+
+  public async findWorkScheduleForUser(orgId: string, userId: string): Promise<WorkSchedule | null> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT ws.* FROM work_schedules ws
+       LEFT JOIN users u ON u.id = $2 AND u.team_id = ws.team_id
+       WHERE ws.org_id = $1 AND (ws.user_id = $2 OR (ws.team_id IS NOT NULL AND ws.team_id = u.team_id))
+       ORDER BY ws.user_id NULLS LAST
+       LIMIT 1`,
+      [orgId, userId],
+    );
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      orgId: r.org_id,
+      userId: r.user_id,
+      teamId: r.team_id,
+      days: typeof r.days === 'string' ? JSON.parse(r.days) : r.days,
+      flexible: r.flexible,
+      graceMinutes: r.grace_minutes,
+      effectiveFrom: r.effective_from instanceof Date ? r.effective_from.toISOString().split('T')[0] : String(r.effective_from),
+      effectiveTo: r.effective_to ? (r.effective_to instanceof Date ? r.effective_to.toISOString().split('T')[0] : String(r.effective_to)) : null,
+    };
+  }
+
+  // Corrections (FR-ATT-013)
+  public async createCorrection(c: AttendanceCorrection): Promise<void> {
+    await this.queryWithRls(
+      c.orgId,
+      `INSERT INTO attendance_corrections (id, org_id, user_id, session_id, requested_in, requested_out, reason, evidence_document_id, status, reviewer_id, reviewed_at, review_note, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      [
+        c.id,
+        c.orgId,
+        c.userId,
+        c.sessionId || null,
+        c.requestedIn,
+        c.requestedOut,
+        c.reason,
+        c.evidenceDocumentId || null,
+        c.status,
+        c.reviewerId || null,
+        c.reviewedAt || null,
+        c.reviewNote || null,
+        c.createdAt,
+      ],
+    );
+  }
+
+  public async findCorrectionById(orgId: string, id: string): Promise<AttendanceCorrection | null> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT * FROM attendance_corrections WHERE org_id = $1 AND id = $2`,
+      [orgId, id],
+    );
+    if (res.rows.length === 0) return null;
+    return this.mapRowToCorrection(res.rows[0]);
+  }
+
+  public async updateCorrection(c: AttendanceCorrection): Promise<void> {
+    await this.queryWithRls(
+      c.orgId,
+      `UPDATE attendance_corrections SET
+         status = $3,
+         reviewer_id = $4,
+         reviewed_at = $5,
+         review_note = $6
+       WHERE org_id = $1 AND id = $2`,
+      [
+        c.orgId,
+        c.id,
+        c.status,
+        c.reviewerId || null,
+        c.reviewedAt || null,
+        c.reviewNote || null,
+      ],
+    );
+  }
+
+  public async findPendingCorrections(orgId: string): Promise<AttendanceCorrection[]> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT * FROM attendance_corrections WHERE org_id = $1 AND status = 'PENDING' ORDER BY created_at ASC`,
+      [orgId],
+    );
+    return res.rows.map(this.mapRowToCorrection);
+  }
+
+  public async findCorrectionsByUser(orgId: string, userId: string): Promise<AttendanceCorrection[]> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT * FROM attendance_corrections WHERE org_id = $1 AND user_id = $2 ORDER BY created_at DESC`,
+      [orgId, userId],
+    );
+    return res.rows.map(this.mapRowToCorrection);
+  }
+
+  private mapRowToCorrection(row: any): AttendanceCorrection {
+    return {
+      id: row.id,
+      orgId: row.org_id,
+      userId: row.user_id,
+      sessionId: row.session_id || null,
+      requestedIn: new Date(row.requested_in),
+      requestedOut: new Date(row.requested_out),
+      reason: row.reason,
+      evidenceDocumentId: row.evidence_document_id || null,
+      status: row.status,
+      reviewerId: row.reviewer_id || null,
+      reviewedAt: row.reviewed_at ? new Date(row.reviewed_at) : null,
+      reviewNote: row.review_note || null,
+      createdAt: new Date(row.created_at),
+    };
+  }
+
+  // Daily Records & Timesheets (FR-ATT-015 & FR-TS-001)
+  public async saveDailyAttendance(r: AttendanceDaily): Promise<void> {
+    await this.queryWithRls(
+      r.orgId,
+      `INSERT INTO attendance_daily (
+         org_id, user_id, work_date, first_in, last_out, active_seconds, idle_seconds,
+         break_seconds, meeting_seconds, net_seconds, expected_seconds, late_minutes,
+         early_leave_minutes, overtime_minutes, day_status, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, CURRENT_TIMESTAMP)
+       ON CONFLICT (org_id, user_id, work_date) DO UPDATE SET
+         first_in = EXCLUDED.first_in,
+         last_out = EXCLUDED.last_out,
+         active_seconds = EXCLUDED.active_seconds,
+         idle_seconds = EXCLUDED.idle_seconds,
+         break_seconds = EXCLUDED.break_seconds,
+         meeting_seconds = EXCLUDED.meeting_seconds,
+         net_seconds = EXCLUDED.net_seconds,
+         expected_seconds = EXCLUDED.expected_seconds,
+         late_minutes = EXCLUDED.late_minutes,
+         early_leave_minutes = EXCLUDED.early_leave_minutes,
+         overtime_minutes = EXCLUDED.overtime_minutes,
+         day_status = EXCLUDED.day_status,
+         updated_at = CURRENT_TIMESTAMP`,
+      [
+        r.orgId,
+        r.userId,
+        r.workDate,
+        r.firstIn,
+        r.lastOut,
+        r.activeSeconds,
+        r.idleSeconds,
+        r.breakSeconds,
+        r.meetingSeconds,
+        r.netSeconds,
+        r.expectedSeconds,
+        r.lateMinutes,
+        r.earlyLeaveMinutes,
+        r.overtimeMinutes,
+        r.dayStatus,
+      ],
+    );
+  }
+
+  public async findDailyAttendance(orgId: string, userId: string, workDate: string): Promise<AttendanceDaily | null> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT * FROM attendance_daily WHERE org_id = $1 AND user_id = $2 AND work_date = $3`,
+      [orgId, userId, workDate],
+    );
+    if (res.rows.length === 0) return null;
+    return this.mapRowToDaily(res.rows[0]);
+  }
+
+  public async findDailyAttendanceInRange(orgId: string, filter: AttendanceExportFilter): Promise<AttendanceDaily[]> {
+    let query = `SELECT d.*, u.display_name, u.email FROM attendance_daily d JOIN users u ON u.id = d.user_id WHERE d.org_id = $1 AND d.work_date >= $2 AND d.work_date <= $3`;
+    const params: any[] = [orgId, filter.startDate, filter.endDate];
+    if (filter.userId) {
+      params.push(filter.userId);
+      query += ` AND d.user_id = $${params.length}`;
+    }
+    if (filter.teamId) {
+      params.push(filter.teamId);
+      query += ` AND u.team_id = $${params.length}`;
+    }
+    query += ` ORDER BY d.work_date ASC, u.display_name ASC`;
+    const res = await this.queryWithRls(orgId, query, params);
+    return res.rows.map(this.mapRowToDaily);
+  }
+
+  public async findSessionsByDate(orgId: string, workDate: string): Promise<AttendanceSession[]> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT * FROM attendance_sessions WHERE org_id = $1 AND work_date = $2 ORDER BY clock_in_at ASC`,
+      [orgId, workDate],
+    );
+    const sessions: AttendanceSession[] = [];
+    for (const row of res.rows) {
+      const segments = await this.findSegmentsBySessionId(orgId, row.id);
+      sessions.push(this.mapRowToSession(row, segments));
+    }
+    return sessions;
+  }
+
+  private mapRowToDaily(row: any): AttendanceDaily {
+    return {
+      orgId: row.org_id,
+      userId: row.user_id,
+      workDate: row.work_date,
+      firstIn: row.first_in ? new Date(row.first_in) : null,
+      lastOut: row.last_out ? new Date(row.last_out) : null,
+      activeSeconds: row.active_seconds,
+      idleSeconds: row.idle_seconds,
+      breakSeconds: row.break_seconds,
+      meetingSeconds: row.meeting_seconds,
+      netSeconds: row.net_seconds,
+      expectedSeconds: row.expected_seconds,
+      lateMinutes: row.late_minutes,
+      earlyLeaveMinutes: row.early_leave_minutes,
+      overtimeMinutes: row.overtime_minutes,
+      dayStatus: row.day_status,
+      displayName: row.display_name,
+      email: row.email,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+    };
+  }
+
+  public async saveDraftTimesheet(t: DraftTimesheet): Promise<void> {
+    await this.queryWithRls(
+      t.orgId,
+      `INSERT INTO draft_timesheets (
+         id, org_id, user_id, work_date, period_start, period_end, status,
+         attendance_minutes, logged_minutes, billable_minutes, variance_minutes, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
+       ON CONFLICT (id) DO UPDATE SET
+         attendance_minutes = EXCLUDED.attendance_minutes,
+         logged_minutes = EXCLUDED.logged_minutes,
+         billable_minutes = EXCLUDED.billable_minutes,
+         variance_minutes = EXCLUDED.variance_minutes,
+         status = EXCLUDED.status,
+         updated_at = CURRENT_TIMESTAMP`,
+      [
+        t.id,
+        t.orgId,
+        t.userId,
+        t.workDate,
+        t.periodStart,
+        t.periodEnd,
+        t.status,
+        t.attendanceMinutes,
+        t.loggedMinutes,
+        t.billableMinutes,
+        t.varianceMinutes,
+      ],
+    );
+  }
+
+  public async findDraftTimesheet(orgId: string, userId: string, workDate: string): Promise<DraftTimesheet | null> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT * FROM draft_timesheets WHERE org_id = $1 AND user_id = $2 AND work_date = $3 LIMIT 1`,
+      [orgId, userId, workDate],
+    );
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      orgId: r.org_id,
+      userId: r.user_id,
+      workDate: r.work_date,
+      periodStart: r.period_start instanceof Date ? r.period_start.toISOString().split('T')[0] : String(r.period_start),
+      periodEnd: r.period_end instanceof Date ? r.period_end.toISOString().split('T')[0] : String(r.period_end),
+      status: r.status,
+      attendanceMinutes: r.attendance_minutes,
+      loggedMinutes: r.logged_minutes,
+      billableMinutes: r.billable_minutes,
+      varianceMinutes: r.variance_minutes,
+    };
+  }
+
+  // Users & Teams (FR-ATT-016)
+  public async findUserById(orgId: string, userId: string): Promise<{ id: string; orgId: string; email: string; displayName: string; role: string; teamId: string | null; managerId: string | null } | null> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT id, org_id, email, display_name, role, team_id, manager_id FROM users WHERE org_id = $1 AND id = $2`,
+      [orgId, userId],
+    );
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      orgId: r.org_id,
+      email: r.email,
+      displayName: r.display_name,
+      role: r.role,
+      teamId: r.team_id,
+      managerId: r.manager_id,
+    };
+  }
+
+  public async findAllUsers(orgId: string, teamId?: string): Promise<Array<{ id: string; orgId: string; email: string; displayName: string; role: string; teamId: string | null; managerId: string | null }>> {
+    let query = `SELECT id, org_id, email, display_name, role, team_id, manager_id FROM users WHERE org_id = $1`;
+    const params: any[] = [orgId];
+    if (teamId) {
+      params.push(teamId);
+      query += ` AND team_id = $2`;
+    }
+    query += ` ORDER BY display_name ASC`;
+    const res = await this.queryWithRls(orgId, query, params);
+    return res.rows.map((r: any) => ({
+      id: r.id,
+      orgId: r.org_id,
+      email: r.email,
+      displayName: r.display_name,
+      role: r.role,
+      teamId: r.team_id,
+      managerId: r.manager_id,
+    }));
+  }
+
+  // Audit Logs (FR-AUD-001)
+  public static canonicalJson(obj: any): string {
+    if (obj === null || obj === undefined) return '{}';
+    if (typeof obj !== 'object') return JSON.stringify(obj);
+    if (Array.isArray(obj)) {
+      return '[' + obj.map((item) => (typeof item === 'object' ? PostgresAttendanceRepository.canonicalJson(item) : JSON.stringify(item))).join(',') + ']';
+    }
+    const sortedKeys = Object.keys(obj).sort();
+    const pairs: string[] = [];
+    for (const k of sortedKeys) {
+      const val = obj[k];
+      const valStr = typeof val === 'object' ? PostgresAttendanceRepository.canonicalJson(val) : JSON.stringify(val);
+      pairs.push(`${JSON.stringify(k)}:${valStr}`);
+    }
+    return '{' + pairs.join(',') + '}';
+  }
+
+  public async recordAuditLog(entry: Omit<AuditLogEntry, 'id' | 'prevHash' | 'hash'>): Promise<AuditLogEntry> {
+    const lastRes = await this.queryWithRls(
+      entry.orgId,
+      `SELECT hash FROM audit_logs WHERE org_id = $1 ORDER BY id DESC LIMIT 1`,
+      [entry.orgId],
+    );
+    const prevHash = lastRes.rows.length > 0
+      ? lastRes.rows[0].hash
+      : '0000000000000000000000000000000000000000000000000000000000000000';
+
+    const beforeStr = PostgresAttendanceRepository.canonicalJson(entry.before);
+    const afterStr = PostgresAttendanceRepository.canonicalJson(entry.after);
+    const payload = `${prevHash}|${entry.orgId}|${entry.actorId}|${entry.action}|${entry.entityType}|${entry.entityId}|${beforeStr}|${afterStr}|${entry.createdAt.toISOString()}`;
+    const hash = crypto.createHash('sha256').update(payload).digest('hex');
+
+    const insertRes = await this.queryWithRls(
+      entry.orgId,
+      `INSERT INTO audit_logs (org_id, actor_id, action, entity_type, entity_id, before, after, ip, user_agent, prev_hash, hash, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING id`,
+      [
+        entry.orgId,
+        entry.actorId,
+        entry.action,
+        entry.entityType,
+        entry.entityId,
+        beforeStr,
+        afterStr,
+        entry.ip || null,
+        entry.userAgent || null,
+        prevHash,
+        hash,
+        entry.createdAt,
+      ],
+    );
+
+    return {
+      id: Number(insertRes.rows[0].id),
+      ...entry,
+      prevHash,
+      hash,
+    };
+  }
+
+  public async findAuditLogs(orgId: string, entityType?: string, entityId?: string): Promise<AuditLogEntry[]> {
+    let query = `SELECT * FROM audit_logs WHERE org_id = $1`;
+    const params: any[] = [orgId];
+    if (entityType) {
+      params.push(entityType);
+      query += ` AND entity_type = $${params.length}`;
+    }
+    if (entityId) {
+      params.push(entityId);
+      query += ` AND entity_id = $${params.length}`;
+    }
+    query += ` ORDER BY id ASC`;
+    const res = await this.queryWithRls(orgId, query, params);
+    return res.rows.map((r: any) => ({
+      id: Number(r.id),
+      orgId: r.org_id,
+      actorId: r.actor_id,
+      action: r.action,
+      entityType: r.entity_type,
+      entityId: r.entity_id,
+      before: typeof r.before === 'string' ? JSON.parse(r.before) : r.before,
+      after: typeof r.after === 'string' ? JSON.parse(r.after) : r.after,
+      ip: r.ip,
+      userAgent: r.user_agent,
+      prevHash: r.prev_hash,
+      hash: r.hash,
+      createdAt: new Date(r.created_at),
+    }));
+  }
+
+  public async verifyAuditLogChain(orgId: string): Promise<boolean> {
+    const logs = await this.findAuditLogs(orgId);
+    let expectedPrev = '0000000000000000000000000000000000000000000000000000000000000000';
+    for (const log of logs) {
+      if (log.prevHash !== expectedPrev) return false;
+      const beforeStr = PostgresAttendanceRepository.canonicalJson(log.before);
+      const afterStr = PostgresAttendanceRepository.canonicalJson(log.after);
+      const payload = `${log.prevHash}|${log.orgId}|${log.actorId}|${log.action}|${log.entityType}|${log.entityId}|${beforeStr}|${afterStr}|${log.createdAt.toISOString()}`;
+      const computedHash = crypto.createHash('sha256').update(payload).digest('hex');
+      if (log.hash !== computedHash) return false;
+      expectedPrev = log.hash;
+    }
+    return true;
+  }
+
+  // Transparency & Consent (FR-ATT-020 & FR-AUD-004)
+  public async saveMonitoringConsent(c: MonitoringConsent): Promise<void> {
+    await this.queryWithRls(
+      c.orgId,
+      `INSERT INTO monitoring_consents (id, org_id, user_id, notice_version, accepted_at, ip, user_agent)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [c.id, c.orgId, c.userId, c.noticeVersion, c.acceptedAt, c.ip || null, c.userAgent || null],
+    );
+  }
+
+  public async findMonitoringConsentsByUser(orgId: string, userId: string): Promise<MonitoringConsent[]> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT * FROM monitoring_consents WHERE org_id = $1 AND user_id = $2 ORDER BY accepted_at DESC`,
+      [orgId, userId],
+    );
+    return res.rows.map((r: any) => ({
+      id: r.id,
+      orgId: r.org_id,
+      userId: r.user_id,
+      noticeVersion: r.notice_version,
+      acceptedAt: new Date(r.accepted_at),
+      ip: r.ip,
+      userAgent: r.user_agent,
+    }));
+  }
+
+  public async recordPresenceEvent(e: { orgId: string; userId: string; sessionId?: string; serverTs: Date; clientTs?: Date; eventType: string; state: string; seq: number; ip?: string; meta?: any }): Promise<void> {
+    await this.queryWithRls(
+      e.orgId,
+      `INSERT INTO presence_events (org_id, user_id, session_id, server_ts, client_ts, event_type, state, seq, ip, meta)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        e.orgId,
+        e.userId,
+        e.sessionId || null,
+        e.serverTs,
+        e.clientTs || null,
+        e.eventType,
+        e.state,
+        e.seq,
+        e.ip || null,
+        JSON.stringify(e.meta || {}),
+      ],
+    );
+  }
+
+  public async findPresenceEventsByUser(orgId: string, userId: string, limit: number = 100): Promise<any[]> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT * FROM presence_events WHERE org_id = $1 AND user_id = $2 ORDER BY server_ts DESC LIMIT $3`,
+      [orgId, userId, limit],
+    );
+    return res.rows.map((r: any) => ({
+      id: r.id,
+      serverTs: new Date(r.server_ts),
+      clientTs: r.client_ts ? new Date(r.client_ts) : null,
+      eventType: r.event_type,
+      state: r.state,
+      seq: Number(r.seq),
+      ip: r.ip,
+      meta: typeof r.meta === 'string' ? JSON.parse(r.meta) : r.meta,
+    }));
+  }
+
   /**
    * Admin wipe used ONLY for test teardown and fixture reset (runs via adminPool)
    */
-  public async clearAll(): Promise<void> {
-    await this.adminPool.query(`DELETE FROM attendance_segments`);
-    await this.adminPool.query(`DELETE FROM attendance_sessions`);
-    await this.adminPool.query(`DELETE FROM heartbeat_nonces`);
-    await this.adminPool.query(`DELETE FROM device_sequences`);
-    await this.adminPool.query(`DELETE FROM session_secrets`);
-    await this.adminPool.query(`DELETE FROM users`);
-    await this.adminPool.query(`DELETE FROM organizations`);
+  public async clearAll(orgId?: string): Promise<void> {
+    if (orgId) {
+      await this.adminPool.query(`DELETE FROM monitoring_consents WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM presence_events WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM audit_logs WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM draft_timesheets WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM attendance_daily WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM attendance_corrections WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM work_schedules WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM attendance_segments WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM attendance_sessions WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM heartbeat_nonces WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM device_sequences WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM session_secrets WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM users WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM teams WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM organizations WHERE id = $1`, [orgId]);
+    } else {
+      await this.adminPool.query(`DELETE FROM monitoring_consents`);
+      await this.adminPool.query(`DELETE FROM presence_events`);
+      await this.adminPool.query(`DELETE FROM audit_logs`);
+      await this.adminPool.query(`DELETE FROM draft_timesheets`);
+      await this.adminPool.query(`DELETE FROM attendance_daily`);
+      await this.adminPool.query(`DELETE FROM attendance_corrections`);
+      await this.adminPool.query(`DELETE FROM work_schedules`);
+      await this.adminPool.query(`DELETE FROM attendance_segments`);
+      await this.adminPool.query(`DELETE FROM attendance_sessions`);
+      await this.adminPool.query(`DELETE FROM heartbeat_nonces`);
+      await this.adminPool.query(`DELETE FROM device_sequences`);
+      await this.adminPool.query(`DELETE FROM session_secrets`);
+      await this.adminPool.query(`DELETE FROM users`);
+      await this.adminPool.query(`DELETE FROM teams`);
+      await this.adminPool.query(`DELETE FROM organizations`);
+    }
   }
 
   private mapRowToSession(row: any, segments: AttendanceSegment[]): AttendanceSession {

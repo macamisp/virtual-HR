@@ -3,7 +3,8 @@
  * Implements FR-ATT-001 through FR-ATT-010, Section 6.2, 6.3, and 6.6
  */
 
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import { AttendanceStateMachine } from './attendance-state-machine.ts';
 import { HeartbeatValidator } from './heartbeat-validator.ts';
 import {
@@ -11,6 +12,10 @@ import {
   SessionStatus,
   DEFAULT_ATTENDANCE_CONFIG,
   SystemClock,
+  UserRole,
+  CorrectionStatus,
+  DayStatus,
+  LivePresenceStatus,
 } from '../../../../packages/shared/src/attendance/types.ts';
 import type {
   AttendanceConfig,
@@ -18,6 +23,17 @@ import type {
   Clock,
   HeartbeatPayload,
   StateMachineTransitionResult,
+  AttendanceCorrection,
+  ScheduleComplianceResult,
+  AttendanceDaily,
+  DraftTimesheet,
+  LiveBoardUser,
+  LiveBoardFilter,
+  AttendanceExportFilter,
+  TransparencyInfo,
+  MonitoringConsent,
+  IHolidayProvider,
+  ILeaveProvider,
 } from '../../../../packages/shared/src/attendance/types.ts';
 import type { IAttendanceRepository } from './attendance-repository.ts';
 
@@ -28,6 +44,8 @@ export class AttendanceService {
   private clock: Clock;
   private repository?: IAttendanceRepository;
   private defaultOrgId?: string;
+  private holidayProvider?: IHolidayProvider;
+  private leaveProvider?: ILeaveProvider;
 
   // In-memory fallback stores (used when repository is not provided)
   private sessions = new Map<string, AttendanceSession>();
@@ -36,15 +54,27 @@ export class AttendanceService {
   private sessionSecretOrgs = new Map<string, string>();
 
   constructor(
-    config: Partial<AttendanceConfig> = {},
-    clock: Clock = new SystemClock(),
-    repository?: IAttendanceRepository,
-    defaultOrgId?: string,
+    configOrRepo?: any,
+    clockOrUndefined?: any,
+    repoOrClock?: any,
+    defaultOrgIdOrHoliday?: any,
+    holidayOrLeave?: any,
+    leaveProvider?: any,
   ) {
-    this.config = { ...DEFAULT_ATTENDANCE_CONFIG, ...config };
-    this.clock = clock;
-    this.repository = repository;
-    this.defaultOrgId = defaultOrgId;
+    if (configOrRepo && typeof configOrRepo.findOpenSessionByUserId === 'function') {
+      this.repository = configOrRepo;
+      this.config = { ...DEFAULT_ATTENDANCE_CONFIG };
+      this.clock = repoOrClock || clockOrUndefined || new SystemClock();
+      this.holidayProvider = defaultOrgIdOrHoliday;
+      this.leaveProvider = holidayOrLeave;
+    } else {
+      this.config = { ...DEFAULT_ATTENDANCE_CONFIG, ...(configOrRepo as Partial<AttendanceConfig>) };
+      this.clock = clockOrUndefined || new SystemClock();
+      this.repository = repoOrClock;
+      this.defaultOrgId = defaultOrgIdOrHoliday;
+      this.holidayProvider = holidayOrLeave;
+      this.leaveProvider = leaveProvider;
+    }
     this.stateMachine = new AttendanceStateMachine(this.config);
     this.validator = new HeartbeatValidator(300_000, this.clock);
   }
@@ -468,4 +498,657 @@ export class AttendanceService {
     }
     return 0;
   }
+
+  // -------------------------------------------------------------
+  // FR-ATT-013: Corrections Workflow
+  // -------------------------------------------------------------
+
+  public async requestCorrection(params: {
+    orgId: string;
+    userId: string;
+    sessionId?: string | null;
+    requestedIn: Date;
+    requestedOut: Date;
+    reason: string;
+    evidenceDocumentId?: string;
+  }): Promise<AttendanceCorrection> {
+    if (!this.repository) {
+      throw new Error('Repository is required for corrections');
+    }
+    if (params.requestedIn.getTime() >= params.requestedOut.getTime()) {
+      throw new Error('Invalid correction request: requestedIn must precede requestedOut');
+    }
+    const correction: AttendanceCorrection = {
+      id: randomUUID(),
+      orgId: params.orgId,
+      userId: params.userId,
+      sessionId: params.sessionId || null,
+      requestedIn: params.requestedIn,
+      requestedOut: params.requestedOut,
+      reason: params.reason,
+      evidenceDocumentId: params.evidenceDocumentId || null,
+      status: CorrectionStatus.PENDING,
+      createdAt: this.clock.now(),
+    };
+    await this.repository.createCorrection(correction);
+
+    await this.repository.recordAuditLog({
+      orgId: params.orgId,
+      actorId: params.userId,
+      action: 'ATTENDANCE_CORRECTION_REQUESTED',
+      entityType: 'ATTENDANCE_CORRECTION',
+      entityId: correction.id,
+      after: {
+        requestedIn: params.requestedIn.toISOString(),
+        requestedOut: params.requestedOut.toISOString(),
+        reason: params.reason,
+        sessionId: params.sessionId || null,
+      },
+      createdAt: this.clock.now(),
+    });
+
+    return correction;
+  }
+
+  public async getPendingCorrections(orgId: string): Promise<AttendanceCorrection[]> {
+    if (!this.repository) return [];
+    return await this.repository.findPendingCorrections(orgId);
+  }
+
+  public async reviewCorrection(params: {
+    orgId: string;
+    reviewerId: string;
+    reviewerRole: string;
+    correctionId: string;
+    approved: boolean;
+    reviewNote?: string;
+  }): Promise<{ correction: AttendanceCorrection; adjustedSession?: AttendanceSession }> {
+    if (!this.repository) {
+      throw new Error('Repository is required for reviewCorrection');
+    }
+    const correction = await this.repository.findCorrectionById(params.orgId, params.correctionId);
+    if (!correction) {
+      throw new Error(`Correction not found: ${params.correctionId}`);
+    }
+
+    // FR-ATT-013: A user cannot approve their own correction
+    if (correction.userId === params.reviewerId) {
+      throw new Error('User cannot approve their own correction');
+    }
+
+    // Role check: Only user's manager or HR/Admin may review
+    const requester = await this.repository.findUserById(params.orgId, correction.userId);
+    const isManager = requester?.managerId === params.reviewerId || params.reviewerRole === UserRole.MANAGER;
+    const isHrOrAdmin = params.reviewerRole === UserRole.HR || params.reviewerRole === UserRole.ADMIN;
+    if (!isManager && !isHrOrAdmin) {
+      throw new Error('Unauthorized to review correction: Only manager or HR/Admin may review');
+    }
+
+    const reviewedAt = this.clock.now();
+    let adjustedSession: AttendanceSession | undefined;
+
+    if (params.approved) {
+      correction.status = CorrectionStatus.APPROVED;
+      correction.reviewerId = params.reviewerId;
+      correction.reviewedAt = reviewedAt;
+      correction.reviewNote = params.reviewNote || null;
+      await this.repository.updateCorrection(correction);
+
+      let origSession: AttendanceSession | null = null;
+      if (correction.sessionId) {
+        origSession = await this.repository.findSessionById(params.orgId, correction.sessionId);
+        if (origSession) {
+          origSession.status = SessionStatus.ADJUSTED;
+          await this.repository.saveSession(origSession);
+        }
+      }
+
+      const durationSec = Math.floor((correction.requestedOut.getTime() - correction.requestedIn.getTime()) / 1000);
+      const workDate = formatInTimeZone(correction.requestedIn, this.config.orgTimezone, 'yyyy-MM-dd');
+
+      adjustedSession = {
+        id: randomUUID(),
+        orgId: params.orgId,
+        userId: correction.userId,
+        deviceId: origSession?.deviceId || 'adjusted-device',
+        workDate,
+        clockInAt: correction.requestedIn,
+        clockOutAt: correction.requestedOut,
+        clockInSource: 'CORRECTION',
+        clockOutSource: 'CORRECTION',
+        activeSeconds: durationSec,
+        idleSeconds: 0,
+        breakSeconds: 0,
+        meetingSeconds: 0,
+        netSeconds: durationSec,
+        lastHeartbeatAt: correction.requestedOut,
+        ipIn: origSession?.ipIn || '127.0.0.1',
+        ipOut: origSession?.ipOut || '127.0.0.1',
+        flags: ['CORRECTED'],
+        status: SessionStatus.CLOSED,
+        currentState: AttendanceState.OFFLINE,
+        segments: [],
+        consecutiveIdleSeconds: 0,
+      };
+
+      await this.repository.saveSession(adjustedSession);
+
+      await this.repository.recordAuditLog({
+        orgId: params.orgId,
+        actorId: params.reviewerId,
+        action: 'ATTENDANCE_CORRECTION_APPROVED',
+        entityType: 'ATTENDANCE_CORRECTION',
+        entityId: correction.id,
+        before: { status: CorrectionStatus.PENDING },
+        after: {
+          status: CorrectionStatus.APPROVED,
+          reviewerId: params.reviewerId,
+          reviewNote: params.reviewNote || null,
+          adjustedSessionId: adjustedSession.id,
+        },
+        createdAt: reviewedAt,
+      });
+
+      return { correction, adjustedSession };
+    } else {
+      correction.status = CorrectionStatus.REJECTED;
+      correction.reviewerId = params.reviewerId;
+      correction.reviewedAt = reviewedAt;
+      correction.reviewNote = params.reviewNote || null;
+      await this.repository.updateCorrection(correction);
+
+      await this.repository.recordAuditLog({
+        orgId: params.orgId,
+        actorId: params.reviewerId,
+        action: 'ATTENDANCE_CORRECTION_REJECTED',
+        entityType: 'ATTENDANCE_CORRECTION',
+        entityId: correction.id,
+        before: { status: CorrectionStatus.PENDING },
+        after: {
+          status: CorrectionStatus.REJECTED,
+          reviewerId: params.reviewerId,
+          reviewNote: params.reviewNote || null,
+        },
+        createdAt: reviewedAt,
+      });
+
+      return { correction };
+    }
+  }
+
+  // -------------------------------------------------------------
+  // FR-ATT-014: Schedule Compliance Engine
+  // -------------------------------------------------------------
+
+  public async computeScheduleCompliance(params: {
+    orgId: string;
+    userId: string;
+    workDate: string;
+    sessions: AttendanceSession[];
+  }): Promise<ScheduleComplianceResult> {
+    const isHoliday = this.holidayProvider
+      ? await this.holidayProvider.isHoliday(params.orgId, params.workDate)
+      : false;
+    const isOnLeave = this.leaveProvider
+      ? await this.leaveProvider.isUserOnApprovedLeave(params.orgId, params.userId, params.workDate)
+      : false;
+
+    const actualSeconds = params.sessions.reduce((sum, s) => sum + s.netSeconds, 0);
+
+    // If holiday or approved leave: expected hours = 0, no absence or late flags
+    if (isHoliday || isOnLeave) {
+      return {
+        workDate: params.workDate,
+        userId: params.userId,
+        isWorkingDay: false,
+        isHoliday,
+        isOnLeave,
+        expectedSeconds: 0,
+        actualSeconds,
+        lateArrivalMinutes: 0,
+        earlyLeaveMinutes: 0,
+        overtimeMinutes: 0,
+        isAbsent: false,
+        flags: isHoliday ? ['HOLIDAY'] : ['ON_LEAVE'],
+      };
+    }
+
+    const schedule = this.repository
+      ? await this.repository.findWorkScheduleForUser(params.orgId, params.userId)
+      : null;
+
+    // Determine day of week in org timezone: 1 = Monday ... 7 = Sunday
+    const middayUtc = fromZonedTime(`${params.workDate} 12:00:00`, this.config.orgTimezone);
+    const dayOfWeek = formatInTimeZone(middayUtc, this.config.orgTimezone, 'i');
+
+    const dayConfig = schedule?.days ? schedule.days[dayOfWeek] : null;
+    const isWorkingDay = dayConfig != null;
+    const expectedSeconds = isWorkingDay ? dayConfig.expectedHours * 3600 : 0;
+    const graceMinutes = schedule?.graceMinutes ?? 10;
+
+    const flags: string[] = [];
+    let lateArrivalMinutes = 0;
+    let earlyLeaveMinutes = 0;
+    let overtimeMinutes = 0;
+    let isAbsent = false;
+
+    if (isWorkingDay && params.sessions.length === 0) {
+      isAbsent = true;
+      flags.push('ABSENT');
+    } else if (isWorkingDay && params.sessions.length > 0 && dayConfig) {
+      const sorted = [...params.sessions].sort(
+        (a, b) => a.clockInAt.getTime() - b.clockInAt.getTime(),
+      );
+      const firstIn = sorted[0].clockInAt;
+      const lastOut = sorted[sorted.length - 1].clockOutAt;
+
+      const scheduledStartUtc = fromZonedTime(
+        `${params.workDate} ${dayConfig.start}:00`,
+        this.config.orgTimezone,
+      );
+      const scheduledEndUtc = fromZonedTime(
+        `${params.workDate} ${dayConfig.end}:00`,
+        this.config.orgTimezone,
+      );
+
+      // Late arrival: clockIn > scheduledStart + graceMinutes
+      const lateThreshold = scheduledStartUtc.getTime() + graceMinutes * 60 * 1000;
+      if (firstIn.getTime() > lateThreshold) {
+        lateArrivalMinutes = Math.floor(
+          (firstIn.getTime() - scheduledStartUtc.getTime()) / 60000,
+        );
+        flags.push('LATE_ARRIVAL');
+      }
+
+      // Early leave: lastOut < scheduledEnd - graceMinutes
+      if (lastOut) {
+        const earlyThreshold = scheduledEndUtc.getTime() - graceMinutes * 60 * 1000;
+        if (lastOut.getTime() < earlyThreshold) {
+          earlyLeaveMinutes = Math.floor(
+            (scheduledEndUtc.getTime() - lastOut.getTime()) / 60000,
+          );
+          flags.push('EARLY_LEAVE');
+        }
+      }
+
+      // Overtime: actualSeconds > expectedSeconds
+      if (actualSeconds > expectedSeconds) {
+        overtimeMinutes = Math.floor((actualSeconds - expectedSeconds) / 60);
+        flags.push('OVERTIME');
+      }
+    }
+
+    return {
+      workDate: params.workDate,
+      userId: params.userId,
+      isWorkingDay,
+      isHoliday: false,
+      isOnLeave: false,
+      expectedSeconds,
+      actualSeconds,
+      lateArrivalMinutes,
+      earlyLeaveMinutes,
+      overtimeMinutes,
+      isAbsent,
+      flags,
+    };
+  }
+
+  // -------------------------------------------------------------
+  // FR-ATT-015 & Section 6.3: Daily Close Job & Draft Timesheets
+  // -------------------------------------------------------------
+
+  public async runDailyCloseJob(orgId: string, workDate: string): Promise<AttendanceDaily[]> {
+    if (!this.repository) {
+      throw new Error('Repository is required for runDailyCloseJob');
+    }
+
+    const users = await this.repository.findAllUsers(orgId);
+    const allSessions = await this.repository.findSessionsByDate(orgId, workDate);
+
+    const summaries: AttendanceDaily[] = [];
+
+    for (const user of users) {
+      const userSessions = allSessions.filter((s) => s.userId === user.id);
+      const compliance = await this.computeScheduleCompliance({
+        orgId,
+        userId: user.id,
+        workDate,
+        sessions: userSessions,
+      });
+
+      const firstIn = userSessions.length > 0 ? userSessions[0].clockInAt : null;
+      const lastOut = userSessions.length > 0 ? userSessions[userSessions.length - 1].clockOutAt : null;
+      const activeSeconds = userSessions.reduce((sum, s) => sum + s.activeSeconds, 0);
+      const idleSeconds = userSessions.reduce((sum, s) => sum + s.idleSeconds, 0);
+      const breakSeconds = userSessions.reduce((sum, s) => sum + s.breakSeconds, 0);
+      const meetingSeconds = userSessions.reduce((sum, s) => sum + s.meetingSeconds, 0);
+      const netSeconds = userSessions.reduce((sum, s) => sum + s.netSeconds, 0);
+
+      let dayStatus: DayStatus = DayStatus.PRESENT;
+      if (compliance.isHoliday) {
+        dayStatus = DayStatus.HOLIDAY;
+      } else if (compliance.isOnLeave) {
+        dayStatus = DayStatus.LEAVE;
+      } else if (compliance.isAbsent) {
+        dayStatus = DayStatus.ABSENT;
+      } else if (compliance.expectedSeconds > 0 && netSeconds < compliance.expectedSeconds / 2) {
+        dayStatus = DayStatus.HALF_DAY;
+      } else if (compliance.lateArrivalMinutes > 0) {
+        dayStatus = DayStatus.LATE;
+      } else if (compliance.earlyLeaveMinutes > 0) {
+        dayStatus = DayStatus.EARLY_LEAVE;
+      }
+
+      const daily: AttendanceDaily = {
+        orgId,
+        userId: user.id,
+        workDate,
+        firstIn,
+        lastOut,
+        activeSeconds,
+        idleSeconds,
+        breakSeconds,
+        meetingSeconds,
+        netSeconds,
+        expectedSeconds: compliance.expectedSeconds,
+        lateMinutes: compliance.lateArrivalMinutes,
+        earlyLeaveMinutes: compliance.earlyLeaveMinutes,
+        overtimeMinutes: compliance.overtimeMinutes,
+        dayStatus,
+      };
+
+      await this.repository.saveDailyAttendance(daily);
+
+      // FR-TS-001: Auto-generate draft timesheet entry
+      await this.repository.saveDraftTimesheet({
+        id: randomUUID(),
+        orgId,
+        userId: user.id,
+        workDate,
+        periodStart: workDate,
+        periodEnd: workDate,
+        status: 'DRAFT',
+        attendanceMinutes: Math.floor(netSeconds / 60),
+        loggedMinutes: 0,
+        billableMinutes: Math.floor(netSeconds / 60),
+        varianceMinutes: 0,
+      });
+
+      summaries.push(daily);
+    }
+
+    return summaries;
+  }
+
+  // -------------------------------------------------------------
+  // FR-ATT-016: Live Board with Role Scoping
+  // -------------------------------------------------------------
+
+  public async getLiveBoard(params: {
+    orgId: string;
+    callerUserId: string;
+    callerRole: string;
+    callerTeamId?: string | null;
+    filterTeamId?: string;
+  }): Promise<LiveBoardUser[]> {
+    if (!this.repository) {
+      throw new Error('Repository is required for getLiveBoard');
+    }
+
+    let targetTeamId: string | undefined = undefined;
+
+    // RBAC Scoping
+    if (params.callerRole === UserRole.TEAM_LEAD) {
+      if (!params.callerTeamId) {
+        throw new Error('Team lead has no assigned team');
+      }
+      targetTeamId = params.callerTeamId;
+    } else if (
+      params.callerRole === UserRole.HR ||
+      params.callerRole === UserRole.ADMIN ||
+      params.callerRole === UserRole.MANAGER
+    ) {
+      targetTeamId = params.filterTeamId;
+    } else {
+      throw new Error('Insufficient permissions to view live board');
+    }
+
+    const users = await this.repository.findAllUsers(params.orgId, targetTeamId);
+    const openSessions = await this.repository.findAllOpenSessions(params.orgId);
+    const todayStr = formatInTimeZone(this.clock.now(), this.config.orgTimezone, 'yyyy-MM-dd');
+
+    const board: LiveBoardUser[] = [];
+
+    for (const u of users) {
+      const openSession = openSessions.find((s) => s.userId === u.id);
+      let status: LivePresenceStatus = LivePresenceStatus.OFFLINE;
+      let clockInAt: Date | null = null;
+      let lastHeartbeatAt: Date | null = null;
+      let todayNetSeconds = 0;
+      let currentSessionId: string | null = null;
+
+      if (openSession) {
+        currentSessionId = openSession.id;
+        clockInAt = openSession.clockInAt;
+        lastHeartbeatAt = openSession.lastHeartbeatAt;
+        todayNetSeconds = openSession.netSeconds;
+
+        switch (openSession.currentState) {
+          case AttendanceState.ACTIVE:
+            status = LivePresenceStatus.ACTIVE;
+            break;
+          case AttendanceState.IDLE:
+            status = LivePresenceStatus.IDLE;
+            break;
+          case AttendanceState.ON_BREAK:
+            status = LivePresenceStatus.ON_BREAK;
+            break;
+          case AttendanceState.IN_MEETING:
+            status = LivePresenceStatus.IN_MEETING;
+            break;
+          default:
+            status = LivePresenceStatus.IDLE;
+            break;
+        }
+      } else {
+        const isOnLeave = this.leaveProvider
+          ? await this.leaveProvider.isUserOnApprovedLeave(params.orgId, u.id, todayStr)
+          : false;
+        if (isOnLeave) {
+          status = LivePresenceStatus.ON_LEAVE;
+        } else {
+          status = LivePresenceStatus.OFFLINE;
+        }
+      }
+
+      board.push({
+        userId: u.id,
+        displayName: u.displayName,
+        email: u.email,
+        teamId: u.teamId,
+        role: u.role,
+        status,
+        currentSessionId,
+        clockInAt,
+        lastHeartbeatAt,
+        todayNetSeconds,
+      });
+    }
+
+    return board;
+  }
+
+  // -------------------------------------------------------------
+  // FR-ATT-019: Attendance Data Export (CSV & XLSX)
+  // -------------------------------------------------------------
+
+  public async exportAttendanceCsv(params: {
+    orgId: string;
+    callerUserId: string;
+    callerRole: string;
+    filter: AttendanceExportFilter;
+  }): Promise<string> {
+    if (!this.repository) {
+      throw new Error('Repository is required for export');
+    }
+    const allowed = [UserRole.HR, UserRole.ADMIN, UserRole.MANAGER, UserRole.TEAM_LEAD];
+    if (!allowed.includes(params.callerRole as any)) {
+      throw new Error('Export permission denied: caller lacks export permission');
+    }
+
+    const records = await this.repository.findDailyAttendanceInRange(params.orgId, params.filter);
+
+    let csv = 'work_date,user_id,display_name,email,first_in,last_out,net_hours,status\n';
+    for (const r of records as any[]) {
+      const netHours = (r.netSeconds / 3600).toFixed(2);
+      const firstIn = r.firstIn ? r.firstIn.toISOString() : '';
+      const lastOut = r.lastOut ? r.lastOut.toISOString() : '';
+      csv += `${r.workDate},${r.userId},"${r.displayName || r.display_name || ''}","${r.email || ''}",${firstIn},${lastOut},${netHours},${r.dayStatus}\n`;
+    }
+
+    const exportId = randomUUID();
+    await this.repository.recordAuditLog({
+      orgId: params.orgId,
+      actorId: params.callerUserId,
+      action: 'ATTENDANCE_EXPORTED',
+      entityType: 'EXPORT',
+      entityId: exportId,
+      after: { format: 'CSV', filter: params.filter, rowCount: records.length },
+      createdAt: this.clock.now(),
+    });
+
+    return csv;
+  }
+
+  public async exportAttendanceXlsx(params: {
+    orgId: string;
+    callerUserId: string;
+    callerRole: string;
+    filter: AttendanceExportFilter;
+  }): Promise<Buffer> {
+    if (!this.repository) {
+      throw new Error('Repository is required for export');
+    }
+    const allowed = [UserRole.HR, UserRole.ADMIN, UserRole.MANAGER, UserRole.TEAM_LEAD];
+    if (!allowed.includes(params.callerRole as any)) {
+      throw new Error('Export permission denied: caller lacks export permission');
+    }
+
+    const records = await this.repository.findDailyAttendanceInRange(params.orgId, params.filter);
+
+    const ExcelJS = await import('exceljs');
+    const WorkbookClass = (ExcelJS as any).default?.Workbook || (ExcelJS as any).Workbook;
+    const workbook = new WorkbookClass();
+    const sheet = workbook.addWorksheet('Attendance');
+
+    sheet.columns = [
+      { header: 'work_date', key: 'work_date', width: 15 },
+      { header: 'user_id', key: 'user_id', width: 36 },
+      { header: 'display_name', key: 'display_name', width: 25 },
+      { header: 'email', key: 'email', width: 30 },
+      { header: 'first_in', key: 'first_in', width: 25 },
+      { header: 'last_out', key: 'last_out', width: 25 },
+      { header: 'net_hours', key: 'net_hours', width: 12 },
+      { header: 'status', key: 'status', width: 15 },
+    ];
+
+    for (const r of records as any[]) {
+      sheet.addRow({
+        work_date: r.workDate,
+        user_id: r.userId,
+        display_name: r.displayName || r.display_name || '',
+        email: r.email || '',
+        first_in: r.firstIn ? r.firstIn.toISOString() : '',
+        last_out: r.lastOut ? r.lastOut.toISOString() : '',
+        net_hours: Number((r.netSeconds / 3600).toFixed(2)),
+        status: r.dayStatus,
+      });
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    const exportId = randomUUID();
+    await this.repository.recordAuditLog({
+      orgId: params.orgId,
+      actorId: params.callerUserId,
+      action: 'ATTENDANCE_EXPORTED',
+      entityType: 'EXPORT',
+      entityId: exportId,
+      after: { format: 'XLSX', filter: params.filter, rowCount: records.length },
+      createdAt: this.clock.now(),
+    });
+
+    return Buffer.from(buffer);
+  }
+
+  // -------------------------------------------------------------
+  // FR-ATT-020 & FR-AUD-004: Transparency & Monitoring Consent
+  // -------------------------------------------------------------
+
+  public async getTransparencyEvents(params: {
+    orgId: string;
+    userId: string;
+  }): Promise<TransparencyInfo> {
+    if (!this.repository) {
+      throw new Error('Repository is required for transparency');
+    }
+
+    const events = await this.repository.findPresenceEventsByUser(params.orgId, params.userId, 100);
+
+    return {
+      plainLanguageNotice:
+        'HR Virtual Office Attendance Telemetry Notice: We collect minimal presence and attendance signals: ' +
+        'server timestamps of clock in/out, interval counters of active vs idle seconds, in-call/meeting status, ' +
+        'IP address, and client device identifier. ' +
+        'No screenshots. No keystroke content, no browser history, no URLs, and no webcam feeds are captured or stored. ' +
+        'All presence events are retained for 90 days in accordance with company privacy policy.',
+      noticeVersion: 'v1.0.0',
+      collectedFields: ['server_ts', 'event_type', 'state', 'seq', 'ip', 'active_seconds', 'idle_seconds', 'in_call'],
+      retentionDays: 90,
+      events,
+    };
+  }
+
+  public async recordMonitoringConsent(params: {
+    orgId: string;
+    userId: string;
+    noticeVersion: string;
+    ip?: string;
+    userAgent?: string;
+  }): Promise<MonitoringConsent> {
+    if (!this.repository) {
+      throw new Error('Repository is required for recording consent');
+    }
+
+    const consent: MonitoringConsent = {
+      id: randomUUID(),
+      orgId: params.orgId,
+      userId: params.userId,
+      noticeVersion: params.noticeVersion,
+      acceptedAt: this.clock.now(),
+      ip: params.ip || null,
+      userAgent: params.userAgent || null,
+    };
+
+    await this.repository.saveMonitoringConsent(consent);
+
+    await this.repository.recordAuditLog({
+      orgId: params.orgId,
+      actorId: params.userId,
+      action: 'MONITORING_NOTICE_ACCEPTED',
+      entityType: 'MONITORING_CONSENT',
+      entityId: consent.id,
+      after: {
+        noticeVersion: params.noticeVersion,
+        acceptedAt: consent.acceptedAt.toISOString(),
+      },
+      ip: params.ip || null,
+      userAgent: params.userAgent || null,
+      createdAt: this.clock.now(),
+    });
+
+    return consent;
+  }
 }
+
