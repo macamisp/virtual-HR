@@ -488,7 +488,7 @@ async function runDemo() {
     logStep(
       13,
       'FR-ATT-015 & FR-TS-001: Daily Close Job & Auto-Generated Draft Timesheet',
-      'Runs shortly after local midnight in org timezone.\nComputes attendance_daily row and auto-generates draft_timesheets with idempotency verification.',
+      'Runs shortly after local midnight in org timezone.\nComputes attendance_daily row and refreshes the daily timesheet draft (timesheet_days) with idempotency verification.',
     );
 
     const summaries = await service.runDailyCloseJob(orgId, '2026-10-13');
@@ -496,8 +496,8 @@ async function runDemo() {
     const daily = await repository.findDailyAttendance(orgId, userId, '2026-10-13');
     console.log(`    Materialized Daily Record: Date=${daily?.workDate} | Net=${daily?.netSeconds}s | DayStatus=${daily?.dayStatus}`);
 
-    const timesheet = await repository.findDraftTimesheet(orgId, userId, '2026-10-13');
-    console.log(`    FR-TS-001 Draft Timesheet: ID=${timesheet?.id} | AttendanceMinutes=${timesheet?.attendanceMinutes}m | Status=${timesheet?.status}`);
+    const timesheet = await repository.findTimesheetDay(orgId, userId, '2026-10-13');
+    console.log(`    FR-TS-001 Daily Timesheet Draft: Timesheet=${timesheet?.timesheetId} | AttendanceMinutes=${timesheet?.attendanceMinutes}m | Status=${timesheet?.status}`);
 
     // Idempotency test
     const rerun = await service.runDailyCloseJob(orgId, '2026-10-13');

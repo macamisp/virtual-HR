@@ -1027,21 +1027,8 @@ export class AttendanceService {
 
     await this.repository.saveDailyAttendance(daily);
 
-    // FR-TS-001: Auto-generate draft timesheet entry
-    const existingTimesheet = await this.repository.findDraftTimesheet(orgId, userId, workDate);
-    await this.repository.saveDraftTimesheet({
-      id: existingTimesheet?.id || randomUUID(),
-      orgId,
-      userId,
-      workDate,
-      periodStart: workDate,
-      periodEnd: workDate,
-      status: 'DRAFT',
-      attendanceMinutes: Math.floor(netSeconds / 60),
-      loggedMinutes: existingTimesheet?.loggedMinutes || 0,
-      billableMinutes: Math.floor(netSeconds / 60),
-      varianceMinutes: existingTimesheet ? (existingTimesheet.loggedMinutes - Math.floor(netSeconds / 60)) : 0,
-    });
+    // FR-TS-001: the daily timesheet draft (attendance vs logged time, variance).
+    await this.repository.refreshTimesheetDay(orgId, userId, workDate);
 
     return daily;
   }

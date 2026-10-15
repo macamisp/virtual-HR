@@ -423,7 +423,7 @@ describe('Advanced Attendance Capabilities (FR-ATT-013..020, FR-TS-001, RLS & Au
 
   // 3. FR-ATT-015, Section 6.3 & FR-TS-001: Daily Record & Daily Close Job
   describe('FR-ATT-015 & Section 6.3: Daily Close Job & Draft Timesheets (FR-TS-001)', () => {
-    it('Executes idempotent daily close job and produces attendance_daily + draft_timesheets', async () => {
+    it('Executes idempotent daily close job and produces attendance_daily + the daily timesheet draft', async () => {
       // Run daily close job for 2026-10-14
       const summaries = await service.runDailyCloseJob(orgA, '2026-10-14');
       assert.ok(summaries.length > 0);
@@ -435,7 +435,7 @@ describe('Advanced Attendance Capabilities (FR-ATT-013..020, FR-TS-001, RLS & Au
       assert.ok(daily.netSeconds > 0);
 
       // FR-TS-001: Verify draft timesheet was generated
-      const timesheet = await repo.findDraftTimesheet(orgA, userEmployee, '2026-10-14');
+      const timesheet = await repo.findTimesheetDay(orgA, userEmployee, '2026-10-14');
       assert.ok(timesheet);
       assert.equal(timesheet.status, 'DRAFT');
       assert.equal(timesheet.attendanceMinutes, Math.floor(daily.netSeconds / 60));

@@ -25,11 +25,14 @@ import type {
   WorkSchedule,
   AttendanceCorrection,
   AttendanceDaily,
-  DraftTimesheet,
   AuditLogEntry,
   MonitoringConsent,
   AttendanceExportFilter,
 } from '../../../../packages/shared/src/attendance/types.ts';
+import { findDay, refreshDay } from '../timesheets/timesheet-store.ts';
+import type { TimesheetDayRow } from '../timesheets/timesheet-store.ts';
+
+export type SessionClosedListener = (session: AttendanceSession) => Promise<void>;
 
 /** A raw presence event as shown to the user (FR-ATT-020). */
 export interface PresenceEventRecord {
@@ -85,8 +88,11 @@ export interface IAttendanceRepository {
   findSessionsByDate(orgId: string, workDate: string): Promise<AttendanceSession[]>;
   findSessionsByUserInRange(orgId: string, userId: string, fromDate: string, toDate: string): Promise<AttendanceSession[]>;
   findPendingCorrectionsWithRequester(orgId: string): Promise<Array<AttendanceCorrection & CorrectionRequester>>;
-  saveDraftTimesheet(timesheet: DraftTimesheet): Promise<void>;
-  findDraftTimesheet(orgId: string, userId: string, workDate: string): Promise<DraftTimesheet | null>;
+  /** FR-TS-001: recompute the user's daily timesheet draft (timesheet_days) for one date. */
+  refreshTimesheetDay(orgId: string, userId: string, workDate: string): Promise<void>;
+  findTimesheetDay(orgId: string, userId: string, workDate: string): Promise<TimesheetDayRow | null>;
+  /** FR-TS-003: called after a session is closed (not for the midnight split). */
+  onSessionClosed(listener: SessionClosedListener): void;
 
   // Users & Teams (FR-ATT-016)
   findUserById(orgId: string, userId: string): Promise<{ id: string; orgId: string; email: string; displayName: string; role: string; teamId: string | null; managerId: string | null } | null>;
@@ -118,6 +124,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
   private pool: pg.Pool;          // Application pool (runs as non-superuser 'hrvo_app' with NOBYPASSRLS)
   private adminPool: pg.Pool;     // Admin pool (runs as owner 'postgres' for migrations & test wipe ONLY)
   private retentionPool: pg.Pool; // Dedicated retention role pool ('hrvo_retention' for pruning append-only events)
+  private readonly sessionClosedListeners: SessionClosedListener[] = [];
 
   constructor(options?: string | pg.PoolConfig | PostgresRepositoryOptions) {
     if (typeof options === 'string') {
@@ -327,6 +334,24 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     // Save all segments
     for (const seg of session.segments) {
       await this.saveSegment(session.orgId, seg, session.id);
+    }
+
+    // FR-TS-003: a real clock-out stops the running task timer. Not for the midnight split
+    // (work continues) nor for corrections re-saving an old session.
+    if (
+      session.clockOutAt &&
+      session.clockOutSource !== ClockOutSource.MIDNIGHT &&
+      session.clockOutSource !== ClockOutSource.CORRECTION &&
+      session.status !== SessionStatus.ADJUSTED &&
+      session.status !== SessionStatus.CANCELLED
+    ) {
+      for (const listener of this.sessionClosedListeners) {
+        try {
+          await listener(session);
+        } catch (err) {
+          console.error('session-closed listener failed', err instanceof Error ? err.message : 'unknown error');
+        }
+      }
     }
   }
 
@@ -767,57 +792,36 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     };
   }
 
-  public async saveDraftTimesheet(t: DraftTimesheet): Promise<void> {
-    await this.queryWithRls(
-      t.orgId,
-      `INSERT INTO draft_timesheets (
-         id, org_id, user_id, work_date, period_start, period_end, status,
-         attendance_minutes, logged_minutes, billable_minutes, variance_minutes, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
-       ON CONFLICT (org_id, user_id, work_date) DO UPDATE SET
-         attendance_minutes = EXCLUDED.attendance_minutes,
-         logged_minutes = EXCLUDED.logged_minutes,
-         billable_minutes = EXCLUDED.billable_minutes,
-         variance_minutes = EXCLUDED.variance_minutes,
-         status = EXCLUDED.status,
-         updated_at = CURRENT_TIMESTAMP`,
-      [
-        t.id,
-        t.orgId,
-        t.userId,
-        t.workDate,
-        t.periodStart,
-        t.periodEnd,
-        t.status,
-        t.attendanceMinutes,
-        t.loggedMinutes,
-        t.billableMinutes,
-        t.varianceMinutes,
-      ],
-    );
+  public async refreshTimesheetDay(orgId: string, userId: string, workDate: string): Promise<void> {
+    await this.withRls(orgId, (client) => refreshDay(client, orgId, userId, workDate));
   }
 
-  public async findDraftTimesheet(orgId: string, userId: string, workDate: string): Promise<DraftTimesheet | null> {
-    const res = await this.queryWithRls(
-      orgId,
-      `SELECT * FROM draft_timesheets WHERE org_id = $1 AND user_id = $2 AND work_date = $3 LIMIT 1`,
-      [orgId, userId, workDate],
-    );
-    if (res.rows.length === 0) return null;
-    const r = res.rows[0];
-    return {
-      id: r.id,
-      orgId: r.org_id,
-      userId: r.user_id,
-      workDate: r.work_date,
-      periodStart: String(r.period_start),
-      periodEnd: String(r.period_end),
-      status: r.status,
-      attendanceMinutes: r.attendance_minutes,
-      loggedMinutes: r.logged_minutes,
-      billableMinutes: r.billable_minutes,
-      varianceMinutes: r.variance_minutes,
-    };
+  public async findTimesheetDay(orgId: string, userId: string, workDate: string): Promise<TimesheetDayRow | null> {
+    return await this.withRls(orgId, (client) => findDay(client, orgId, userId, workDate));
+  }
+
+  public onSessionClosed(listener: SessionClosedListener): void {
+    this.sessionClosedListeners.push(listener);
+  }
+
+  /** Several statements in one transaction under the tenant context. */
+  public async withRls<T>(orgId: string, fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+    if (!orgId || typeof orgId !== 'string' || orgId.trim() === '') {
+      throw new Error('Tenant context missing: orgId must be provided for all repository queries');
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.org_id', $1, true)`, [orgId]);
+      const out = await fn(client);
+      await client.query('COMMIT');
+      return out;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   // Users & Teams (FR-ATT-016)
@@ -1060,7 +1064,9 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       await this.adminPool.query(`DELETE FROM monitoring_consents WHERE org_id = $1`, [orgId]);
       await this.adminPool.query(`DELETE FROM presence_events WHERE org_id = $1`, [orgId]);
       await this.adminPool.query(`DELETE FROM audit_logs WHERE org_id = $1`, [orgId]);
-      await this.adminPool.query(`DELETE FROM draft_timesheets WHERE org_id = $1`, [orgId]);
+      // Cascades to timesheet_days, time_entries and timesheet_approvals (lock guard allows cascades).
+      await this.adminPool.query(`DELETE FROM timesheets WHERE org_id = $1`, [orgId]);
+      await this.adminPool.query(`DELETE FROM subcontractor_profiles WHERE org_id = $1`, [orgId]);
       await this.adminPool.query(`DELETE FROM attendance_daily WHERE org_id = $1`, [orgId]);
       await this.adminPool.query(`DELETE FROM attendance_corrections WHERE org_id = $1`, [orgId]);
       await this.adminPool.query(`DELETE FROM work_schedules WHERE org_id = $1`, [orgId]);
@@ -1076,7 +1082,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       await this.adminPool.query(`DELETE FROM monitoring_consents`);
       await this.adminPool.query(`DELETE FROM presence_events`);
       await this.adminPool.query(`DELETE FROM audit_logs`);
-      await this.adminPool.query(`DELETE FROM draft_timesheets`);
+      await this.adminPool.query(`DELETE FROM timesheets`);
+      await this.adminPool.query(`DELETE FROM subcontractor_profiles`);
       await this.adminPool.query(`DELETE FROM attendance_daily`);
       await this.adminPool.query(`DELETE FROM attendance_corrections`);
       await this.adminPool.query(`DELETE FROM work_schedules`);

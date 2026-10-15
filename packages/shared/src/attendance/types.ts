@@ -273,21 +273,6 @@ export interface AttendanceDaily {
   updatedAt?: Date;
 }
 
-export interface DraftTimesheet {
-  id: string;
-  orgId: string;
-  userId: string;
-  workDate: string;
-  periodStart: string;
-  periodEnd: string;
-  status: string; // DRAFT
-  attendanceMinutes: number;
-  loggedMinutes: number;
-  billableMinutes: number;
-  varianceMinutes: number;
-  createdAt?: Date;
-  updatedAt?: Date;
-}
 
 export const LivePresenceStatus = {
   ACTIVE: 'ACTIVE',

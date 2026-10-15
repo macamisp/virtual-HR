@@ -5,7 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { PERMISSIONS_KEY } from '../decorators/permissions.decorator.ts';
+import { PERMISSIONS_ANY_KEY, PERMISSIONS_KEY } from '../decorators/permissions.decorator.ts';
 import { hasPermission } from '../../../../../packages/shared/src/index.ts';
 import type { Permission, AuthenticatedUser } from '../../../../../packages/shared/src/index.ts';
 
@@ -18,8 +18,12 @@ export class PermissionsGuard implements CanActivate {
       PERMISSIONS_KEY,
       [context.getHandler(), context.getClass()],
     );
+    const anyPermissions = this.reflector.getAllAndOverride<Permission[]>(
+      PERMISSIONS_ANY_KEY,
+      [context.getHandler(), context.getClass()],
+    );
 
-    if (!requiredPermissions || requiredPermissions.length === 0) {
+    if ((!requiredPermissions || requiredPermissions.length === 0) && (!anyPermissions || anyPermissions.length === 0)) {
       return true;
     }
 
@@ -30,13 +34,19 @@ export class PermissionsGuard implements CanActivate {
       throw new ForbiddenException('User context missing');
     }
 
-    const hasAll = requiredPermissions.every((perm) =>
+    const hasAll = (requiredPermissions ?? []).every((perm) =>
       hasPermission(user.role, perm),
     );
 
     if (!hasAll) {
       throw new ForbiddenException(
-        `Insufficient permissions: required [${requiredPermissions.join(', ')}]`,
+        `Insufficient permissions: required [${(requiredPermissions ?? []).join(', ')}]`,
+      );
+    }
+
+    if (anyPermissions && anyPermissions.length > 0 && !anyPermissions.some((perm) => hasPermission(user.role, perm))) {
+      throw new ForbiddenException(
+        `Insufficient permissions: required one of [${anyPermissions.join(', ')}]`,
       );
     }
 

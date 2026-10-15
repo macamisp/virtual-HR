@@ -392,7 +392,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
       );
     });
 
-    it('Recomputes attendance_daily and updates draft_timesheets upon correction approval', async () => {
+    it('Recomputes attendance_daily and updates the daily timesheet draft upon correction approval', async () => {
       const pendingList = await service.getPendingCorrections(orgId);
       const pending = pendingList.find((c) => c.sessionId === baseSessionId);
       assert.ok(pending);
@@ -420,7 +420,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
       assert.ok(dailyAfter.netSeconds > dailyBefore.netSeconds);
 
       // Draft timesheet must also be updated
-      const timesheet = await repo.findDraftTimesheet(orgId, userEmp, '2026-10-14');
+      const timesheet = await repo.findTimesheetDay(orgId, userEmp, '2026-10-14');
       assert.ok(timesheet);
       assert.equal(timesheet.attendanceMinutes, Math.floor(dailyAfter.netSeconds / 60));
     });
@@ -657,7 +657,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
       assert.equal(await repo.findWorkScheduleForUser(orgId, nonExistentId), null);
       assert.equal(await repo.findCorrectionById(orgId, nonExistentId), null);
       assert.equal(await repo.findDailyAttendance(orgId, nonExistentId, '2026-01-01'), null);
-      assert.equal(await repo.findDraftTimesheet(orgId, nonExistentId, '2026-01-01'), null);
+      assert.equal(await repo.findTimesheetDay(orgId, nonExistentId, '2026-01-01'), null);
       assert.equal(await repo.findUserById(orgId, nonExistentId), null);
       assert.equal(await repo.findSessionSecret(orgId, nonExistentId), null);
 

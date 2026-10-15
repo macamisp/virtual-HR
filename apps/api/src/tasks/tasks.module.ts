@@ -5,7 +5,7 @@ import { ProjectsController } from './projects.controller.ts';
 import { TasksService } from './tasks.service.ts';
 import { ProjectsService } from './projects.service.ts';
 import { TaskEvents } from './task-events.ts';
-import { ACTUAL_TIME_PROVIDER, NoTimeEntriesYet } from './actual-time.ts';
+import { ACTUAL_TIME_PROVIDER, TimeEntriesActualTime } from './actual-time.ts';
 
 @Module({
   controllers: [TasksController, ProjectsController],
@@ -14,7 +14,7 @@ import { ACTUAL_TIME_PROVIDER, NoTimeEntriesYet } from './actual-time.ts';
     TasksService,
     ProjectsService,
     TaskEvents,
-    { provide: ACTUAL_TIME_PROVIDER, useClass: NoTimeEntriesYet },
+    { provide: ACTUAL_TIME_PROVIDER, useClass: TimeEntriesActualTime },
   ],
   exports: [TasksService, TaskEvents],
 })

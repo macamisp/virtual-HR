@@ -19,6 +19,7 @@ import { MarkdownEditor } from '@/components/markdown-editor';
 import { EmptyState, ErrorState, LoadingState } from '@/components/state-views';
 import { AcceptanceBadge, PriorityBadge, StatusBadge, isOverdue, minutesLabel } from '@/components/tasks/badges';
 import { MentionComposer } from '@/components/tasks/mention-composer';
+import { TaskTimerCard } from '@/components/timesheets/timer';
 import {
   useAddComment,
   useAssignable,
@@ -65,6 +66,7 @@ function TaskView({ task }: { task: TaskDetail }) {
   const del = useDeleteTask();
   const today = toWorkDate(new Date());
   const overdue = isOverdue(task.dueDate, task.status, today);
+  const me = useAuthStore((st) => st.user?.id);
 
   return (
     <div className="space-y-4">
@@ -127,6 +129,11 @@ function TaskView({ task }: { task: TaskDetail }) {
               ) : null}
             </CardContent>
           </Card>
+          <TaskTimerCard
+            taskId={task.id}
+            canLog={!(task.assignee?.id === me && (task.acceptanceStatus === 'PENDING' || task.acceptanceStatus === 'DECLINED'))}
+            blockedReason="Accept the task before logging time on it."
+          />
           <DetailsCard task={task} />
           <Card>
             <CardHeader><CardTitle className="text-base">Estimate vs actual</CardTitle></CardHeader>
@@ -136,7 +143,7 @@ function TaskView({ task }: { task: TaskDetail }) {
                 Actual: {task.actualMinutes === null ? <span className="text-muted-foreground">no time logged yet</span> : minutesLabel(task.actualMinutes)}
                 {task.overrun ? ' (over estimate)' : ''}
               </p>
-              <p className="text-xs text-muted-foreground">Actual time comes from timers and time entries (Timesheets).</p>
+              <p className="text-xs text-muted-foreground">Actual = finished timer and manual time on this task.</p>
             </CardContent>
           </Card>
         </div>

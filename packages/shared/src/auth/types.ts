@@ -37,6 +37,15 @@ export const Permission = {
   TASKS_READ_TEAM: 'tasks.read.team',
   TASKS_READ_ALL: 'tasks.read.all',
   PROJECTS_MANAGE: 'projects.manage',
+  // FR-TS: timesheets.use = own timers, entries and timesheets (every role except the auditor).
+  TIMESHEETS_USE: 'timesheets.use',
+  TIMESHEETS_APPROVE_TEAM: 'timesheets.approve.team',
+  TIMESHEETS_APPROVE_ALL: 'timesheets.approve.all',
+  /** Read-only view of every timesheet, rate and report (HR, admins, Finance/Auditor). */
+  TIMESHEETS_READ_ALL: 'timesheets.read.all',
+  /** FR-TS-011: the SRS name for reopening an approved timesheet. */
+  TIMESHEET_REOPEN: 'timesheet.reopen',
+  RATES_MANAGE: 'rates.manage',
 } as const;
 export type Permission = (typeof Permission)[keyof typeof Permission];
 
@@ -58,6 +67,11 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TASKS_READ_TEAM,
     Permission.TASKS_READ_ALL,
     Permission.PROJECTS_MANAGE,
+    Permission.TIMESHEETS_USE,
+    Permission.TIMESHEETS_APPROVE_ALL,
+    Permission.TIMESHEETS_READ_ALL,
+    Permission.RATES_MANAGE,
+    Permission.TIMESHEET_REOPEN,
   ],
   ADMIN: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -76,6 +90,11 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TASKS_READ_TEAM,
     Permission.TASKS_READ_ALL,
     Permission.PROJECTS_MANAGE,
+    Permission.TIMESHEETS_USE,
+    Permission.TIMESHEETS_APPROVE_ALL,
+    Permission.TIMESHEETS_READ_ALL,
+    Permission.RATES_MANAGE,
+    Permission.TIMESHEET_REOPEN,
   ],
   HR_MANAGER: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -94,6 +113,11 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TASKS_READ_TEAM,
     Permission.TASKS_READ_ALL,
     Permission.PROJECTS_MANAGE,
+    Permission.TIMESHEETS_USE,
+    Permission.TIMESHEETS_APPROVE_ALL,
+    Permission.TIMESHEETS_READ_ALL,
+    Permission.RATES_MANAGE,
+    Permission.TIMESHEET_REOPEN,
   ],
   HR: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -112,6 +136,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TASKS_READ_TEAM,
     Permission.TASKS_READ_ALL,
     Permission.PROJECTS_MANAGE,
+    Permission.TIMESHEETS_USE,
+    Permission.TIMESHEETS_APPROVE_ALL,
+    Permission.TIMESHEETS_READ_ALL,
+    Permission.RATES_MANAGE,
   ],
   MANAGER: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -123,6 +151,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TASKS_ASSIGN,
     Permission.TASKS_READ_TEAM,
     Permission.PROJECTS_MANAGE,
+    Permission.TIMESHEETS_USE,
+    Permission.TIMESHEETS_APPROVE_TEAM,
   ],
   TEAM_LEAD: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -133,24 +163,29 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.ATTENDANCE_CORRECTIONS_REVIEW,
     Permission.TASKS_ASSIGN,
     Permission.TASKS_READ_TEAM,
+    Permission.TIMESHEETS_USE,
+    Permission.TIMESHEETS_APPROVE_TEAM,
   ],
   EMPLOYEE: [
     Permission.NOTIFICATIONS_READ_OWN,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_CORRECTIONS_CREATE,
+    Permission.TIMESHEETS_USE,
   ],
   SUBCONTRACTOR: [
     Permission.NOTIFICATIONS_READ_OWN,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_CORRECTIONS_CREATE,
+    Permission.TIMESHEETS_USE,
   ],
   INTERN: [
     Permission.NOTIFICATIONS_READ_OWN,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_CORRECTIONS_CREATE,
+    Permission.TIMESHEETS_USE,
   ],
   AUDITOR: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -158,6 +193,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.ATTENDANCE_READ_ALL,
     Permission.ATTENDANCE_EXPORT,
     Permission.AUDIT_READ,
+    Permission.TIMESHEETS_READ_ALL,
   ],
 };
 

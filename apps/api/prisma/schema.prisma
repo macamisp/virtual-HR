@@ -16,6 +16,15 @@ model Organization {
   timezone                      String                 @default("Asia/Colombo") @db.VarChar(64)
   /// FR-TASK-007: hours before an unaccepted task is escalated.
   taskAcceptanceEscalationHours Int                    @default(24) @map("task_acceptance_escalation_hours")
+  /// FR-TS-002: WEEKLY, BIWEEKLY or MONTHLY; bi-weekly blocks count from the anchor Monday.
+  timesheetPeriod               String                 @default("WEEKLY") @map("timesheet_period") @db.VarChar(10)
+  timesheetPeriodAnchor         DateTime               @default(dbgenerated("'2026-01-05'::date")) @map("timesheet_period_anchor") @db.Date
+  /// FR-TS-004 / SRS 6.4: manual time per day before entries are flagged (0..480).
+  manualTimeLimitMinutes        Int                    @default(120) @map("manual_time_limit_minutes")
+  /// FR-TS-005 / SRS 6.4: variance alert threshold in percent (5..50).
+  timesheetVariancePct          Int                    @default(15) @map("timesheet_variance_pct")
+  /// FR-TS-012: days after the period end by which a timesheet should be submitted.
+  timesheetSubmitDueDays        Int                    @default(1) @map("timesheet_submit_due_days")
   createdAt                     DateTime               @default(now()) @map("created_at") @db.Timestamptz()
   users                         User[]
   teams                         Team[]
@@ -47,6 +56,11 @@ model Organization {
   taskSavedViews                TaskSavedView[]
   notifications                 Notification[]
   jobRuns                       JobRun[]
+  subcontractorProfiles         SubcontractorProfile[]
+  timesheets                    Timesheet[]
+  timesheetDays                 TimesheetDay[]
+  timeEntries                   TimeEntry[]
+  timesheetApprovals            TimesheetApproval[]
 
   @@map("organizations")
 }
@@ -99,6 +113,11 @@ model User {
   weeklyPlans           WeeklyPlan[]
   taskSavedViews        TaskSavedView[]
   notifications         Notification[]
+  rateProfile           SubcontractorProfile?
+  timesheets            Timesheet[]
+  timesheetDays         TimesheetDay[]
+  timeEntries           TimeEntry[]
+  timesheetApprovals    TimesheetApproval[]
 
   @@map("users")
 }
@@ -279,6 +298,7 @@ model AttendanceDaily {
   @@map("attendance_daily")
 }
 
+/// Deprecated: merged into timesheets + timesheet_days (ADR 008). Kept read-only until the merge is verified, then dropped.
 model DraftTimesheet {
   id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   orgId             String   @map("org_id") @db.Uuid
@@ -298,7 +318,7 @@ model DraftTimesheet {
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([orgId, userId, workDate])
-  @@map("draft_timesheets")
+  @@map("draft_timesheets_legacy")
 }
 
 model PresenceEvent {
@@ -440,17 +460,20 @@ model Project {
   manager      User?           @relation("ProjectManager", fields: [managerId], references: [id], onDelete: SetNull)
   members      ProjectMember[]
   tasks        Task[]
+  timeEntries  TimeEntry[]
 
   @@unique([orgId, code])
   @@map("projects")
 }
 
 model ProjectMember {
-  orgId     String   @map("org_id") @db.Uuid
-  projectId String   @map("project_id") @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
-  addedBy   String?  @map("added_by") @db.Uuid
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  orgId        String   @map("org_id") @db.Uuid
+  projectId    String   @map("project_id") @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  addedBy      String?  @map("added_by") @db.Uuid
+  /// FR-ORG-004 / FR-TS-009: project-specific rate for this member (in the profile's rate type and currency).
+  rateOverride Decimal? @map("rate_override") @db.Decimal(12, 2)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -501,6 +524,7 @@ model Task {
   comments     TaskComment[]
   attachments  TaskAttachment[]
   activity     TaskActivity[]
+  timeEntries  TimeEntry[]
   planItems    DailyPlanItem[]
 
   @@index([orgId, assigneeId, status])
@@ -705,4 +729,143 @@ model JobRun {
 
   @@id([orgId, job, runKey])
   @@map("job_runs")
+}
+
+/// FR-ORG-002 rate fields (FR-TS-009). Tax ID and bank details (encrypted) arrive with the ORG slice.
+model SubcontractorProfile {
+  userId             String   @id @map("user_id") @db.Uuid
+  orgId              String   @map("org_id") @db.Uuid
+  rateType           String   @map("rate_type") @db.VarChar(10)
+  rate               Decimal  @db.Decimal(12, 2)
+  currency           String   @db.Char(3)
+  overtimeMultiplier Decimal  @default(1.50) @map("overtime_multiplier") @db.Decimal(4, 2)
+  weeklyHoursCap     Decimal? @map("weekly_hours_cap") @db.Decimal(5, 2)
+  updatedBy          String?  @map("updated_by") @db.Uuid
+  updatedAt          DateTime @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("subcontractor_profiles")
+}
+
+/// FR-TS-002 / FR-TS-006: periodic, approvable timesheet per user.
+model Timesheet {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId             String    @map("org_id") @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  periodStart       DateTime  @map("period_start") @db.Date
+  periodEnd         DateTime  @map("period_end") @db.Date
+  status            String    @default("DRAFT") @db.VarChar(12)
+  attendanceMinutes Int       @default(0) @map("attendance_minutes")
+  loggedMinutes     Int       @default(0) @map("logged_minutes")
+  billableMinutes   Int       @default(0) @map("billable_minutes")
+  varianceMinutes   Int       @default(0) @map("variance_minutes")
+  flaggedDays       Int       @default(0) @map("flagged_days")
+  amount            Decimal?  @db.Decimal(14, 2)
+  currency          String?   @db.Char(3)
+  /// Payable breakdown stored at approval (FR-TS-009): rate type, lines per project.
+  payable           Json?
+  notes             String    @default("") @db.Text
+  submittedAt       DateTime? @map("submitted_at") @db.Timestamptz()
+  approvedBy        String?   @map("approved_by") @db.Uuid
+  approvedAt        DateTime? @map("approved_at") @db.Timestamptz()
+  rejectedBy        String?   @map("rejected_by") @db.Uuid
+  rejectedAt        DateTime? @map("rejected_at") @db.Timestamptz()
+  rejectionReason   String?   @map("rejection_reason") @db.Text
+  reopenedBy        String?   @map("reopened_by") @db.Uuid
+  reopenedAt        DateTime? @map("reopened_at") @db.Timestamptz()
+  reopenReason      String?   @map("reopen_reason") @db.Text
+  version           Int       @default(1)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  days         TimesheetDay[]
+  entries      TimeEntry[]
+  approvals    TimesheetApproval[]
+
+  @@unique([orgId, userId, periodStart])
+  @@index([orgId, status])
+  @@index([orgId, periodStart])
+  @@map("timesheets")
+}
+
+/// FR-TS-001 / FR-TS-005: the daily draft: attendance vs logged time and its variance.
+model TimesheetDay {
+  orgId             String    @map("org_id") @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  workDate          DateTime  @map("work_date") @db.Date
+  timesheetId       String    @map("timesheet_id") @db.Uuid
+  attendanceMinutes Int       @default(0) @map("attendance_minutes")
+  loggedMinutes     Int       @default(0) @map("logged_minutes")
+  manualMinutes     Int       @default(0) @map("manual_minutes")
+  varianceMinutes   Int       @default(0) @map("variance_minutes")
+  variancePct       Int?      @map("variance_pct")
+  flags             String[]  @default([])
+  alertedAt         DateTime? @map("alerted_at") @db.Timestamptz()
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  timesheet    Timesheet    @relation(fields: [timesheetId], references: [id], onDelete: Cascade)
+
+  @@id([orgId, userId, workDate])
+  @@index([timesheetId])
+  @@map("timesheet_days")
+}
+
+/// FR-TS-003 / FR-TS-004: raw task-level time (timer or manual).
+model TimeEntry {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        String    @map("org_id") @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  timesheetId  String    @map("timesheet_id") @db.Uuid
+  projectId    String?   @map("project_id") @db.Uuid
+  taskId       String?   @map("task_id") @db.Uuid
+  workDate     DateTime  @map("work_date") @db.Date
+  startedAt    DateTime? @map("started_at") @db.Timestamptz()
+  endedAt      DateTime? @map("ended_at") @db.Timestamptz()
+  minutes      Int       @default(0)
+  source       String    @db.VarChar(24)
+  billable     Boolean   @default(true)
+  note         String    @default("") @db.Text
+  manualReason String?   @map("manual_reason") @db.Text
+  flagged      Boolean   @default(false)
+  flagReason   String?   @map("flag_reason") @db.VarChar(40)
+  autoStopped  Boolean   @default(false) @map("auto_stopped")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  timesheet    Timesheet    @relation(fields: [timesheetId], references: [id], onDelete: Cascade)
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  task         Task?        @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([userId, startedAt])
+  @@index([orgId, userId, workDate])
+  @@index([timesheetId])
+  @@index([taskId])
+  @@map("time_entries")
+}
+
+/// FR-TS-006 / FR-TS-011 / FR-TS-013: append-only approval history (turnaround reports).
+model TimesheetApproval {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId       String   @map("org_id") @db.Uuid
+  timesheetId String   @map("timesheet_id") @db.Uuid
+  actorId     String   @map("actor_id") @db.Uuid
+  action      String   @db.VarChar(10)
+  comment     String   @default("") @db.Text
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  timesheet    Timesheet    @relation(fields: [timesheetId], references: [id], onDelete: Cascade)
+  actor        User         @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([timesheetId, createdAt])
+  @@map("timesheet_approvals")
 }

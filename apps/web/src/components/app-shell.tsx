@@ -4,10 +4,11 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckSquare, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Users } from 'lucide-react';
+import { BadgeDollarSign, CheckSquare, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Timer, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { NotificationBell } from '@/components/notification-bell';
+import { TimerBadge } from '@/components/timesheets/timer';
 import { ConsentGate } from '@/components/consent-gate';
 import { ErrorState, LoadingState } from '@/components/state-views';
 import { useAuthStore } from '@/lib/auth-store';
@@ -84,6 +85,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canSeeBoard = useCan(Permission.ATTENDANCE_READ_TEAM);
   const canReview = useCan(Permission.ATTENDANCE_CORRECTIONS_REVIEW);
   const canTasks = useCan(Permission.TASKS_USE);
+  const canTimesheets = useCan(Permission.TIMESHEETS_USE);
+  const canReadAllTimesheets = useCan(Permission.TIMESHEETS_READ_ALL);
+  const canApproveTeam = useCan(Permission.TIMESHEETS_APPROVE_TEAM);
+  const canApproveAll = useCan(Permission.TIMESHEETS_APPROVE_ALL);
+  const canManageRates = useCan(Permission.RATES_MANAGE);
+  const canApproveTimesheets = canApproveTeam || canApproveAll;
+  const canRates = canManageRates || canReadAllTimesheets;
   const [navOpen, setNavOpen] = useState(false);
   const pathname = usePathname();
   useEffect(() => setNavOpen(false), [pathname]);
@@ -143,6 +151,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <span className="font-semibold">HR Virtual Office</span>
         <div className="ml-auto flex items-center gap-3">
           <TrackingBadge />
+          <TimerBadge />
           <NotificationBell />
           <span className="hidden text-sm text-muted-foreground sm:inline" data-testid="current-user">
             {user.displayName ?? user.email} · {ROLE_LABEL[user.role] ?? user.role}
@@ -187,6 +196,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {canTasks ? (
               <li>
                 <NavLink href="/projects" icon={FolderKanban}>Projects</NavLink>
+              </li>
+            ) : null}
+            {canTimesheets ? (
+              <li>
+                <NavLink href="/timesheets" icon={Timer}>My timesheet</NavLink>
+              </li>
+            ) : null}
+            {canApproveTimesheets || canReadAllTimesheets ? (
+              <li>
+                <NavLink href="/timesheets/review" icon={ClipboardCheck}>Review timesheets</NavLink>
+              </li>
+            ) : null}
+            {canRates ? (
+              <li>
+                <NavLink href="/timesheets/rates" icon={BadgeDollarSign}>Rates</NavLink>
               </li>
             ) : null}
           </ul>
