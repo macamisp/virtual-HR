@@ -9,6 +9,7 @@ export const USERS = {
   hr: { id: '66660000-0000-4000-8000-000000000011', email: 'hr@web-e2e.test', name: 'Hana HR', role: 'HR' },
   lead: { id: '66660000-0000-4000-8000-000000000012', email: 'lead@web-e2e.test', name: 'Leo Lead', role: 'TEAM_LEAD' },
   worker: { id: '66660000-0000-4000-8000-000000000013', email: 'worker@web-e2e.test', name: 'Wendy Worker', role: 'EMPLOYEE' },
+  sub: { id: '66660000-0000-4000-8000-000000000014', email: 'sub@web-e2e.test', name: 'Sam Subcontractor', role: 'SUBCONTRACTOR' },
 } as const;
 
 export function adminPool(): pg.Pool {

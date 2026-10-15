@@ -11,7 +11,8 @@ import { generateSecret, generateURI, verifySync } from 'otplib';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
-import { PostgresAttendanceRepository } from '../attendance/attendance-repository.ts';
+import { appendAuditEntry } from '../common/audit-chain.ts';
+import type { AuditEntry } from '../common/audit-chain.ts';
 import { MAIL_TRANSPORT } from '../common/mailer.ts';
 import type { MailTransport } from '../common/mailer.ts';
 import {
@@ -915,58 +916,8 @@ export class AuthService {
     });
   }
 
-  /**
-   * Records an entry into the append-only, hash-chained audit_logs table (FR-AUD-001)
-   */
-  private async recordAudit(
-    client: pg.PoolClient,
-    entry: {
-      orgId: string;
-      actorId: string;
-      action: string;
-      entityType: string;
-      entityId: string;
-      before?: unknown;
-      after?: unknown;
-      ip?: string;
-      userAgent?: string;
-    },
-  ) {
-    // Concurrency-safe hash chaining with per-org advisory lock
-    await client.query(`SELECT pg_advisory_xact_lock(hashtext('audit_logs:' || $1::text))`, [entry.orgId]);
-
-    const lastRes = await client.query(
-      `SELECT hash FROM audit_logs WHERE org_id = $1 ORDER BY id DESC LIMIT 1`,
-      [entry.orgId],
-    );
-
-    const prevHash = lastRes.rows.length > 0
-      ? lastRes.rows[0].hash
-      : '0000000000000000000000000000000000000000000000000000000000000000';
-
-    const now = new Date();
-    const beforeStr = PostgresAttendanceRepository.canonicalJson(entry.before);
-    const afterStr = PostgresAttendanceRepository.canonicalJson(entry.after);
-    const payloadToHash = `${prevHash}|${entry.orgId}|${entry.actorId}|${entry.action}|${entry.entityType}|${entry.entityId}|${beforeStr}|${afterStr}|${now.toISOString()}`;
-    const hash = createHash('sha256').update(payloadToHash).digest('hex');
-
-    await client.query(
-      `INSERT INTO audit_logs (org_id, actor_id, action, entity_type, entity_id, before, after, ip, user_agent, prev_hash, hash, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-      [
-        entry.orgId,
-        entry.actorId,
-        entry.action,
-        entry.entityType,
-        entry.entityId,
-        beforeStr === '{}' ? null : beforeStr,
-        afterStr === '{}' ? null : afterStr,
-        entry.ip || null,
-        entry.userAgent || null,
-        prevHash,
-        hash,
-        now.toISOString(),
-      ],
-    );
+  /** Records an entry into the append-only, hash-chained audit_logs table (FR-AUD-001). */
+  private async recordAudit(client: pg.PoolClient, entry: AuditEntry) {
+    await appendAuditEntry(client, entry);
   }
 }

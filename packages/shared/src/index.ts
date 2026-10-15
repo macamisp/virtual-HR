@@ -2,6 +2,7 @@ export * from './attendance/types.ts';
 export * from './attendance/heartbeat-signer.ts';
 export * from './attendance/api.ts';
 export * from './auth/api.ts';
+export * from './tasks/types.ts';
 export {
   Permission,
   UserRole,

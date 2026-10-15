@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Clock, Eye, ListChecks, LogOut, Menu, Users } from 'lucide-react';
+import { CheckSquare, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { ConsentGate } from '@/components/consent-gate';
@@ -54,7 +54,7 @@ function useSessionBootstrap() {
 
 function NavLink({ href, icon: Icon, children }: { href: string; icon: typeof Clock; children: React.ReactNode }) {
   const pathname = usePathname();
-  const active = pathname === href;
+  const active = pathname === href || (href === '/tasks' && pathname.startsWith('/tasks/'));
   return (
     <Link
       href={href}
@@ -82,6 +82,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const canSeeBoard = useCan(Permission.ATTENDANCE_READ_TEAM);
   const canReview = useCan(Permission.ATTENDANCE_CORRECTIONS_REVIEW);
+  const canTasks = useCan(Permission.TASKS_USE);
   const [navOpen, setNavOpen] = useState(false);
   const pathname = usePathname();
   useEffect(() => setNavOpen(false), [pathname]);
@@ -160,6 +161,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
         >
           <ul className="space-y-1">
+            {canTasks ? (
+              <li>
+                <NavLink href="/tasks" icon={CheckSquare}>Tasks</NavLink>
+              </li>
+            ) : null}
             <li>
               <NavLink href="/attendance" icon={Clock}>My attendance</NavLink>
             </li>
@@ -174,6 +180,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {canReview ? (
               <li>
                 <NavLink href="/corrections" icon={ListChecks}>Corrections</NavLink>
+              </li>
+            ) : null}
+            {canTasks ? (
+              <li>
+                <NavLink href="/projects" icon={FolderKanban}>Projects</NavLink>
               </li>
             ) : null}
           </ul>

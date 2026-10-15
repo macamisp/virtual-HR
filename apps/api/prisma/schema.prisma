@@ -10,28 +10,37 @@ generator client {
 }
 
 model Organization {
-  id                    String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name                  String                 @db.VarChar(200)
-  slug                  String                 @unique @db.VarChar(80)
-  timezone              String                 @default("Asia/Colombo") @db.VarChar(64)
-  createdAt             DateTime               @default(now()) @map("created_at") @db.Timestamptz()
-  users                 User[]
-  teams                 Team[]
-  workSchedules         WorkSchedule[]
-  attendanceSessions    AttendanceSession[]
-  attendanceSegments    AttendanceSegment[]
-  heartbeatNonces       HeartbeatNonce[]
-  deviceSequences       DeviceSequence[]
-  sessionSecrets        SessionSecret[]
-  attendanceCorrections AttendanceCorrection[]
-  attendanceDaily       AttendanceDaily[]
-  draftTimesheets       DraftTimesheet[]
-  presenceEvents        PresenceEvent[]
-  auditLogs             AuditLog[]
-  monitoringConsents    MonitoringConsent[]
-  invitations           Invitation[]
-  authSessions          AuthSession[]
-  passwordResetTokens   PasswordResetToken[]
+  id                            String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                          String                 @db.VarChar(200)
+  slug                          String                 @unique @db.VarChar(80)
+  timezone                      String                 @default("Asia/Colombo") @db.VarChar(64)
+  /// FR-TASK-007: hours before an unaccepted task is escalated.
+  taskAcceptanceEscalationHours Int                    @default(24) @map("task_acceptance_escalation_hours")
+  createdAt                     DateTime               @default(now()) @map("created_at") @db.Timestamptz()
+  users                         User[]
+  teams                         Team[]
+  workSchedules                 WorkSchedule[]
+  attendanceSessions            AttendanceSession[]
+  attendanceSegments            AttendanceSegment[]
+  heartbeatNonces               HeartbeatNonce[]
+  deviceSequences               DeviceSequence[]
+  sessionSecrets                SessionSecret[]
+  attendanceCorrections         AttendanceCorrection[]
+  attendanceDaily               AttendanceDaily[]
+  draftTimesheets               DraftTimesheet[]
+  presenceEvents                PresenceEvent[]
+  auditLogs                     AuditLog[]
+  monitoringConsents            MonitoringConsent[]
+  invitations                   Invitation[]
+  authSessions                  AuthSession[]
+  passwordResetTokens           PasswordResetToken[]
+  projects                      Project[]
+  projectMembers                ProjectMember[]
+  tasks                         Task[]
+  taskChecklistItems            TaskChecklistItem[]
+  taskComments                  TaskComment[]
+  taskAttachments               TaskAttachment[]
+  taskActivity                  TaskActivity[]
 
   @@map("organizations")
 }
@@ -73,6 +82,13 @@ model User {
   authSessions          AuthSession[]
   workSchedules         WorkSchedule[]
   passwordResetTokens   PasswordResetToken[]
+  managedProjects       Project[]              @relation("ProjectManager")
+  projectMemberships    ProjectMember[]
+  assignedTasks         Task[]                 @relation("TaskAssignee")
+  reportedTasks         Task[]                 @relation("TaskReporter")
+  taskComments          TaskComment[]
+  taskAttachments       TaskAttachment[]
+  taskActivity          TaskActivity[]
 
   @@map("users")
 }
@@ -391,4 +407,170 @@ model PasswordResetToken {
 
   @@index([orgId, userId])
   @@map("password_reset_tokens")
+}
+
+// ==================== Tasks (SRS 5.7, 7.4) ====================
+
+model Project {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId      String    @map("org_id") @db.Uuid
+  name       String    @db.VarChar(200)
+  code       String    @db.VarChar(30)
+  clientName String?   @map("client_name") @db.VarChar(200)
+  managerId  String?   @map("manager_id") @db.Uuid
+  billable   Boolean   @default(false)
+  status     String    @default("ACTIVE") @db.VarChar(20) // ACTIVE, ON_HOLD, DONE, ARCHIVED
+  startDate  DateTime? @map("start_date") @db.Date
+  endDate    DateTime? @map("end_date") @db.Date
+  createdBy  String?   @map("created_by") @db.Uuid
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  manager      User?           @relation("ProjectManager", fields: [managerId], references: [id], onDelete: SetNull)
+  members      ProjectMember[]
+  tasks        Task[]
+
+  @@unique([orgId, code])
+  @@map("projects")
+}
+
+model ProjectMember {
+  orgId     String   @map("org_id") @db.Uuid
+  projectId String   @map("project_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  addedBy   String?  @map("added_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+  @@index([orgId, userId])
+  @@map("project_members")
+}
+
+model Task {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId                 String    @map("org_id") @db.Uuid
+  projectId             String?   @map("project_id") @db.Uuid
+  parentTaskId          String?   @map("parent_task_id") @db.Uuid
+  title                 String    @db.VarChar(300)
+  /// Markdown; rendered and sanitised in the browser (marked + DOMPurify).
+  description           String    @default("") @db.Text
+  status                String    @default("TODO") @db.VarChar(20)
+  priority              String    @default("MEDIUM") @db.VarChar(10)
+  assigneeId            String?   @map("assignee_id") @db.Uuid
+  reporterId            String    @map("reporter_id") @db.Uuid
+  acceptanceStatus      String    @default("NOT_REQUIRED") @map("acceptance_status") @db.VarChar(20)
+  acceptanceRequestedAt DateTime? @map("acceptance_requested_at") @db.Timestamptz()
+  acceptedAt            DateTime? @map("accepted_at") @db.Timestamptz()
+  declinedAt            DateTime? @map("declined_at") @db.Timestamptz()
+  declineReason         String?   @map("decline_reason") @db.Text
+  escalatedAt           DateTime? @map("escalated_at") @db.Timestamptz()
+  dueDate               DateTime? @map("due_date") @db.Date
+  plannedDate           DateTime? @map("planned_date") @db.Date
+  estimateMinutes       Int?      @map("estimate_minutes")
+  actualMinutes         Int?      @map("actual_minutes")
+  labels                String[]  @default([])
+  recurrenceRule        String?   @map("recurrence_rule") @db.Text
+  completedAt           DateTime? @map("completed_at") @db.Timestamptz()
+  version               Int       @default(1)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt             DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+  deletedAt             DateTime? @map("deleted_at") @db.Timestamptz()
+
+  organization Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  project      Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  parent       Task?               @relation("Subtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks     Task[]              @relation("Subtasks")
+  assignee     User?               @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  reporter     User                @relation("TaskReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  checklist    TaskChecklistItem[]
+  comments     TaskComment[]
+  attachments  TaskAttachment[]
+  activity     TaskActivity[]
+
+  @@index([orgId, assigneeId, status])
+  @@index([orgId, reporterId])
+  @@index([orgId, projectId])
+  @@index([orgId, dueDate])
+  @@index([orgId, plannedDate])
+  @@index([parentTaskId])
+  @@map("tasks")
+}
+
+model TaskChecklistItem {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId     String    @map("org_id") @db.Uuid
+  taskId    String    @map("task_id") @db.Uuid
+  text      String    @db.VarChar(300)
+  done      Boolean   @default(false)
+  sortOrder Int       @default(0) @map("sort_order")
+  doneAt    DateTime? @map("done_at") @db.Timestamptz()
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  task         Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@map("task_checklist_items")
+}
+
+model TaskComment {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId            String    @map("org_id") @db.Uuid
+  taskId           String    @map("task_id") @db.Uuid
+  authorId         String    @map("author_id") @db.Uuid
+  body             String    @db.Text
+  mentionedUserIds String[]  @default([]) @map("mentioned_user_ids") @db.Uuid
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  task         Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  author       User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@map("task_comments")
+}
+
+/// References only until the Documents module stores files (FR-DOC).
+model TaskAttachment {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId     String    @map("org_id") @db.Uuid
+  taskId    String    @map("task_id") @db.Uuid
+  name      String    @db.VarChar(255)
+  url       String    @db.Text
+  mimeType  String?   @map("mime_type") @db.VarChar(100)
+  sizeBytes BigInt?   @map("size_bytes")
+  addedBy   String    @map("added_by") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  task         Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [addedBy], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@map("task_attachments")
+}
+
+/// Append-only history of every change (FR-TASK-002, 006).
+model TaskActivity {
+  id        BigInt   @id @default(autoincrement())
+  orgId     String   @map("org_id") @db.Uuid
+  taskId    String   @map("task_id") @db.Uuid
+  actorId   String   @map("actor_id") @db.Uuid
+  type      String   @db.VarChar(40)
+  data      Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  task         Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  actor        User         @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@map("task_activity")
 }

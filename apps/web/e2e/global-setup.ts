@@ -18,7 +18,7 @@ export default async function globalSetup(): Promise<void> {
         [u.id, ORG_ID, u.email, u.name, u.role, u.role === 'HR' ? null : TEAM_ID, hash],
       );
     }
-    await pool.query(`UPDATE users SET manager_id = $1 WHERE id = $2`, [USERS.lead.id, USERS.worker.id]);
+    await pool.query(`UPDATE users SET manager_id = $1 WHERE id = ANY($2::uuid[])`, [USERS.lead.id, [USERS.worker.id, USERS.sub.id]]);
     await pool.query(`UPDATE teams SET lead_id = $1 WHERE id = $2`, [USERS.lead.id, TEAM_ID]);
   } finally {
     await pool.end();
