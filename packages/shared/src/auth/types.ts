@@ -46,6 +46,12 @@ export const Permission = {
   /** FR-TS-011: the SRS name for reopening an approved timesheet. */
   TIMESHEET_REOPEN: 'timesheet.reopen',
   RATES_MANAGE: 'rates.manage',
+  // FR-DOC: documents.use = own, linked and shared documents (every role).
+  DOCUMENTS_USE: 'documents.use',
+  /** HR and admins: every document (MANAGE), folders, grants. */
+  DOCUMENTS_READ_ALL: 'documents.read.all',
+  /** SRS 7.4 contracts (minimal until the People & Org slice). */
+  CONTRACTS_MANAGE: 'contracts.manage',
 } as const;
 export type Permission = (typeof Permission)[keyof typeof Permission];
 
@@ -72,6 +78,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TIMESHEETS_READ_ALL,
     Permission.RATES_MANAGE,
     Permission.TIMESHEET_REOPEN,
+    Permission.DOCUMENTS_USE,
+    Permission.DOCUMENTS_READ_ALL,
+    Permission.CONTRACTS_MANAGE,
   ],
   ADMIN: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -95,6 +104,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TIMESHEETS_READ_ALL,
     Permission.RATES_MANAGE,
     Permission.TIMESHEET_REOPEN,
+    Permission.DOCUMENTS_USE,
+    Permission.DOCUMENTS_READ_ALL,
+    Permission.CONTRACTS_MANAGE,
   ],
   HR_MANAGER: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -118,6 +130,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TIMESHEETS_READ_ALL,
     Permission.RATES_MANAGE,
     Permission.TIMESHEET_REOPEN,
+    Permission.DOCUMENTS_USE,
+    Permission.DOCUMENTS_READ_ALL,
+    Permission.CONTRACTS_MANAGE,
   ],
   HR: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -140,6 +155,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TIMESHEETS_APPROVE_ALL,
     Permission.TIMESHEETS_READ_ALL,
     Permission.RATES_MANAGE,
+    Permission.DOCUMENTS_USE,
+    Permission.DOCUMENTS_READ_ALL,
+    Permission.CONTRACTS_MANAGE,
   ],
   MANAGER: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -153,6 +171,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.PROJECTS_MANAGE,
     Permission.TIMESHEETS_USE,
     Permission.TIMESHEETS_APPROVE_TEAM,
+    Permission.DOCUMENTS_USE,
   ],
   TEAM_LEAD: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -165,6 +184,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TASKS_READ_TEAM,
     Permission.TIMESHEETS_USE,
     Permission.TIMESHEETS_APPROVE_TEAM,
+    Permission.DOCUMENTS_USE,
   ],
   EMPLOYEE: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -172,6 +192,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_CORRECTIONS_CREATE,
     Permission.TIMESHEETS_USE,
+    Permission.DOCUMENTS_USE,
   ],
   SUBCONTRACTOR: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -179,6 +200,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_CORRECTIONS_CREATE,
     Permission.TIMESHEETS_USE,
+    Permission.DOCUMENTS_USE,
   ],
   INTERN: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -186,6 +208,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_CORRECTIONS_CREATE,
     Permission.TIMESHEETS_USE,
+    Permission.DOCUMENTS_USE,
   ],
   AUDITOR: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -194,6 +217,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.ATTENDANCE_EXPORT,
     Permission.AUDIT_READ,
     Permission.TIMESHEETS_READ_ALL,
+    Permission.DOCUMENTS_USE,
   ],
 };
 

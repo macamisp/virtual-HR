@@ -61,6 +61,12 @@ model Organization {
   timesheetDays                 TimesheetDay[]
   timeEntries                   TimeEntry[]
   timesheetApprovals            TimesheetApproval[]
+  documentFolders               DocumentFolder[]
+  documents                     Document[]
+  documentVersions              DocumentVersion[]
+  documentAcl                   DocumentAcl[]
+  documentAccessLogs            DocumentAccessLog[]
+  contracts                     Contract[]
 
   @@map("organizations")
 }
@@ -118,6 +124,10 @@ model User {
   timesheetDays         TimesheetDay[]
   timeEntries           TimeEntry[]
   timesheetApprovals    TimesheetApproval[]
+  ownedDocuments        Document[]             @relation("DocumentOwner")
+  linkedDocuments       Document[]             @relation("DocumentLinkedUser")
+  uploadedVersions      DocumentVersion[]      @relation("DocumentVersionUploader")
+  contracts             Contract[]             @relation("UserContracts")
 
   @@map("users")
 }
@@ -461,6 +471,7 @@ model Project {
   members      ProjectMember[]
   tasks        Task[]
   timeEntries  TimeEntry[]
+  documents    Document[]
 
   @@unique([orgId, code])
   @@map("projects")
@@ -868,4 +879,171 @@ model TimesheetApproval {
 
   @@index([timesheetId, createdAt])
   @@map("timesheet_approvals")
+}
+
+/// FR-DOC-002: folder tree; access can be granted per folder (inherited by its contents).
+model DocumentFolder {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId     String   @map("org_id") @db.Uuid
+  parentId  String?  @map("parent_id") @db.Uuid
+  name      String   @db.VarChar(120)
+  createdBy String?  @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  parent       DocumentFolder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children     DocumentFolder[] @relation("FolderTree")
+  documents    Document[]
+  acl          DocumentAcl[]
+
+  @@index([orgId, parentId])
+  @@map("document_folders")
+}
+
+/// SRS 7.4 contracts (minimal, for linking contract documents; FR-ORG-003 alerts come with the ORG slice).
+model Contract {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId             String    @map("org_id") @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  title             String    @db.VarChar(200)
+  scope             String    @default("") @db.Text
+  startDate         DateTime  @map("start_date") @db.Date
+  endDate           DateTime? @map("end_date") @db.Date
+  status            String    @default("DRAFT") @db.VarChar(12)
+  documentId        String?   @unique @map("document_id") @db.Uuid
+  renewalNoticeDays Int       @default(30) @map("renewal_notice_days")
+  createdBy         String?   @map("created_by") @db.Uuid
+  version           Int       @default(1)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user            User         @relation("UserContracts", fields: [userId], references: [id], onDelete: Cascade)
+  document        Document?    @relation("ContractDocument", fields: [documentId], references: [id], onDelete: SetNull)
+  linkedDocuments Document[]   @relation("DocumentLinkedContract")
+
+  @@index([orgId, userId])
+  @@map("contracts")
+}
+
+/// FR-DOC-002/003: document metadata; content lives in object storage, encrypted per version.
+model Document {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId             String    @map("org_id") @db.Uuid
+  folderId          String?   @map("folder_id") @db.Uuid
+  title             String    @db.VarChar(300)
+  category          String    @db.VarChar(20)
+  confidentiality   String    @default("NORMAL") @db.VarChar(20)
+  ownerId           String    @map("owner_id") @db.Uuid
+  linkedUserId      String?   @map("linked_user_id") @db.Uuid
+  linkedContractId  String?   @map("linked_contract_id") @db.Uuid
+  linkedProjectId   String?   @map("linked_project_id") @db.Uuid
+  tags              String[]  @default([])
+  expiresAt         DateTime? @map("expires_at") @db.Date
+  passwordProtected Boolean   @default(false) @map("password_protected")
+  currentVersionId  String?   @unique @map("current_version_id") @db.Uuid
+  legalHold         Boolean   @default(false) @map("legal_hold")
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz()
+  version           Int       @default(1)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization   Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  folder         DocumentFolder?   @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  owner          User              @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  linkedUser     User?             @relation("DocumentLinkedUser", fields: [linkedUserId], references: [id], onDelete: SetNull)
+  linkedContract Contract?         @relation("DocumentLinkedContract", fields: [linkedContractId], references: [id], onDelete: SetNull)
+  linkedProject  Project?          @relation(fields: [linkedProjectId], references: [id], onDelete: SetNull)
+  currentVersion DocumentVersion?  @relation("DocumentCurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  versions       DocumentVersion[] @relation("DocumentVersions")
+  acl            DocumentAcl[]
+  contracts      Contract[]        @relation("ContractDocument")
+
+  @@index([orgId, folderId])
+  @@index([orgId, ownerId])
+  @@index([orgId, linkedUserId])
+  @@index([orgId, expiresAt])
+  @@map("documents")
+}
+
+/// FR-DOC-004/007/013: one stored version with its own wrapped data key and scan status.
+model DocumentVersion {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId          String    @map("org_id") @db.Uuid
+  documentId     String    @map("document_id") @db.Uuid
+  versionNo      Int       @map("version_no")
+  storageKey     String?   @map("storage_key") @db.Text
+  stagingKey     String?   @map("staging_key") @db.Text
+  uploadId       String?   @map("upload_id") @db.Text
+  fileNameEnc    Bytes     @map("file_name_enc")
+  mimeType       String?   @map("mime_type") @db.VarChar(120)
+  sizeBytes      BigInt?   @map("size_bytes")
+  declaredSize   BigInt    @map("declared_size")
+  sha256         String?   @db.Char(64)
+  dekWrappedKms  Bytes     @map("dek_wrapped_kms")
+  kmsKeyId       String    @map("kms_key_id") @db.VarChar(100)
+  iv             Bytes?
+  authTag        Bytes?    @map("auth_tag")
+  dekWrappedPw   Bytes?    @map("dek_wrapped_pw")
+  pwSalt         Bytes?    @map("pw_salt")
+  pwKdfParams    Json?     @map("pw_kdf_params")
+  scanStatus     String    @default("UPLOADING") @map("scan_status") @db.VarChar(12)
+  scanDetail     String?   @map("scan_detail") @db.VarChar(300)
+  restoredFromId String?   @map("restored_from_id") @db.Uuid
+  uploadedBy     String    @map("uploaded_by") @db.Uuid
+  uploadedAt     DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz()
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz()
+  scannedAt      DateTime? @map("scanned_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  document     Document     @relation("DocumentVersions", fields: [documentId], references: [id], onDelete: Cascade)
+  currentFor   Document?    @relation("DocumentCurrentVersion")
+  uploader     User         @relation("DocumentVersionUploader", fields: [uploadedBy], references: [id], onDelete: Restrict)
+
+  @@unique([documentId, versionNo])
+  @@index([orgId, scanStatus])
+  @@map("document_versions")
+}
+
+/// FR-DOC-009: VIEW / DOWNLOAD / EDIT / MANAGE for a user, role or team, on a document or a folder.
+model DocumentAcl {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId         String    @map("org_id") @db.Uuid
+  documentId    String?   @map("document_id") @db.Uuid
+  folderId      String?   @map("folder_id") @db.Uuid
+  principalType String    @map("principal_type") @db.VarChar(8)
+  principalId   String?   @map("principal_id") @db.Uuid
+  principalRole String?   @map("principal_role") @db.VarChar(50)
+  permission    String    @db.VarChar(10)
+  expiresAt     DateTime? @map("expires_at") @db.Timestamptz()
+  grantedBy     String    @map("granted_by") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  document     Document?       @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  folder       DocumentFolder? @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([folderId])
+  @@map("document_acl")
+}
+
+/// FR-DOC-012: immutable access trail. No FK on document/user so rows never change.
+model DocumentAccessLog {
+  id         BigInt   @id @default(autoincrement())
+  orgId      String   @map("org_id") @db.Uuid
+  documentId String?  @map("document_id") @db.Uuid
+  versionId  String?  @map("version_id") @db.Uuid
+  userId     String?  @map("user_id") @db.Uuid
+  action     String   @db.VarChar(16)
+  ip         String?  @db.VarChar(45)
+  userAgent  String?  @map("user_agent") @db.VarChar(400)
+  detail     Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, documentId, createdAt])
+  @@index([orgId, userId, createdAt])
+  @@map("document_access_logs")
 }

@@ -6,6 +6,7 @@ export * from './tasks/types.ts';
 export * from './tasks/planning.ts';
 export * from './notifications/types.ts';
 export * from './timesheets/types.ts';
+export * from './documents/types.ts';
 export {
   Permission,
   UserRole,

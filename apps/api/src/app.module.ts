@@ -8,11 +8,12 @@ import { TasksModule } from './tasks/tasks.module.ts';
 import { PlanningModule } from './planning/planning.module.ts';
 import { NotificationsModule } from './notifications/notifications.module.ts';
 import { TimesheetsModule } from './timesheets/timesheets.module.ts';
+import { DocumentsModule } from './documents/documents.module.ts';
 import { RlsInterceptor } from './common/interceptors/rls.interceptor.ts';
 import { rateLimitModule } from './common/rate-limit.ts';
 
 @Module({
-  imports: [rateLimitModule(), AuthModule, UsersModule, AttendanceModule, AuditModule, TasksModule, PlanningModule, TimesheetsModule, NotificationsModule],
+  imports: [rateLimitModule(), AuthModule, UsersModule, AttendanceModule, AuditModule, TasksModule, PlanningModule, TimesheetsModule, NotificationsModule, DocumentsModule],
   providers: [
     {
       provide: APP_INTERCEPTOR,

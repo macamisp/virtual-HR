@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { BadgeDollarSign, BarChart3, CheckSquare, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Timer, Users } from 'lucide-react';
+import { BadgeDollarSign, BarChart3, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Timer, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { NotificationBell } from '@/components/notification-bell';
@@ -86,6 +86,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canReview = useCan(Permission.ATTENDANCE_CORRECTIONS_REVIEW);
   const canTasks = useCan(Permission.TASKS_USE);
   const canTimesheets = useCan(Permission.TIMESHEETS_USE);
+  const canDocuments = useCan(Permission.DOCUMENTS_USE);
+  const canAudit = useCan(Permission.AUDIT_READ);
   const canReadAllTimesheets = useCan(Permission.TIMESHEETS_READ_ALL);
   const canApproveTeam = useCan(Permission.TIMESHEETS_APPROVE_TEAM);
   const canApproveAll = useCan(Permission.TIMESHEETS_APPROVE_ALL);
@@ -196,6 +198,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {canTasks ? (
               <li>
                 <NavLink href="/projects" icon={FolderKanban}>Projects</NavLink>
+              </li>
+            ) : null}
+            {canDocuments ? (
+              <li>
+                <NavLink href="/documents" icon={FileText}>Documents</NavLink>
+              </li>
+            ) : null}
+            {canDocuments && canAudit ? (
+              <li>
+                <NavLink href="/documents/access-log" icon={ScrollText}>Document access log</NavLink>
               </li>
             ) : null}
             {canTimesheets ? (

@@ -20,6 +20,12 @@ Background jobs (task reminders, carry-over, weekly summary, attendance close) r
 Redis when `JOBS_ENABLED=true` (the default). Set `JOBS_ENABLED=false` to run the API without
 Redis; notification emails are then sent inline and nothing is scheduled. Emails land in Mailhog.
 
+Documents (ADR 009) need three more things in `.env`: a KMS key for encryption at rest
+(`DOCUMENT_KMS_LOCAL_KEY=$(openssl rand -base64 32)`; the API will not start without it),
+S3-compatible storage (`S3_*`, plus `NEXT_PUBLIC_STORAGE_URL` set to the storage origin the browser
+uploads to) and clamd (`CLAMAV_HOST`/`CLAMAV_PORT`). Uploads stay "Scanning for viruses" until
+clamd has loaded its signatures (a few minutes after its first start).
+
 ## 2. Prepare the database (first time, or after pulling new migrations)
 
 A fresh database:

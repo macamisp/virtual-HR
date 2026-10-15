@@ -5,10 +5,13 @@ import type { ConnectionOptions, Job } from 'bullmq';
 import { NotificationEmailSender } from './notifications.service.ts';
 import type { EmailDispatcher } from './notifications.service.ts';
 import { ScheduledWorkService } from './scheduled-work.service.ts';
+import { DocumentScannerService } from '../documents/document-scanner.service.ts';
+import { DocumentMaintenanceService } from '../documents/document-maintenance.service.ts';
+import type { ScanDispatcher } from '../documents/scan-dispatcher.ts';
 
 export const JOBS_QUEUE = 'hrvo-jobs';
 
-type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attendance-reconcile' | 'attendance-daily-close' | 'presence-retention' | 'timesheet-reminders';
+type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attendance-reconcile' | 'attendance-daily-close' | 'presence-retention' | 'timesheet-reminders' | 'document-maintenance';
 
 /** Repeatable jobs. BullMQ job schedulers are de-duplicated in Redis, so N API instances run each tick once. */
 export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs: number }> = [
@@ -19,6 +22,7 @@ export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs: number }> =
   { name: 'attendance-daily-close', everyMs: 15 * 60_000 },
   { name: 'presence-retention', everyMs: 60 * 60_000 },
   { name: 'timesheet-reminders', everyMs: 15 * 60_000 },
+  { name: 'document-maintenance', everyMs: 60 * 60_000 },
 ];
 
 export function jobsEnabled(): boolean {
@@ -41,7 +45,7 @@ function redisConnection(): ConnectionOptions {
  * sent inline.
  */
 @Injectable()
-export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatcher {
+export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatcher, ScanDispatcher {
   private queue: Queue | null = null;
   private worker: Worker | null = null;
 
@@ -88,6 +92,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatch
       case 'attendance-daily-close': return await work.attendanceDailyClose(now);
       case 'presence-retention': return await work.presenceRetention(now);
       case 'timesheet-reminders': return await work.timesheetReminders(now);
+      case 'document-maintenance': return await this.moduleRef.get(DocumentMaintenanceService, { strict: false }).run(now);
+      case 'document-scan': {
+        const data = job.data as { orgId: string; versionId: string };
+        return await this.moduleRef.get(DocumentScannerService, { strict: false }).process(data.orgId, data.versionId);
+      }
       case 'notification-email': {
         const data = job.data as { orgId: string; notificationId: string };
         return await this.sender.send(data.orgId, data.notificationId);
@@ -108,5 +117,19 @@ export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatch
       // One job per notification; retried with backoff if the mail server is down.
       { jobId: `email-${notificationId}`, attempts: 5, backoff: { type: 'exponential', delay: 30_000 } },
     );
+  }
+
+  /** FR-DOC-013: one scan job per version, retried while clamd or storage is unavailable; inline without Redis. */
+  async dispatchScan(orgId: string, versionId: string): Promise<void> {
+    if (!this.queue) {
+      try {
+        await this.moduleRef.get(DocumentScannerService, { strict: false }).process(orgId, versionId);
+      } catch (err) {
+        // Stays PENDING; the hourly document maintenance job retries it.
+        console.error('Inline document scan failed:', err instanceof Error ? err.message : 'unknown error');
+      }
+      return;
+    }
+    await this.queue.add('document-scan', { orgId, versionId }, { jobId: `scan-${versionId}-${Date.now()}`, attempts: 6, backoff: { type: 'exponential', delay: 20_000 } });
   }
 }
