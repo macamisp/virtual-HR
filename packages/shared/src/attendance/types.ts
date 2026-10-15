@@ -310,6 +310,7 @@ export interface LiveBoardUser {
   clockInAt?: Date | null;
   lastHeartbeatAt?: Date | null;
   todayNetSeconds: number;
+  hasClockedInToday: boolean;   // distinguishes "signed out" from "not yet in"
 }
 
 export interface LiveBoardFilter {

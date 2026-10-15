@@ -88,3 +88,23 @@ jobs:
 
       - name: Run test suite with coverage
         run: npm run test:coverage
+
+      - name: Typecheck web app
+        run: npm run web:typecheck
+
+      - name: Install Playwright Chromium
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+
+      - name: Web end-to-end tests (real API + Postgres)
+        env:
+          CI: 'true'
+        run: npm run e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report
+          retention-days: 7

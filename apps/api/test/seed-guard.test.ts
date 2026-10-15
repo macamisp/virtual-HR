@@ -10,6 +10,7 @@ const root = process.cwd();
 const scripts: Array<{ name: string; args: string[] }> = [
   { name: 'demo.ts (attendance demo)', args: ['--experimental-strip-types', path.join(root, 'apps/api/test/demo.ts')] },
   { name: 'demo-shell (app shell demo, compiled)', args: [path.join(root, 'dist/apps/api/test/demo-shell.js')] },
+  { name: 'seed-web-demo.ts (web click-through seed)', args: ['--experimental-strip-types', path.join(root, 'apps/api/test/seed-web-demo.ts')] },
 ];
 
 describe('Demo seeds refuse NODE_ENV=production', () => {

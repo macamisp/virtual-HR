@@ -21,6 +21,26 @@ import type {
   StateMachineTransitionResult,
 } from '../../../../packages/shared/src/attendance/types.ts';
 
+/** Thrown when a user action is not valid in the session's current state (e.g. ending a break that never started). */
+export class InvalidTransitionError extends Error {
+  readonly from: AttendanceState;
+  readonly action: string;
+
+  constructor(from: AttendanceState, action: string) {
+    super(`Cannot ${action} while ${from}`);
+    this.name = 'InvalidTransitionError';
+    this.from = from;
+    this.action = action;
+  }
+}
+
+const BREAK_STARTABLE: readonly AttendanceState[] = [
+  AttendanceState.ACTIVE,
+  AttendanceState.IDLE,
+  AttendanceState.PAUSED,
+  AttendanceState.IN_MEETING,
+];
+
 export class AttendanceStateMachine {
   private config: AttendanceConfig;
 
@@ -270,6 +290,9 @@ export class AttendanceStateMachine {
     session: AttendanceSession,
     serverTime: Date,
   ): StateMachineTransitionResult {
+    if (!BREAK_STARTABLE.includes(session.currentState)) {
+      throw new InvalidTransitionError(session.currentState, 'start a break');
+    }
     const updated = { ...session };
     const prev = updated.currentState;
     this.closeLastSegment(updated, serverTime);
@@ -292,6 +315,9 @@ export class AttendanceStateMachine {
     session: AttendanceSession,
     serverTime: Date,
   ): StateMachineTransitionResult {
+    if (session.currentState !== AttendanceState.ON_BREAK) {
+      throw new InvalidTransitionError(session.currentState, 'end a break');
+    }
     const updated = { ...session };
     const lastSeg = this.closeLastSegment(updated, serverTime);
     if (lastSeg) {

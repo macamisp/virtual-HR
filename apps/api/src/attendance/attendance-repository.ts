@@ -31,6 +31,13 @@ import type {
   AttendanceExportFilter,
 } from '../../../../packages/shared/src/attendance/types.ts';
 
+export interface CorrectionRequester {
+  requesterName: string | null;
+  requesterEmail: string;
+  requesterManagerId: string | null;
+  requesterTeamId: string | null;
+}
+
 export interface IAttendanceRepository {
   findOpenSessionByUserId(orgId: string, userId: string): Promise<AttendanceSession | null>;
   findSessionById(orgId: string, sessionId: string): Promise<AttendanceSession | null>;
@@ -64,6 +71,8 @@ export interface IAttendanceRepository {
   findDailyAttendance(orgId: string, userId: string, workDate: string): Promise<AttendanceDaily | null>;
   findDailyAttendanceInRange(orgId: string, filter: AttendanceExportFilter): Promise<AttendanceDaily[]>;
   findSessionsByDate(orgId: string, workDate: string): Promise<AttendanceSession[]>;
+  findSessionsByUserInRange(orgId: string, userId: string, fromDate: string, toDate: string): Promise<AttendanceSession[]>;
+  findPendingCorrectionsWithRequester(orgId: string): Promise<Array<AttendanceCorrection & CorrectionRequester>>;
   saveDraftTimesheet(timesheet: DraftTimesheet): Promise<void>;
   findDraftTimesheet(orgId: string, userId: string, workDate: string): Promise<DraftTimesheet | null>;
 
@@ -688,6 +697,38 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       sessions.push(this.mapRowToSession(row, segments));
     }
     return sessions;
+  }
+
+  /** Sessions (without segments) for one user with work_date in [fromDate, toDate]. */
+  public async findSessionsByUserInRange(orgId: string, userId: string, fromDate: string, toDate: string): Promise<AttendanceSession[]> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT * FROM attendance_sessions
+       WHERE org_id = $1 AND user_id = $2 AND work_date >= $3 AND work_date <= $4
+       ORDER BY clock_in_at ASC`,
+      [orgId, userId, fromDate, toDate],
+    );
+    return res.rows.map((row) => this.mapRowToSession(row, []));
+  }
+
+  /** Pending corrections joined with the requester (for the manager review queue). */
+  public async findPendingCorrectionsWithRequester(orgId: string): Promise<Array<AttendanceCorrection & CorrectionRequester>> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT c.*, u.display_name AS requester_name, u.email AS requester_email,
+              u.manager_id AS requester_manager_id, u.team_id AS requester_team_id
+       FROM attendance_corrections c JOIN users u ON u.id = c.user_id
+       WHERE c.org_id = $1 AND c.status = 'PENDING'
+       ORDER BY c.created_at ASC`,
+      [orgId],
+    );
+    return res.rows.map((row) => ({
+      ...this.mapRowToCorrection(row),
+      requesterName: row.requester_name ?? null,
+      requesterEmail: row.requester_email,
+      requesterManagerId: row.requester_manager_id ?? null,
+      requesterTeamId: row.requester_team_id ?? null,
+    }));
   }
 
   private mapRowToDaily(row: any): AttendanceDaily {

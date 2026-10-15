@@ -16,7 +16,7 @@ import { AttendanceService } from './attendance.service.ts';
 import { PrismaService } from '../common/prisma.service.ts';
 import { getRateLimits } from '../common/config.ts';
 import { verifyToken } from '../auth/tokens.ts';
-import type { JwtPayload, HeartbeatPayload } from '../../../../packages/shared/src/index.ts';
+import type { JwtPayload, HeartbeatPayload, StateMachineTransitionResult } from '../../../../packages/shared/src/index.ts';
 
 const AUTH_EVENTS_CHANNEL = 'hrvo_auth_events';
 
@@ -122,7 +122,11 @@ export class AttendanceGateway
     const auth = client.data?.auth as SocketAuth | undefined;
     if (auth?.user.sub) {
       try {
-        await this.attendanceService.onSocketDisconnect(auth.user.sub);
+        // Other tabs/devices of the same user may still be connected; only the last socket
+        // leaving starts the grace window.
+        const remaining = this.server ? await this.server.in(`user:${auth.user.sub}`).fetchSockets() : [];
+        if (remaining.length > 0) return;
+        await this.attendanceService.onSocketDisconnect(auth.user.sub, undefined, auth.user.orgId);
         if (this.server) {
           this.server.to(`org:${auth.user.orgId}`).emit('presence:update', {
             userId: auth.user.sub,
@@ -188,7 +192,7 @@ export class AttendanceGateway
     payload.orgId = user.orgId;
 
     try {
-      const result = await this.attendanceService.ingestHeartbeat(payload);
+      const result = await this.attendanceService.ingestHeartbeat(payload, undefined, client.handshake.address || undefined);
 
       this.server.to(`org:${user.orgId}`).emit('presence:update', {
         userId: user.sub,
@@ -271,6 +275,21 @@ export class AttendanceGateway
     if (!this.server) return;
     this.server.to(room).emit('auth:revoked', { reason });
     this.server.in(room).disconnectSockets(true);
+  }
+
+  /** Push a REST-initiated transition (e.g. break start/end) to the org board and the user's own sockets. */
+  broadcastTransition(orgId: string, userId: string, result: StateMachineTransitionResult): void {
+    if (!this.server) return;
+    this.server.to(`org:${orgId}`).emit('presence:update', {
+      userId,
+      state: result.currentState,
+      actionTaken: result.actionTaken,
+    });
+    this.server.to(`user:${userId}`).emit('attendance:event', {
+      actionTaken: result.actionTaken,
+      currentState: result.currentState,
+      session: result.session,
+    });
   }
 
   /** Public for tests; applies one hrvo_auth_events notification. */

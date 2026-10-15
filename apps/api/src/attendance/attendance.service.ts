@@ -8,6 +8,14 @@ import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import { AttendanceStateMachine } from './attendance-state-machine.ts';
 import { HeartbeatValidator } from './heartbeat-validator.ts';
 import type { IAttendanceRepository } from './attendance-repository.ts';
+import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import type {
+  MyToday,
+  MyDay,
+  CorrectionQueueItem,
+  ConsentStatus,
+  TimeTotals,
+} from '../../../../packages/shared/src/attendance/api.ts';
 import {
   AttendanceState,
   SessionStatus,
@@ -61,6 +69,10 @@ export class AttendanceService {
   private sessionSecrets = new Map<string, string>();
   private sessionSecretOrgs = new Map<string, string>();
   private inMemoryConsents = new Map<string, Set<string>>();
+  // Per-user mutation queue: every read-modify-write of a user's open session runs in order,
+  // so a slow disconnect cannot overwrite a newer heartbeat (lost update). Single-instance only;
+  // horizontal scaling needs a shared lock (ADR 006).
+  private sessionLocks = new Map<string, Promise<void>>();
 
   constructor(
     configOrRepo?: any,
@@ -86,6 +98,24 @@ export class AttendanceService {
     }
     this.stateMachine = new AttendanceStateMachine(this.config);
     this.validator = new HeartbeatValidator(300_000, this.clock);
+  }
+
+  private async withSessionLock<T>(orgId: string | undefined, userId: string, fn: () => Promise<T>): Promise<T> {
+    const key = `${orgId ?? ''}:${userId}`;
+    const previous = this.sessionLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => mine);
+    this.sessionLocks.set(key, tail);
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.sessionLocks.get(key) === tail) this.sessionLocks.delete(key);
+    }
   }
 
   /**
@@ -211,40 +241,66 @@ export class AttendanceService {
       throw new Error(`Heartbeat rejected: ${validation.reason}`);
     }
 
-    // Ingest into state machine
-    let existingSession: AttendanceSession | null = null;
-    if (this.repository) {
-      existingSession = await this.repository.findOpenSessionByUserId(
-        payload.orgId,
-        payload.userId,
-      );
-    } else {
-      existingSession = this.sessions.get(payload.userId) ?? null;
-    }
-
-    // FR-AUD-004 / FR-ATT-020 Consent Gate:
-    // A user who has not accepted the current monitoring-notice version must not get a session created by heartbeats.
-    if (!existingSession) {
-      const currentVersion = this.config.currentNoticeVersion ?? 'v1.0.0';
-      const hasConsent = await this.hasUserAcceptedNotice(payload.orgId, payload.userId, currentVersion);
-      if (!hasConsent) {
-        throw new Error(`CONSENT_REQUIRED: User has not accepted current monitoring notice (${currentVersion})`);
+    return await this.withSessionLock(payload.orgId, payload.userId, async () => {
+      // Ingest into state machine
+      let existingSession: AttendanceSession | null = null;
+      if (this.repository) {
+        existingSession = await this.repository.findOpenSessionByUserId(
+          payload.orgId,
+          payload.userId,
+        );
+      } else {
+        existingSession = this.sessions.get(payload.userId) ?? null;
       }
-    }
 
-    const result = this.stateMachine.handleHeartbeat(
-      existingSession,
-      payload,
-      serverTime,
-      ip,
-    );
+      // FR-AUD-004 / FR-ATT-020 Consent Gate:
+      // A user who has not accepted the current monitoring-notice version must not get a session created by heartbeats.
+      if (!existingSession) {
+        const currentVersion = this.config.currentNoticeVersion ?? 'v1.0.0';
+        const hasConsent = await this.hasUserAcceptedNotice(payload.orgId, payload.userId, currentVersion);
+        if (!hasConsent) {
+          throw new Error(`CONSENT_REQUIRED: User has not accepted current monitoring notice (${currentVersion})`);
+        }
+      }
 
-    if (this.repository) {
-      await this.repository.saveSession(result.session);
-    }
-    this.sessions.set(payload.userId, result.session);
+      // Section 6.2: DISCONNECTED -> reconnect within grace -> previous state. A valid, signed
+      // heartbeat proves the client is connected again (covers socket reconnects and new tabs).
+      if (existingSession && existingSession.currentState === AttendanceState.DISCONNECTED) {
+        existingSession = this.stateMachine.handleSocketReconnect(existingSession, serverTime).session;
+      }
 
-    return result;
+      const result = this.stateMachine.handleHeartbeat(
+        existingSession,
+        payload,
+        serverTime,
+        ip,
+      );
+
+      if (this.repository) {
+        await this.repository.saveSession(result.session);
+        // FR-ATT-020: raw event the user can inspect. Counters only, never content.
+        await this.repository.recordPresenceEvent({
+          orgId: payload.orgId,
+          userId: payload.userId,
+          sessionId: result.session.id,
+          serverTs: serverTime,
+          eventType: 'HEARTBEAT',
+          state: result.currentState,
+          seq: payload.sequenceNumber,
+          ip,
+          meta: {
+            activeSeconds: payload.activeSeconds,
+            idleSeconds: payload.idleSeconds,
+            tabVisible: payload.tabVisible,
+            windowFocused: payload.windowFocused,
+            inCall: payload.inCall,
+          },
+        });
+      }
+      this.sessions.set(payload.userId, result.session);
+
+      return result;
+    });
   }
 
   /**
@@ -256,15 +312,17 @@ export class AttendanceService {
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
-    let session = await this.getSession(userId, targetOrgId);
-    if (!session || session.status !== SessionStatus.OPEN) return null;
+    return await this.withSessionLock(targetOrgId, userId, async () => {
+      let session = await this.getSession(userId, targetOrgId);
+      if (!session || session.status !== SessionStatus.OPEN) return null;
 
-    const result = this.stateMachine.handleSocketDisconnect(session, serverTime);
-    if (this.repository) {
-      await this.repository.saveSession(result.session);
-    }
-    this.sessions.set(userId, result.session);
-    return result;
+      const result = this.stateMachine.handleSocketDisconnect(session, serverTime);
+      if (this.repository) {
+        await this.repository.saveSession(result.session);
+      }
+      this.sessions.set(userId, result.session);
+      return result;
+    });
   }
 
   /**
@@ -276,15 +334,17 @@ export class AttendanceService {
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
-    let session = await this.getSession(userId, targetOrgId);
-    if (!session || session.status !== SessionStatus.OPEN) return null;
+    return await this.withSessionLock(targetOrgId, userId, async () => {
+      let session = await this.getSession(userId, targetOrgId);
+      if (!session || session.status !== SessionStatus.OPEN) return null;
 
-    const result = this.stateMachine.handleSocketReconnect(session, serverTime);
-    if (this.repository) {
-      await this.repository.saveSession(result.session);
-    }
-    this.sessions.set(userId, result.session);
-    return result;
+      const result = this.stateMachine.handleSocketReconnect(session, serverTime);
+      if (this.repository) {
+        await this.repository.saveSession(result.session);
+      }
+      this.sessions.set(userId, result.session);
+      return result;
+    });
   }
 
   /**
@@ -296,16 +356,18 @@ export class AttendanceService {
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
-    let session = await this.getSession(userId, targetOrgId);
-    if (!session || session.status !== SessionStatus.OPEN) return null;
+    return await this.withSessionLock(targetOrgId, userId, async () => {
+      let session = await this.getSession(userId, targetOrgId);
+      if (!session || session.status !== SessionStatus.OPEN) return null;
 
-    const result = this.stateMachine.handleExplicitLogout(session, serverTime);
-    if (this.repository) {
-      await this.repository.saveSession(result.session);
-    }
-    this.sessions.delete(userId);
-    this.closedSessions.set(result.session.id, result.session);
-    return result;
+      const result = this.stateMachine.handleExplicitLogout(session, serverTime);
+      if (this.repository) {
+        await this.repository.saveSession(result.session);
+      }
+      this.sessions.delete(userId);
+      this.closedSessions.set(result.session.id, result.session);
+      return result;
+    });
   }
 
   /**
@@ -317,15 +379,17 @@ export class AttendanceService {
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
-    let session = await this.getSession(userId, targetOrgId);
-    if (!session || session.status !== SessionStatus.OPEN) return null;
+    return await this.withSessionLock(targetOrgId, userId, async () => {
+      let session = await this.getSession(userId, targetOrgId);
+      if (!session || session.status !== SessionStatus.OPEN) return null;
 
-    const result = this.stateMachine.handleUserStartsBreak(session, serverTime);
-    if (this.repository) {
-      await this.repository.saveSession(result.session);
-    }
-    this.sessions.set(userId, result.session);
-    return result;
+      const result = this.stateMachine.handleUserStartsBreak(session, serverTime);
+      if (this.repository) {
+        await this.repository.saveSession(result.session);
+      }
+      this.sessions.set(userId, result.session);
+      return result;
+    });
   }
 
   /**
@@ -337,15 +401,17 @@ export class AttendanceService {
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
-    let session = await this.getSession(userId, targetOrgId);
-    if (!session || session.status !== SessionStatus.OPEN) return null;
+    return await this.withSessionLock(targetOrgId, userId, async () => {
+      let session = await this.getSession(userId, targetOrgId);
+      if (!session || session.status !== SessionStatus.OPEN) return null;
 
-    const result = this.stateMachine.handleUserEndsBreak(session, serverTime);
-    if (this.repository) {
-      await this.repository.saveSession(result.session);
-    }
-    this.sessions.set(userId, result.session);
-    return result;
+      const result = this.stateMachine.handleUserEndsBreak(session, serverTime);
+      if (this.repository) {
+        await this.repository.saveSession(result.session);
+      }
+      this.sessions.set(userId, result.session);
+      return result;
+    });
   }
 
   /**
@@ -358,15 +424,17 @@ export class AttendanceService {
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
-    let session = await this.getSession(userId, targetOrgId);
-    if (!session || session.status !== SessionStatus.OPEN) return null;
+    return await this.withSessionLock(targetOrgId, userId, async () => {
+      let session = await this.getSession(userId, targetOrgId);
+      if (!session || session.status !== SessionStatus.OPEN) return null;
 
-    const result = this.stateMachine.handleJoinMeeting(session, meetingId, serverTime);
-    if (this.repository) {
-      await this.repository.saveSession(result.session);
-    }
-    this.sessions.set(userId, result.session);
-    return result;
+      const result = this.stateMachine.handleJoinMeeting(session, meetingId, serverTime);
+      if (this.repository) {
+        await this.repository.saveSession(result.session);
+      }
+      this.sessions.set(userId, result.session);
+      return result;
+    });
   }
 
   /**
@@ -378,15 +446,17 @@ export class AttendanceService {
     orgId?: string,
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
-    let session = await this.getSession(userId, targetOrgId);
-    if (!session || session.status !== SessionStatus.OPEN) return null;
+    return await this.withSessionLock(targetOrgId, userId, async () => {
+      let session = await this.getSession(userId, targetOrgId);
+      if (!session || session.status !== SessionStatus.OPEN) return null;
 
-    const result = this.stateMachine.handleLeaveMeeting(session, serverTime);
-    if (this.repository) {
-      await this.repository.saveSession(result.session);
-    }
-    this.sessions.set(userId, result.session);
-    return result;
+      const result = this.stateMachine.handleLeaveMeeting(session, serverTime);
+      if (this.repository) {
+        await this.repository.saveSession(result.session);
+      }
+      this.sessions.set(userId, result.session);
+      return result;
+    });
   }
 
   /**
@@ -420,67 +490,73 @@ export class AttendanceService {
 
     const openSessions = await this.getAllOpenSessions(targetOrgId);
 
-    for (const session of openSessions) {
-      if (session.status !== SessionStatus.OPEN) continue;
+    for (const listed of openSessions) {
+      await this.withSessionLock(targetOrgId, listed.userId, async () => {
+        // Re-read inside the lock: a heartbeat may have changed the session since the listing.
+        const session = this.repository && targetOrgId
+          ? await this.repository.findSessionById(targetOrgId, listed.id)
+          : (this.sessions.get(listed.userId) ?? listed);
+        if (!session || session.id !== listed.id || session.status !== SessionStatus.OPEN) return;
 
-      // 2. Midnight boundary split (must precede timeout so cross-midnight sessions split cleanly)
-      const midRes = this.stateMachine.handleMidnightCheck(session, serverTime);
-      let currentSession = session;
-      if (midRes.splitSession) {
-        if (this.repository) {
-          await this.repository.saveSession(midRes.session);
-          await this.repository.saveSession(midRes.splitSession);
+        // 2. Midnight boundary split (must precede timeout so cross-midnight sessions split cleanly)
+        const midRes = this.stateMachine.handleMidnightCheck(session, serverTime);
+        let currentSession = session;
+        if (midRes.splitSession) {
+          if (this.repository) {
+            await this.repository.saveSession(midRes.session);
+            await this.repository.saveSession(midRes.splitSession);
+          }
+          this.closedSessions.set(midRes.session.id, midRes.session);
+          this.sessions.set(session.userId, midRes.splitSession);
+          splitCount++;
+          currentSession = midRes.splitSession;
         }
-        this.closedSessions.set(midRes.session.id, midRes.session);
-        this.sessions.set(session.userId, midRes.splitSession);
-        splitCount++;
-        currentSession = midRes.splitSession;
-      }
 
-      // 3. Max session length (>14 hours)
-      const maxRes = this.stateMachine.handleMaxLengthCheck(currentSession, serverTime);
-      if (maxRes.session.status === SessionStatus.CLOSED) {
-        if (this.repository) {
-          await this.repository.saveSession(maxRes.session);
+        // 3. Max session length (>14 hours)
+        const maxRes = this.stateMachine.handleMaxLengthCheck(currentSession, serverTime);
+        if (maxRes.session.status === SessionStatus.CLOSED) {
+          if (this.repository) {
+            await this.repository.saveSession(maxRes.session);
+          }
+          this.sessions.delete(session.userId);
+          this.closedSessions.set(maxRes.session.id, maxRes.session);
+          closedCount++;
+          return;
         }
-        this.sessions.delete(session.userId);
-        this.closedSessions.set(maxRes.session.id, maxRes.session);
-        closedCount++;
-        continue;
-      }
 
-      // 4. Grace expiration check (Row 12: disconnect grace expired)
-      if (
-        currentSession.currentState === AttendanceState.DISCONNECTED &&
-        currentSession.graceTimerExpiresAt &&
-        serverTime.getTime() >= currentSession.graceTimerExpiresAt.getTime()
-      ) {
-        const res = this.stateMachine.handleGraceExpiration(currentSession, serverTime);
-        if (this.repository) {
-          await this.repository.saveSession(res.session);
+        // 4. Grace expiration check (Row 12: disconnect grace expired)
+        if (
+          currentSession.currentState === AttendanceState.DISCONNECTED &&
+          currentSession.graceTimerExpiresAt &&
+          serverTime.getTime() >= currentSession.graceTimerExpiresAt.getTime()
+        ) {
+          const res = this.stateMachine.handleGraceExpiration(currentSession, serverTime);
+          if (this.repository) {
+            await this.repository.saveSession(res.session);
+          }
+          this.sessions.delete(session.userId);
+          this.closedSessions.set(res.session.id, res.session);
+          closedCount++;
+          return;
         }
-        this.sessions.delete(session.userId);
-        this.closedSessions.set(res.session.id, res.session);
-        closedCount++;
-        continue;
-      }
 
-      // 5. Missing heartbeat timeout (Row 13: >90s silence)
-      const silenceSeconds =
-        (serverTime.getTime() - currentSession.lastHeartbeatAt.getTime()) / 1000;
-      if (
-        currentSession.currentState !== AttendanceState.DISCONNECTED &&
-        silenceSeconds > this.config.missedHeartbeatTimeoutSeconds
-      ) {
-        const res = this.stateMachine.handleMissingHeartbeatTimeout(currentSession, serverTime);
-        if (this.repository) {
-          await this.repository.saveSession(res.session);
+        // 5. Missing heartbeat timeout (Row 13: >90s silence)
+        const silenceSeconds =
+          (serverTime.getTime() - currentSession.lastHeartbeatAt.getTime()) / 1000;
+        if (
+          currentSession.currentState !== AttendanceState.DISCONNECTED &&
+          silenceSeconds > this.config.missedHeartbeatTimeoutSeconds
+        ) {
+          const res = this.stateMachine.handleMissingHeartbeatTimeout(currentSession, serverTime);
+          if (this.repository) {
+            await this.repository.saveSession(res.session);
+          }
+          this.sessions.delete(session.userId);
+          this.closedSessions.set(res.session.id, res.session);
+          closedCount++;
+          return;
         }
-        this.sessions.delete(session.userId);
-        this.closedSessions.set(res.session.id, res.session);
-        closedCount++;
-        continue;
-      }
+          });
     }
 
     return { closedCount, splitCount, cleanedNoncesCount };
@@ -598,6 +674,9 @@ export class AttendanceService {
       reason: params.reason,
       evidenceDocumentId: params.evidenceDocumentId || null,
       status: CorrectionStatus.PENDING,
+      reviewerId: null,
+      reviewedAt: null,
+      reviewNote: null,
       createdAt: now,
     };
     await this.repository.createCorrection(correction);
@@ -649,7 +728,8 @@ export class AttendanceService {
     // Role check: Only user's manager or HR/Admin may review
     const requester = await this.repository.findUserById(params.orgId, correction.userId);
     const isManager = requester?.managerId === params.reviewerId || params.reviewerRole === UserRole.MANAGER;
-    const isHrOrAdmin = params.reviewerRole === UserRole.HR || params.reviewerRole === UserRole.ADMIN;
+    const isHrOrAdmin = hasPermission(params.reviewerRole, Permission.ATTENDANCE_READ_ALL) &&
+      hasPermission(params.reviewerRole, Permission.ATTENDANCE_CORRECTIONS_REVIEW);
     if (!isManager && !isHrOrAdmin) {
       throw new Error('Unauthorized to review correction: Only manager or HR/Admin may review');
     }
@@ -995,17 +1075,15 @@ export class AttendanceService {
     let targetTeamId: string | undefined = undefined;
 
     // RBAC Scoping
-    if (params.callerRole === UserRole.TEAM_LEAD) {
+    // RBAC scoping by permission: org-wide readers (HR, admins, managers) may filter by any
+    // team; team readers (team leads) are pinned to their own team.
+    if (hasPermission(params.callerRole, Permission.ATTENDANCE_READ_ALL) || params.callerRole === UserRole.MANAGER) {
+      targetTeamId = params.filterTeamId;
+    } else if (hasPermission(params.callerRole, Permission.ATTENDANCE_READ_TEAM)) {
       if (!params.callerTeamId) {
         throw new Error('Team lead has no assigned team');
       }
       targetTeamId = params.callerTeamId;
-    } else if (
-      params.callerRole === UserRole.HR ||
-      params.callerRole === UserRole.ADMIN ||
-      params.callerRole === UserRole.MANAGER
-    ) {
-      targetTeamId = params.filterTeamId;
     } else {
       throw new Error('Insufficient permissions to view live board');
     }
@@ -1013,6 +1091,11 @@ export class AttendanceService {
     const users = await this.repository.findAllUsers(params.orgId, targetTeamId);
     const openSessions = await this.repository.findAllOpenSessions(params.orgId);
     const todayStr = formatInTimeZone(this.clock.now(), this.config.orgTimezone, 'yyyy-MM-dd');
+    const clockedInToday = new Set(
+      (await this.repository.findSessionsByDate(params.orgId, todayStr))
+        .filter((s) => s.status !== SessionStatus.ADJUSTED && s.status !== SessionStatus.CANCELLED)
+        .map((s) => s.userId),
+    );
 
     const board: LiveBoardUser[] = [];
 
@@ -1069,6 +1152,7 @@ export class AttendanceService {
         clockInAt,
         lastHeartbeatAt,
         todayNetSeconds,
+        hasClockedInToday: clockedInToday.has(u.id) || !!openSession,
       });
     }
 
@@ -1204,7 +1288,7 @@ export class AttendanceService {
         'IP address, and client device identifier. ' +
         'No screenshots. No keystroke content, no browser history, no URLs, and no webcam feeds are captured or stored. ' +
         'All presence events are retained for 90 days in accordance with company privacy policy.',
-      noticeVersion: 'v1.0.0',
+      noticeVersion: this.config.currentNoticeVersion ?? 'v1.0.0',
       collectedFields: ['server_ts', 'event_type', 'state', 'seq', 'ip', 'active_seconds', 'idle_seconds', 'in_call'],
       retentionDays: 90,
       events,
@@ -1265,5 +1349,170 @@ export class AttendanceService {
 
     return consent;
   }
-}
 
+  // -------------------------------------------------------------
+  // Self-service read models for apps/web (SRS 8.3: GET /attendance/me, /attendance/daily)
+  // -------------------------------------------------------------
+
+  /** Totals for one session as of `now`, including the elapsed part of an open break or meeting. */
+  public totalsAsOf(session: AttendanceSession, now: Date = this.clock.now()): TimeTotals {
+    const open = session.segments.length > 0 ? session.segments[session.segments.length - 1] : undefined;
+    const openElapsed = open && !open.endedAt
+      ? Math.max(0, Math.round((now.getTime() - open.startedAt.getTime()) / 1000))
+      : 0;
+    const breakSeconds = session.breakSeconds +
+      (session.status === SessionStatus.OPEN && open?.state === AttendanceState.ON_BREAK ? openElapsed : 0);
+    const meetingSeconds = session.meetingSeconds +
+      (session.status === SessionStatus.OPEN && open?.state === AttendanceState.IN_MEETING ? openElapsed : 0);
+    const paidBreak = Math.min(breakSeconds, this.config.paidBreakMinutesPerDay * 60);
+    const netSeconds = session.flags.includes('MULTI_DEVICE')
+      ? Math.max(session.netSeconds, 0)
+      : session.activeSeconds + meetingSeconds + paidBreak;
+    return {
+      activeSeconds: session.activeSeconds,
+      idleSeconds: session.idleSeconds,
+      breakSeconds,
+      meetingSeconds,
+      netSeconds,
+    };
+  }
+
+  private static sumTotals(items: TimeTotals[]): TimeTotals {
+    return items.reduce<TimeTotals>(
+      (acc, t) => ({
+        activeSeconds: acc.activeSeconds + t.activeSeconds,
+        idleSeconds: acc.idleSeconds + t.idleSeconds,
+        breakSeconds: acc.breakSeconds + t.breakSeconds,
+        meetingSeconds: acc.meetingSeconds + t.meetingSeconds,
+        netSeconds: acc.netSeconds + t.netSeconds,
+      }),
+      { activeSeconds: 0, idleSeconds: 0, breakSeconds: 0, meetingSeconds: 0, netSeconds: 0 },
+    );
+  }
+
+  private static countsTowardDay(s: AttendanceSession): boolean {
+    // ADJUSTED originals are replaced by their CORRECTED session (FR-ATT-013).
+    return s.status !== SessionStatus.ADJUSTED && s.status !== SessionStatus.CANCELLED;
+  }
+
+  /** GET /attendance/me/today: current state, tracking start and today's totals (server clock). */
+  public async getMyToday(orgId: string, userId: string): Promise<MyToday> {
+    if (!this.repository) throw new Error('Repository is required for getMyToday');
+    const now = this.clock.now();
+    const workDate = formatInTimeZone(now, this.config.orgTimezone, 'yyyy-MM-dd');
+    const open = await this.repository.findOpenSessionByUserId(orgId, userId);
+    const today = (await this.repository.findSessionsByUserInRange(orgId, userId, workDate, workDate))
+      .filter(AttendanceService.countsTowardDay)
+      .filter((s) => !open || s.id !== open.id);
+    const all = open ? [...today, open] : today;
+    const lastSeg = open && open.segments.length > 0 ? open.segments[open.segments.length - 1] : undefined;
+
+    return {
+      workDate,
+      state: open ? open.currentState : AttendanceState.OFFLINE,
+      sessionId: open?.id ?? null,
+      trackingSince: open ? open.clockInAt.toISOString() : null,
+      onBreakSince: open?.currentState === AttendanceState.ON_BREAK && lastSeg && !lastSeg.endedAt
+        ? lastSeg.startedAt.toISOString()
+        : null,
+      lastHeartbeatAt: open ? open.lastHeartbeatAt.toISOString() : null,
+      totals: AttendanceService.sumTotals(all.map((s) => this.totalsAsOf(s, now))),
+      sessionCount: all.length,
+      asOf: now.toISOString(),
+    };
+  }
+
+  /** GET /attendance/me/days: one row per work date that has sessions (FR-ATT-015). */
+  public async getMyDays(orgId: string, userId: string, fromDate: string, toDate: string): Promise<MyDay[]> {
+    if (!this.repository) throw new Error('Repository is required for getMyDays');
+    const now = this.clock.now();
+    const sessions = (await this.repository.findSessionsByUserInRange(orgId, userId, fromDate, toDate))
+      .filter(AttendanceService.countsTowardDay);
+    const open = await this.repository.findOpenSessionByUserId(orgId, userId);
+    const daily = await this.repository.findDailyAttendanceInRange(orgId, { startDate: fromDate, endDate: toDate, userId });
+    const dailyByDate = new Map(daily.map((d) => [d.workDate, d]));
+
+    const byDate = new Map<string, AttendanceSession[]>();
+    for (const s of sessions) {
+      // Use the fully loaded open session (with segments) so live break/meeting time is included.
+      const effective = open && s.id === open.id ? open : s;
+      const list = byDate.get(s.workDate) ?? [];
+      list.push(effective);
+      byDate.set(s.workDate, list);
+    }
+
+    return [...byDate.entries()]
+      .sort(([a], [b]) => (a < b ? 1 : -1))
+      .map(([date, list]) => {
+        const totals = AttendanceService.sumTotals(list.map((s) => this.totalsAsOf(s, now)));
+        const isOpen = list.some((s) => s.status === SessionStatus.OPEN);
+        const outs = list.map((s) => s.clockOutAt).filter((d): d is Date => d instanceof Date);
+        const d = dailyByDate.get(date);
+        return {
+          workDate: date,
+          ...totals,
+          firstIn: new Date(Math.min(...list.map((s) => s.clockInAt.getTime()))).toISOString(),
+          lastOut: isOpen || outs.length === 0 ? null : new Date(Math.max(...outs.map((o) => o.getTime()))).toISOString(),
+          sessionCount: list.length,
+          open: isOpen,
+          flags: [...new Set(list.flatMap((s) => s.flags))],
+          dayStatus: d?.dayStatus ?? null,
+          lateMinutes: d ? d.lateMinutes : null,
+        };
+      });
+  }
+
+  public async getMyCorrections(orgId: string, userId: string): Promise<AttendanceCorrection[]> {
+    if (!this.repository) return [];
+    return await this.repository.findCorrectionsByUser(orgId, userId);
+  }
+
+  /**
+   * GET /attendance/corrections: pending requests the caller may review, using the same rule
+   * as reviewCorrection (org-wide reviewers, MANAGER role, or the requester's manager).
+   */
+  public async getCorrectionQueue(params: {
+    orgId: string;
+    callerId: string;
+    callerRole: string;
+  }): Promise<CorrectionQueueItem[]> {
+    if (!this.repository) return [];
+    const orgWide = (hasPermission(params.callerRole, Permission.ATTENDANCE_READ_ALL) &&
+      hasPermission(params.callerRole, Permission.ATTENDANCE_CORRECTIONS_REVIEW)) ||
+      params.callerRole === UserRole.MANAGER;
+    const pending = await this.repository.findPendingCorrectionsWithRequester(params.orgId);
+    return pending
+      .filter((c) => c.userId !== params.callerId)
+      .filter((c) => orgWide || c.requesterManagerId === params.callerId)
+      .map((c) => ({
+        id: c.id,
+        userId: c.userId,
+        sessionId: c.sessionId ?? null,
+        requestedIn: c.requestedIn.toISOString(),
+        requestedOut: c.requestedOut.toISOString(),
+        reason: c.reason,
+        status: c.status,
+        reviewerId: c.reviewerId ?? null,
+        reviewedAt: c.reviewedAt ? c.reviewedAt.toISOString() : null,
+        reviewNote: c.reviewNote ?? null,
+        createdAt: c.createdAt.toISOString(),
+        requesterName: c.requesterName,
+        requesterEmail: c.requesterEmail,
+      }));
+  }
+
+  /** GET /attendance/consent (FR-AUD-004): has the caller accepted the current notice? */
+  public async getConsentStatus(orgId: string, userId: string): Promise<ConsentStatus> {
+    const noticeVersion = this.config.currentNoticeVersion ?? 'v1.0.0';
+    if (!this.repository) {
+      return { accepted: await this.hasUserAcceptedNotice(orgId, userId, noticeVersion), noticeVersion, acceptedAt: null };
+    }
+    const consents = await this.repository.findMonitoringConsentsByUser(orgId, userId);
+    const match = consents.find((c) => c.noticeVersion === noticeVersion);
+    return {
+      accepted: !!match,
+      noticeVersion,
+      acceptedAt: match ? new Date(match.acceptedAt).toISOString() : null,
+    };
+  }
+}

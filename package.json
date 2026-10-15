@@ -14,7 +14,13 @@
     "db:provision-roles": "node --experimental-strip-types apps/api/prisma/scripts/provision-db-roles.ts",
     "db:generate": "prisma generate --schema apps/api/prisma/schema.prisma",
     "demo": "node --experimental-strip-types apps/api/test/demo.ts",
-    "demo:shell": "tsc && node dist/apps/api/test/demo-shell.js"
+    "demo:shell": "tsc && node dist/apps/api/test/demo-shell.js",
+    "api": "tsc && node --env-file-if-exists=.env dist/apps/api/src/main.js",
+    "web": "npm run dev -w @hrvo/web",
+    "web:build": "npm run build -w @hrvo/web",
+    "web:typecheck": "npm run typecheck -w @hrvo/web",
+    "e2e": "tsc && npm run e2e -w @hrvo/web",
+    "seed:demo": "node --env-file-if-exists=.env --experimental-strip-types apps/api/test/seed-web-demo.ts"
   },
   "dependencies": {
     "@nestjs/common": "^12.1.3",
@@ -46,5 +52,9 @@
     "prisma": "6.19.3",
     "socket.io-client": "^4.8.4",
     "typescript": "^6.0.3"
-  }
+  },
+  "workspaces": [
+    "apps/web",
+    "packages/shared"
+  ]
 }

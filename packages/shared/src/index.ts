@@ -1,7 +1,10 @@
 export * from './attendance/types.ts';
 export * from './attendance/heartbeat-signer.ts';
+export * from './attendance/api.ts';
+export * from './auth/api.ts';
 export {
   Permission,
+  UserRole,
   ROLE_PERMISSIONS,
   hasPermission,
   MFA_REQUIRED_ROLES,

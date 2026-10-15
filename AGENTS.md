@@ -6,7 +6,8 @@
 - If the SRS is unclear or conflicts with these rules, ASK me. Do not guess.
 
 ## Stack (do not change without asking)
-- Monorepo (pnpm + Turborepo): apps/web (Next.js 14, TypeScript, Tailwind, shadcn/ui),
+- Monorepo (pnpm + Turborepo; currently npm workspaces, see ADR 006): apps/web (Next.js 15 + React 19 —
+  upgraded from 14 because 14.x is unpatched, ADR 006 — TypeScript, Tailwind, shadcn/ui),
   apps/api (NestJS, Prisma, PostgreSQL 16, Redis, BullMQ, Socket.IO),
   packages/shared (types + Zod schemas).
 - Real-time media: LiveKit. Files: S3-compatible storage + KMS envelope encryption.
