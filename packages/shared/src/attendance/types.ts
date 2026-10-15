@@ -39,6 +39,7 @@ export const SessionStatus = {
   CLOSED: 'CLOSED',
   PENDING_REVIEW: 'PENDING_REVIEW',
   ADJUSTED: 'ADJUSTED',
+  CANCELLED: 'CANCELLED',
 } as const;
 export type SessionStatus = (typeof SessionStatus)[keyof typeof SessionStatus];
 
@@ -329,8 +330,8 @@ export interface AuditLogEntry {
   action: string;
   entityType: string;
   entityId: string;
-  before?: Record<string, unknown> | null;
-  after?: Record<string, unknown> | null;
+  before?: Record<string, unknown> | unknown[] | number | string | boolean | null;
+  after?: Record<string, unknown> | unknown[] | number | string | boolean | null;
   ip?: string | null;
   userAgent?: string | null;
   prevHash: string;

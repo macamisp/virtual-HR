@@ -818,7 +818,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     const pairs: string[] = [];
     for (const k of sortedKeys) {
       const val = obj[k];
-      const valStr = typeof val === 'object' ? PostgresAttendanceRepository.canonicalJson(val) : JSON.stringify(val);
+      if (val === undefined) continue;
+      const valStr = typeof val === 'object' && val !== null ? PostgresAttendanceRepository.canonicalJson(val) : JSON.stringify(val);
       pairs.push(`${JSON.stringify(k)}:${valStr}`);
     }
     return '{' + pairs.join(',') + '}';

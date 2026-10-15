@@ -196,7 +196,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
 
       // Verify each log has valid hash and id
       for (const res of results) {
-        assert.ok(res.id > 0);
+        assert.ok(res.id! > 0);
         assert.ok(res.hash.length === 64);
         assert.ok(res.prevHash.length === 64);
       }
@@ -735,12 +735,12 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
       );
 
       await assert.rejects(
-        async () => await inMemoryService.exportAttendanceCsv({ orgId, callerUserId: userHr, callerRole: UserRole.HR, filter: {} }),
+        async () => await inMemoryService.exportAttendanceCsv({ orgId, callerUserId: userHr, callerRole: UserRole.HR, filter: { startDate: '2026-10-01', endDate: '2026-10-31' } }),
         /Repository is required for export/i,
       );
 
       await assert.rejects(
-        async () => await inMemoryService.exportAttendanceXlsx({ orgId, callerUserId: userHr, callerRole: UserRole.HR, filter: {} }),
+        async () => await inMemoryService.exportAttendanceXlsx({ orgId, callerUserId: userHr, callerRole: UserRole.HR, filter: { startDate: '2026-10-01', endDate: '2026-10-31' } }),
         /Repository is required for export/i,
       );
 
@@ -836,7 +836,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
             orgId,
             callerUserId: userEmp,
             callerRole: UserRole.EMPLOYEE,
-            filter: {},
+            filter: { startDate: '2026-10-01', endDate: '2026-10-31' },
           });
         },
         /Export permission denied/i,
@@ -848,7 +848,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
             orgId,
             callerUserId: userEmp,
             callerRole: UserRole.EMPLOYEE,
-            filter: {},
+            filter: { startDate: '2026-10-01', endDate: '2026-10-31' },
           });
         },
         /Export permission denied/i,
@@ -857,7 +857,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
 
     it('Service computeScheduleCompliance edge branches: leave, holiday, non-working, half-day', async () => {
       // 1. Holiday branch
-      holidayProvider.addHoliday(orgId, '2026-10-25', 'Diwali');
+      holidayProvider.addHoliday(orgId, '2026-10-25');
       const holRes = await service.computeScheduleCompliance({
         orgId,
         userId: userEmp,
@@ -922,6 +922,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
             action: 'INVALID',
             entityType: 'TEST',
             entityId: crypto.randomUUID(),
+            createdAt: new Date(),
           });
         },
         /Tenant context missing/i,
@@ -1000,7 +1001,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
       assert.ok(Array.isArray(allConsents));
       assert.ok(allConsents.length >= 1);
 
-      const otherConsents = await repo.findMonitoringConsentsByUser(orgId, userOther, 'v1.0.0');
+      const otherConsents = await repo.findMonitoringConsentsByUser(orgId, userOther);
       assert.equal(otherConsents.length, 1);
       assert.equal(otherConsents[0].ip, null);
       assert.equal(otherConsents[0].userAgent, null);
@@ -1036,7 +1037,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
         workDate: '2026-10-14',
         clockInAt: new Date(),
         clockOutAt: null,
-        clockInSource: 'HEARTBEAT',
+        clockInSource: ClockInSource.AUTO_HEARTBEAT,
         clockOutSource: null,
         activeSeconds: 100,
         idleSeconds: 0,
@@ -1099,7 +1100,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
     });
 
     it('Daily close job comprehensively exercises all DayStatus outcomes', async () => {
-      holidayProvider.addHoliday(orgId, '2026-12-25', 'Christmas');
+      holidayProvider.addHoliday(orgId, '2026-12-25');
       const holDaily = await service.recomputeDailySummaryForUser(orgId, userEmp, '2026-12-25');
       assert.equal(holDaily?.dayStatus, DayStatus.HOLIDAY);
 
@@ -1129,7 +1130,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
         workDate: '2026-10-19',
         clockInAt: new Date('2026-10-19T04:00:00Z'),
         clockOutAt: new Date('2026-10-19T12:00:00Z'),
-        clockInSource: 'HEARTBEAT',
+        clockInSource: ClockInSource.AUTO_HEARTBEAT,
         clockOutSource: 'LOGOUT',
         activeSeconds: 28800,
         idleSeconds: 0,
@@ -1157,7 +1158,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
         workDate: '2026-10-26',
         clockInAt: new Date('2026-10-26T03:30:00Z'),
         clockOutAt: new Date('2026-10-26T11:00:00Z'),
-        clockInSource: 'HEARTBEAT',
+        clockInSource: ClockInSource.AUTO_HEARTBEAT,
         clockOutSource: 'LOGOUT',
         activeSeconds: 27000,
         idleSeconds: 0,
@@ -1195,7 +1196,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
         workDate: '2026-10-14',
         clockInAt: new Date('2026-10-14T03:30:00Z'),
         clockOutAt: null,
-        clockInSource: 'HEARTBEAT',
+        clockInSource: ClockInSource.AUTO_HEARTBEAT,
         clockOutSource: null,
         activeSeconds: 1800,
         idleSeconds: 300,
@@ -1305,7 +1306,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
         workDate: '2026-10-14',
         clockInAt: new Date('2026-10-14T03:30:00Z'),
         clockOutAt: null,
-        clockInSource: 'HEARTBEAT',
+        clockInSource: ClockInSource.AUTO_HEARTBEAT,
         clockOutSource: null,
         activeSeconds: 600,
         idleSeconds: 0,
@@ -1374,7 +1375,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
         workDate: '2026-10-05',
         clockInAt: new Date('2026-10-05T03:30:00Z'),
         clockOutAt: new Date('2026-10-05T05:30:00Z'),
-        clockInSource: 'HEARTBEAT',
+        clockInSource: ClockInSource.AUTO_HEARTBEAT,
         clockOutSource: 'LOGOUT',
         activeSeconds: 7200,
         idleSeconds: 0,

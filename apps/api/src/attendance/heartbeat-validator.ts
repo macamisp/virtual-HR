@@ -64,7 +64,7 @@ export class HeartbeatValidator {
     now: Date = this.clock.now(),
   ): HeartbeatValidationResult {
     // 1. Privacy check: Ensure forbidden surveillance content fields are NOT present (FR-ATT-004)
-    const raw = hb as Record<string, unknown>;
+    const raw = hb as unknown as Record<string, unknown>;
     if ('keystrokes' in raw || 'screenshots' in raw || 'urls' in raw || 'appName' in raw) {
       return {
         valid: false,
@@ -133,7 +133,7 @@ export class HeartbeatValidator {
     }
 
     // 1. Privacy check
-    const raw = hb as Record<string, unknown>;
+    const raw = hb as unknown as Record<string, unknown>;
     if ('keystrokes' in raw || 'screenshots' in raw || 'urls' in raw || 'appName' in raw) {
       return {
         valid: false,

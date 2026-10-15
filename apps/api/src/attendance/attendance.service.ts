@@ -7,6 +7,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import { AttendanceStateMachine } from './attendance-state-machine.ts';
 import { HeartbeatValidator } from './heartbeat-validator.ts';
+import type { IAttendanceRepository } from './attendance-repository.ts';
 import {
   AttendanceState,
   SessionStatus,
@@ -556,7 +557,7 @@ export class AttendanceService {
     // 4. Reject duplicate pending request for the same session or interval
     const pending = await this.repository.findPendingCorrections(params.orgId);
     const duplicate = pending.find(
-      (c) =>
+      (c: AttendanceCorrection) =>
         c.userId === params.userId &&
         c.status === CorrectionStatus.PENDING &&
         ((params.sessionId && c.sessionId === params.sessionId) ||
@@ -571,7 +572,7 @@ export class AttendanceService {
     // 5. Reject overlap with another active/closed session of the user
     const workDate = formatInTimeZone(params.requestedIn, this.config.orgTimezone, 'yyyy-MM-dd');
     const existingSessions = await this.repository.findSessionsByDate(params.orgId, workDate);
-    const userSessions = existingSessions.filter((s) => s.userId === params.userId);
+    const userSessions = existingSessions.filter((s: AttendanceSession) => s.userId === params.userId);
 
     for (const sess of userSessions) {
       if (params.sessionId && sess.id === params.sessionId) continue;
@@ -886,7 +887,7 @@ export class AttendanceService {
 
     const allSessions = await this.repository.findSessionsByDate(orgId, workDate);
     const userSessions = allSessions.filter(
-      (s) => s.userId === userId && s.status !== SessionStatus.CANCELLED && s.status !== SessionStatus.ADJUSTED,
+      (s: AttendanceSession) => s.userId === userId && s.status !== SessionStatus.CANCELLED && s.status !== SessionStatus.ADJUSTED,
     );
 
     const compliance = await this.computeScheduleCompliance({
@@ -898,11 +899,11 @@ export class AttendanceService {
 
     const firstIn = userSessions.length > 0 ? userSessions[0].clockInAt : null;
     const lastOut = userSessions.length > 0 ? userSessions[userSessions.length - 1].clockOutAt : null;
-    const activeSeconds = userSessions.reduce((sum, s) => sum + s.activeSeconds, 0);
-    const idleSeconds = userSessions.reduce((sum, s) => sum + s.idleSeconds, 0);
-    const breakSeconds = userSessions.reduce((sum, s) => sum + s.breakSeconds, 0);
-    const meetingSeconds = userSessions.reduce((sum, s) => sum + s.meetingSeconds, 0);
-    const netSeconds = userSessions.reduce((sum, s) => sum + s.netSeconds, 0);
+    const activeSeconds = userSessions.reduce((sum: number, s: AttendanceSession) => sum + s.activeSeconds, 0);
+    const idleSeconds = userSessions.reduce((sum: number, s: AttendanceSession) => sum + s.idleSeconds, 0);
+    const breakSeconds = userSessions.reduce((sum: number, s: AttendanceSession) => sum + s.breakSeconds, 0);
+    const meetingSeconds = userSessions.reduce((sum: number, s: AttendanceSession) => sum + s.meetingSeconds, 0);
+    const netSeconds = userSessions.reduce((sum: number, s: AttendanceSession) => sum + s.netSeconds, 0);
 
     let dayStatus: DayStatus = DayStatus.PRESENT;
     if (compliance.isHoliday) {
@@ -1016,7 +1017,7 @@ export class AttendanceService {
     const board: LiveBoardUser[] = [];
 
     for (const u of users) {
-      const openSession = openSessions.find((s) => s.userId === u.id);
+      const openSession = openSessions.find((s: AttendanceSession) => s.userId === u.id);
       let status: LivePresenceStatus = LivePresenceStatus.OFFLINE;
       let clockInAt: Date | null = null;
       let lastHeartbeatAt: Date | null = null;
@@ -1213,7 +1214,7 @@ export class AttendanceService {
   public async hasUserAcceptedNotice(orgId: string, userId: string, version: string): Promise<boolean> {
     if (this.repository) {
       const consents = await this.repository.findMonitoringConsentsByUser(orgId, userId);
-      return consents.some((c) => c.noticeVersion === version);
+      return consents.some((c: MonitoringConsent) => c.noticeVersion === version);
     }
     const userConsents = this.inMemoryConsents.get(userId);
     return userConsents ? userConsents.has(version) : false;

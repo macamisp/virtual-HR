@@ -387,3 +387,123 @@ END $$;
 GRANT USAGE ON SCHEMA public TO hrvo_retention;
 GRANT SELECT, DELETE ON presence_events TO hrvo_retention;
 
+-- 12. User Authentication & Security Extensions (FR-AUTH-001..004, 007)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret VARCHAR(255);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_recovery_codes TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE';
+
+-- 13. Invitations (FR-AUTH-001)
+CREATE TABLE IF NOT EXISTS invitations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  email VARCHAR(255) NOT NULL,
+  role VARCHAR(50) NOT NULL DEFAULT 'EMPLOYEE',
+  team_id UUID REFERENCES teams(id) ON DELETE SET NULL,
+  token_hash VARCHAR(128) NOT NULL,
+  invited_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  accepted_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 14. Auth Sessions & Refresh Tokens (FR-AUTH-003)
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  family_id UUID NOT NULL,
+  refresh_token_hash VARCHAR(128) NOT NULL,
+  is_revoked BOOLEAN NOT NULL DEFAULT false,
+  ip VARCHAR(45),
+  user_agent TEXT,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Enable & FORCE RLS on invitations and auth_sessions
+ALTER TABLE invitations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE invitations FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE auth_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_sessions FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS invitations_org_policy ON invitations;
+CREATE POLICY invitations_org_policy ON invitations
+  FOR ALL
+  USING (org_id = NULLIF(current_setting('app.org_id', true), '')::uuid)
+  WITH CHECK (org_id = NULLIF(current_setting('app.org_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS auth_sessions_org_policy ON auth_sessions;
+CREATE POLICY auth_sessions_org_policy ON auth_sessions
+  FOR ALL
+  USING (org_id = NULLIF(current_setting('app.org_id', true), '')::uuid)
+  WITH CHECK (org_id = NULLIF(current_setting('app.org_id', true), '')::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON invitations TO hrvo_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON auth_sessions TO hrvo_app;
+
+-- 15. Security Definer Auth Lookup Functions (Controlled entry points for unauthenticated requests)
+DROP FUNCTION IF EXISTS fn_lookup_user_for_auth(TEXT);
+CREATE OR REPLACE FUNCTION fn_lookup_user_for_auth(p_email TEXT)
+RETURNS SETOF users
+SECURITY DEFINER
+SET search_path = public
+LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY
+  SELECT *
+  FROM users
+  WHERE LOWER(email) = LOWER(p_email);
+END;
+$$;
+GRANT EXECUTE ON FUNCTION fn_lookup_user_for_auth(TEXT) TO hrvo_app;
+
+DROP FUNCTION IF EXISTS fn_lookup_invitation_for_signup(VARCHAR);
+CREATE OR REPLACE FUNCTION fn_lookup_invitation_for_signup(p_token_hash VARCHAR)
+RETURNS SETOF invitations
+SECURITY DEFINER
+SET search_path = public
+LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY
+  SELECT *
+  FROM invitations
+  WHERE token_hash = p_token_hash;
+END;
+$$;
+GRANT EXECUTE ON FUNCTION fn_lookup_invitation_for_signup(VARCHAR) TO hrvo_app;
+
+DROP FUNCTION IF EXISTS fn_lookup_session_for_refresh(VARCHAR);
+CREATE OR REPLACE FUNCTION fn_lookup_session_for_refresh(p_token_hash VARCHAR)
+RETURNS TABLE (
+  id UUID,
+  org_id UUID,
+  user_id UUID,
+  family_id UUID,
+  is_revoked BOOLEAN,
+  expires_at TIMESTAMPTZ,
+  email VARCHAR,
+  display_name VARCHAR,
+  role VARCHAR,
+  team_id UUID
+)
+SECURITY DEFINER
+SET search_path = public
+LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY
+  SELECT s.id, s.org_id, s.user_id, s.family_id, s.is_revoked, s.expires_at,
+         u.email, u.display_name, u.role, u.team_id
+  FROM auth_sessions s
+  JOIN users u ON u.id = s.user_id
+  WHERE s.refresh_token_hash = p_token_hash;
+END;
+$$;
+GRANT EXECUTE ON FUNCTION fn_lookup_session_for_refresh(VARCHAR) TO hrvo_app;
+
+
