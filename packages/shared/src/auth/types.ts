@@ -32,6 +32,7 @@ export const Permission = {
   ORG_MANAGE: 'org.manage',
   // FR-TASK: tasks.use = own tasks (every role except the read-only auditor); the rest widen scope.
   TASKS_USE: 'tasks.use',
+  NOTIFICATIONS_READ_OWN: 'notifications.read.own',
   TASKS_ASSIGN: 'tasks.assign',
   TASKS_READ_TEAM: 'tasks.read.team',
   TASKS_READ_ALL: 'tasks.read.all',
@@ -41,6 +42,7 @@ export type Permission = (typeof Permission)[keyof typeof Permission];
 
 export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   SUPER_ADMIN: [
+    Permission.NOTIFICATIONS_READ_OWN,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_TEAM,
@@ -58,6 +60,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.PROJECTS_MANAGE,
   ],
   ADMIN: [
+    Permission.NOTIFICATIONS_READ_OWN,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_TEAM,
@@ -75,6 +78,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.PROJECTS_MANAGE,
   ],
   HR_MANAGER: [
+    Permission.NOTIFICATIONS_READ_OWN,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_TEAM,
@@ -92,6 +96,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.PROJECTS_MANAGE,
   ],
   HR: [
+    Permission.NOTIFICATIONS_READ_OWN,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_TEAM,
@@ -109,6 +114,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.PROJECTS_MANAGE,
   ],
   MANAGER: [
+    Permission.NOTIFICATIONS_READ_OWN,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_TEAM,
@@ -119,6 +125,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.PROJECTS_MANAGE,
   ],
   TEAM_LEAD: [
+    Permission.NOTIFICATIONS_READ_OWN,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_TEAM,
@@ -128,21 +135,25 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TASKS_READ_TEAM,
   ],
   EMPLOYEE: [
+    Permission.NOTIFICATIONS_READ_OWN,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_CORRECTIONS_CREATE,
   ],
   SUBCONTRACTOR: [
+    Permission.NOTIFICATIONS_READ_OWN,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_CORRECTIONS_CREATE,
   ],
   INTERN: [
+    Permission.NOTIFICATIONS_READ_OWN,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_CORRECTIONS_CREATE,
   ],
   AUDITOR: [
+    Permission.NOTIFICATIONS_READ_OWN,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_ALL,
     Permission.ATTENDANCE_EXPORT,

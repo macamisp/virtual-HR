@@ -25,6 +25,6 @@ import { SystemClock } from '../../../../packages/shared/src/index.ts';
     },
     AttendanceGateway,
   ],
-  exports: [AttendanceService, AttendanceGateway],
+  exports: [AttendanceService, AttendanceGateway, PostgresAttendanceRepository],
 })
 export class AttendanceModule {}

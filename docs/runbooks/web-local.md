@@ -16,6 +16,10 @@ cp -n .env.example .env       # first time only
 npm install                   # first time only
 ```
 
+Background jobs (task reminders, carry-over, weekly summary, attendance close) run on BullMQ in
+Redis when `JOBS_ENABLED=true` (the default). Set `JOBS_ENABLED=false` to run the API without
+Redis; notification emails are then sent inline and nothing is scheduled. Emails land in Mailhog.
+
 ## 2. Prepare the database (first time, or after pulling new migrations)
 
 A fresh database:

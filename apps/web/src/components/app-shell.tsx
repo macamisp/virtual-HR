@@ -7,6 +7,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { CheckSquare, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
+import { NotificationBell } from '@/components/notification-bell';
 import { ConsentGate } from '@/components/consent-gate';
 import { ErrorState, LoadingState } from '@/components/state-views';
 import { useAuthStore } from '@/lib/auth-store';
@@ -142,6 +143,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <span className="font-semibold">HR Virtual Office</span>
         <div className="ml-auto flex items-center gap-3">
           <TrackingBadge />
+          <NotificationBell />
           <span className="hidden text-sm text-muted-foreground sm:inline" data-testid="current-user">
             {user.displayName ?? user.email} · {ROLE_LABEL[user.role] ?? user.role}
           </span>

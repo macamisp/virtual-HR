@@ -25,6 +25,7 @@ export type WorkerToMain =
   | { type: 'heartbeat'; ok: boolean; state?: string; error?: string; at: number; seq?: number }
   | { type: 'attendance'; currentState: string; actionTaken: string }
   | { type: 'presence'; userId: string; state: string }
+  | { type: 'notification'; id: string; title: string }
   | { type: 'auth'; kind: 'expired' | 'rejected' | 'revoked'; reason?: string };
 
 /** A user counts as active for this long after their last input (reading without moving the mouse). */

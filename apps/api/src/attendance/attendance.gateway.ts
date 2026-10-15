@@ -292,6 +292,11 @@ export class AttendanceGateway
     });
   }
 
+  /** Push an event to every socket of one user (e.g. a new in-app notification). */
+  notifyUser(userId: string, event: string, payload: Record<string, unknown>): void {
+    this.server?.to(`user:${userId}`).emit(event, payload);
+  }
+
   /** Public for tests; applies one hrvo_auth_events notification. */
   handleAuthEvent(event: AuthEvent): void {
     if (event.type === 'session_revoked') {

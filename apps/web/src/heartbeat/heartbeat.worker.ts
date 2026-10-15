@@ -139,6 +139,7 @@ function connect(apiUrl: string): void {
   socket.on('presence:update', (p: { userId: string; state: string }) =>
     post({ type: 'presence', userId: p.userId, state: p.state }),
   );
+  socket.on('notification:new', (p: { id: string; title: string }) => post({ type: 'notification', id: p.id, title: p.title }));
 }
 
 async function applyCredentials(next: Credentials): Promise<void> {

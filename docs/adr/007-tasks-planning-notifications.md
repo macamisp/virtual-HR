@@ -62,3 +62,29 @@ Packages were exact-pinned to the newest release at least two weeks old (supply-
 - `planning-e2e.test.ts`: Today composition and reasons, plan confirmation (own tasks only, logged), end-of-day report and carry-over, weekly capacity from a work schedule, goals, Monday validation, workload scope, saved views, RLS.
 - Playwright `07-planning.spec.ts`: plan + end-of-day with carry-over, weekly drag and Alt+→ keyboard move, persisted goals, workload "Report in", calendar.
 
+
+## 5. Slice 3: notifications and background jobs (FR-TASK-011, FR-TASK-016, FR-NOTIF-001)
+
+- **Schema** (`20261016000200_notifications_jobs`): `notifications` (type, title, body, link, entity, `send_email`, `read_at`, `emailed_at`, `dedupe_key` unique per user; RLS forced; users read and mark only their own; no DELETE grant), `job_runs` (`org_id, job, run_key` primary key: "this daily job already ran for this org on this local day"), and `fn_list_orgs_for_jobs()` (SECURITY DEFINER, returns only id + timezone) so the scheduler can loop over orgs without bypassing RLS for anything else.
+- **Events → notifications:** the `TaskNotificationsListener` subscribes to `TaskEvents`. Assignment, acceptance requests, declines and @mentions are in-app + email; acceptance and DONE/BLOCKED status changes are in-app only. Self-actions do not notify.
+- **Delivery:** each new row is pushed to the user's socket room (`notification:new`); the heartbeat worker forwards it to the tab, which refreshes the bell. The bell also polls every 60 s as a fallback. Emails are queued as one BullMQ job per notification (`jobId email-<id>`, 5 attempts, exponential backoff). The sender claims `emailed_at` atomically and releases the claim if sending fails, so a retry or a second instance never sends twice. Bodies hold task titles and decline reasons only, never document content.
+- **Reminders** (every 5 min): a task is due at `TASK_DUE_TIME` (default 17:00) in the org timezone on its due date. "Due soon" fires 24 h before (in-app + email) and 1 h before (in-app). "Overdue" fires once after, to the assignee and the reporter. Each is deduplicated by `dedupe_key`. The same job escalates unanswered subcontractor acceptances after the org's `task_acceptance_escalation_hours` (default 24) to the reporter and the reporter's manager (HR if there is none).
+- **Carry-over** (every 15 min): open tasks planned on an earlier day move to today (org timezone), logged in task activity. This catches people who never submit an end-of-day report.
+- **Weekly summary** (FR-TASK-016): opens at `WEEKLY_SUMMARY_DAY`/`WEEKLY_SUMMARY_TIME` (default Friday 17:00 local) and is sent once per week (`job_runs`). Recipients are team leads and managers (their team: done, open, overdue, hours worked from `attendance_daily`) and subcontractors (their own week). In-app and email.
+- **Attendance jobs** now have a scheduler too: reconcile (every minute), daily close after 00:30 local (once per day), presence-event retention at 90 days (once per day).
+- **BullMQ:** `bullmq@5.81.5`, which bundles `ioredis`. 6.x needs `ioredis` as a separate peer dependency, so we stayed on 5.x, as approved. `@nestjs/bullmq` is not used; `JobsService` is about 100 lines on the raw API. Job schedulers are de-duplicated in Redis, so N API instances run each tick once. `JOBS_ENABLED=false` (tests, Playwright, CI except the BullMQ test) means no Redis connection, no schedulers, and emails sent inline.
+- **Web:** a bell in the header with the unread count in its accessible name, a panel with the list, mark one read (on open) or mark all read, loading/empty/error states, and Escape / click outside to close.
+
+### Known gaps
+
+- No per-user notification preferences or unsubscribe link yet (FR-NOTIF-004, P2); all users get these emails.
+- Actual time on tasks is still a stub until timesheets exist (estimate vs actual shows "not tracked").
+- Attachments are https references (metadata only); uploads arrive with the documents module (S3 + KMS + ClamAV).
+- Notifications are kept indefinitely; a retention job is a follow-up.
+
+### Tests (slice 3)
+
+- `reminder-rules.test.ts`: due instant in the org timezone, due-soon/overdue stages, escalation timing, weekly summary window.
+- `notifications-e2e.test.ts`: assignment (live socket push + email), decline with reason, mention; mark one / all read, own-only access, an inbox for every role; due-soon 24 h / 1 h and overdue, deduplicated on re-runs; escalation after the org setting to reporter and HR; automatic carry-over; the weekly summary audience, once per week and not before Friday 17:00; reconciler; daily close once per day after 00:30; presence retention at 90 days, once per day.
+- `jobs-bullmq-e2e.test.ts` (real Redis): every scheduler is registered with its interval, and an assignment email is delivered by the queue worker.
+- Playwright `08-notifications.spec.ts`: the assignee's bell shows "1 unread" live over the socket after the lead assigns a task; opening it navigates to the task and clears the count.

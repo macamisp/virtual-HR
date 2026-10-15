@@ -4,6 +4,7 @@ export * from './attendance/api.ts';
 export * from './auth/api.ts';
 export * from './tasks/types.ts';
 export * from './tasks/planning.ts';
+export * from './notifications/types.ts';
 export {
   Permission,
   UserRole,

@@ -118,6 +118,9 @@ export function useHeartbeat(enabled: boolean): void {
           );
           break;
         }
+        case 'notification':
+          void queryClient.invalidateQueries({ queryKey: ['notifications'] });
+          break;
         case 'auth':
           if (msg.kind === 'revoked') {
             void logout(msg.reason === 'PASSWORD_RESET' ? 'Your password was changed. Please sign in again.' : 'You were signed out.');

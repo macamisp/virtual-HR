@@ -44,6 +44,8 @@ export default defineConfig({
         RATE_LIMIT_HEARTBEAT: '500',
         BREACHED_PASSWORD_CHECK: 'local',
         MAIL_TRANSPORT: 'memory',
+        // No Redis needed: notification emails are sent inline and no schedulers run.
+        JOBS_ENABLED: 'false',
       } as Record<string, string>,
     },
     {

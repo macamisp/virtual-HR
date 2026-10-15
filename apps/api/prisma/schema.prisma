@@ -45,6 +45,8 @@ model Organization {
   dailyPlanItems                DailyPlanItem[]
   weeklyPlans                   WeeklyPlan[]
   taskSavedViews                TaskSavedView[]
+  notifications                 Notification[]
+  jobRuns                       JobRun[]
 
   @@map("organizations")
 }
@@ -96,6 +98,7 @@ model User {
   dailyPlans            DailyPlan[]
   weeklyPlans           WeeklyPlan[]
   taskSavedViews        TaskSavedView[]
+  notifications         Notification[]
 
   @@map("users")
 }
@@ -661,4 +664,45 @@ model TaskSavedView {
 
   @@unique([userId, name])
   @@map("task_saved_views")
+}
+
+// ==================== Notifications (FR-NOTIF-001, FR-TASK-011, 016) ====================
+
+/// In-app notification; email delivery is tracked in emailed_at. dedupe_key makes scheduled
+/// reminders idempotent (one per user and key).
+model Notification {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId      String    @map("org_id") @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  type       String    @db.VarChar(40)
+  title      String    @db.VarChar(200)
+  body       String    @default("") @db.Text
+  link       String?   @db.VarChar(500)
+  entityType String?   @map("entity_type") @db.VarChar(40)
+  entityId   String?   @map("entity_id") @db.Uuid
+  dedupeKey  String?   @map("dedupe_key") @db.VarChar(200)
+  sendEmail  Boolean   @default(false) @map("send_email")
+  readAt     DateTime? @map("read_at") @db.Timestamptz()
+  emailedAt  DateTime? @map("emailed_at") @db.Timestamptz()
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+/// Once-per-period markers for scheduled jobs (daily close, retention, weekly summary).
+model JobRun {
+  orgId     String   @map("org_id") @db.Uuid
+  job       String   @db.VarChar(60)
+  runKey    String   @map("run_key") @db.VarChar(60)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([orgId, job, runKey])
+  @@map("job_runs")
 }
