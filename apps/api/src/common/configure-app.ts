@@ -55,6 +55,8 @@ export function configureApp(app: INestApplication): void {
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization', CSRF_HEADER],
+    // Lets the web app read the server's filename for exports.
+    exposedHeaders: ['Content-Disposition'],
     maxAge: 600,
   });
   if (origins.length === 0) {

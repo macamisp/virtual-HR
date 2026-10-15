@@ -7,6 +7,7 @@ import {
   TimerStateSchema,
   TimesheetDetailSchema,
   TimesheetListSchema,
+  TimesheetReportSchema,
   TimesheetSettingsSchema,
 } from '@hrvo/shared';
 import type { ManualEntryDto, ProjectRateDto, RateProfileDto, TimesheetDetail, TimesheetSettingsDto, UpdateEntryDto } from '@hrvo/shared';
@@ -179,5 +180,27 @@ export function useUpdateTimesheetSettings() {
   return useMutation({
     mutationFn: (dto: TimesheetSettingsDto) => apiFetch('/timesheets/settings', { method: 'PUT', body: dto, schema: TimesheetSettingsSchema }),
     onSuccess: (s) => qc.setQueryData(timesheetKeys.settings, s),
+  });
+}
+
+export interface ReportFilters {
+  groupBy: 'user' | 'project' | 'team' | 'period';
+  from: string;
+  to: string;
+}
+
+export function reportQuery(f: ReportFilters, format?: 'csv' | 'xlsx'): string {
+  const p = new URLSearchParams({ groupBy: f.groupBy, from: f.from, to: f.to });
+  if (format) p.set('format', format);
+  return p.toString();
+}
+
+/** FR-TS-013 */
+export function useTimesheetReport(f: ReportFilters, enabled: boolean) {
+  const q = reportQuery(f);
+  return useQuery({
+    queryKey: ['timesheets', 'report', q],
+    queryFn: () => apiFetch(`/timesheets/reports?${q}`, { schema: TimesheetReportSchema }),
+    enabled: useSignedIn() && enabled && f.from <= f.to,
   });
 }

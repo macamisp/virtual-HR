@@ -13,7 +13,8 @@ import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
 import { generateSync } from 'otplib';
-import { formatInTimeZone } from 'date-fns-tz';
+import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
+import ExcelJSModule from 'exceljs';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
 import { addDaysIso, weekStartOf } from '../src/planning/planning-rules.ts';
@@ -28,6 +29,7 @@ import {
   TimerStateSchema,
   TimesheetDetailSchema,
   TimesheetListSchema,
+  TimesheetReportSchema,
   TimesheetSettingsSchema,
 } from '../../../packages/shared/src/timesheets/types.ts';
 import type { TimesheetDetail } from '../../../packages/shared/src/timesheets/types.ts';
@@ -52,6 +54,7 @@ const U = {
 } as const;
 type Who = keyof typeof U;
 const email = (w: Who) => `${w}@ts.test`;
+const ExcelJS = (ExcelJSModule as unknown as { default?: typeof ExcelJSModule }).default ?? ExcelJSModule;
 
 describe('Timesheets API (FR-TS-001..006, 009, 011)', { concurrency: false }, () => {
   let app: INestApplication;
@@ -479,6 +482,159 @@ describe('Timesheets API (FR-TS-001..006, 009, 011)', { concurrency: false }, ()
       assert.equal(audit.rows[0].before.amount, '270.50');
       assert.equal(audit.rows[0].after.reason, 'Client disputes Tuesday');
       assert.equal((await api('hrm', `/timesheets/${sheet.id}/reopen`, { method: 'POST', body: { reason: 'Again' } })).status, 409);
+    });
+  });
+
+  describe('Notifications, reminders and variance alerts (FR-TS-005, 012)', { concurrency: false }, () => {
+    const notes = async (who: Who, type: string) =>
+      (await adminPool.query<{ title: string; body: string; send_email: boolean }>(
+        `SELECT title, body, send_email FROM notifications WHERE user_id = $1 AND type = $2 ORDER BY created_at`,
+        [U[who].id, type],
+      )).rows;
+    const eventually = async <T>(fn: () => Promise<T[]>, n = 1): Promise<T[]> => {
+      for (let i = 0; i < 40; i += 1) {
+        const rows = await fn();
+        if (rows.length >= n) return rows;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return await fn();
+    };
+
+    it('decisions notified the right people: submissions to the approver, returns and reopenings to the owner', async () => {
+      const submitted = await eventually(() => notes('lead', 'TIMESHEET_SUBMITTED'), 2);
+      assert.ok(submitted.length >= 2, 'lead was told about both submissions');
+      assert.ok(submitted.every((n) => n.send_email && n.title.startsWith('sub submitted a timesheet')));
+      const rejected = await eventually(() => notes('sub', 'TIMESHEET_REJECTED'));
+      assert.match(rejected[0]!.body, /Split Monday by task please/);
+      assert.equal((await eventually(() => notes('sub', 'TIMESHEET_APPROVED'))).length, 1);
+      assert.match((await eventually(() => notes('sub', 'TIMESHEET_REOPENED')))[0]!.body, /Client disputes Tuesday/);
+      assert.equal((await notes('hrm', 'TIMESHEET_SUBMITTED')).length, 1, 'HR got the lead-less HR timesheet');
+      assert.equal((await notes('sub2', 'TIMESHEET_SUBMITTED')).length, 0);
+    });
+
+    it('owners are reminded to submit on the last day, then told when overdue; once each', async () => {
+      await ok(await manual('sub2', { workDate: lastMon, minutes: 45 }), 201);
+      const sheet = await sheetFor('sub2', lastMon);
+      const work = app.get(ScheduledWorkService);
+      await work.timesheetReminders(fromZonedTime(`${sheet.periodEnd}T12:00:00`, TZ));
+      const reminder = await notes('sub2', 'TIMESHEET_SUBMIT_REMINDER');
+      assert.equal(reminder.length, 1);
+      assert.equal(reminder[0]!.title, `Submit your timesheet by ${sheet.submitDueDate}`);
+      await work.timesheetReminders(new Date());
+      await work.timesheetReminders(new Date());
+      assert.equal((await notes('sub2', 'TIMESHEET_SUBMIT_REMINDER')).length, 1);
+      const overdue = await notes('sub2', 'TIMESHEET_OVERDUE');
+      assert.equal(overdue.length, 1, `today (${today}) is past ${sheet.submitDueDate}`);
+      assert.equal(overdue[0]!.send_email, true);
+    });
+
+    it('approvers get one digest a day for timesheets waiting more than 24 h', async () => {
+      let sheet = await sheetFor('sub2', lastMon);
+      sheet = await ok(await api('sub2', `/timesheets/${sheet.id}/submit`, { method: 'POST', body: { version: sheet.version } }), 200, TimesheetDetailSchema);
+      const work = app.get(ScheduledWorkService);
+      await work.timesheetReminders(new Date());
+      assert.equal((await notes('lead2', 'TIMESHEET_APPROVAL_REMINDER')).length, 0, 'not before 24 h');
+      await adminPool.query(`UPDATE timesheets SET submitted_at = now() - interval '30 hours' WHERE id = $1`, [sheet.id]);
+      await work.timesheetReminders(new Date());
+      await work.timesheetReminders(new Date());
+      const digest = await notes('lead2', 'TIMESHEET_APPROVAL_REMINDER');
+      assert.equal(digest.length, 1);
+      assert.equal(digest[0]!.title, '1 timesheet waiting for your approval');
+      assert.match(digest[0]!.body, /sub2: /);
+    });
+
+    it('flagged past days raise one in-app variance alert, re-armed only when the figures change', async () => {
+      const work = app.get(ScheduledWorkService);
+      await work.timesheetReminders(new Date());
+      const alerts = await notes('sub', 'TIMESHEET_VARIANCE');
+      const monday = alerts.filter((a) => a.title === `Check your time for ${lastMon}`);
+      assert.equal(monday.length, 1);
+      assert.equal(monday[0]!.send_email, false);
+      await work.timesheetReminders(new Date());
+      assert.equal((await notes('sub', 'TIMESHEET_VARIANCE')).length, alerts.length);
+      const day = await adminPool.query(`SELECT alerted_at FROM timesheet_days WHERE user_id = $1 AND work_date = $2::date`, [U.sub.id, lastMon]);
+      assert.ok(day.rows[0].alerted_at);
+    });
+  });
+
+  describe('Reports and exports (FR-TS-013)', { concurrency: false }, () => {
+    const range = () => `from=${addDaysIso(lastMon, -90)}&to=${today}`;
+
+    it('re-approval stores the amount again (setup for cost)', async () => {
+      let sheet = await sheetFor('sub', lastMon);
+      sheet = await ok(await api('sub', `/timesheets/${sheet.id}/submit`, { method: 'POST', body: { version: sheet.version } }), 200, TimesheetDetailSchema);
+      sheet = await ok(await api('lead', `/timesheets/${sheet.id}/approve`, { method: 'POST', body: { version: sheet.version } }), 200, TimesheetDetailSchema);
+      assert.equal(sheet.amount, '270.50');
+    });
+
+    it('by person: a lead sees their team only; cost per currency; approval turnaround', async () => {
+      const r = await ok(await api('lead', `/timesheets/reports?groupBy=user&${range()}`), 200, TimesheetReportSchema);
+      const labels = r.rows.map((x) => x.label);
+      assert.ok(labels.includes('sub') && labels.includes('emp'));
+      assert.ok(!labels.includes('sub2') && !labels.includes('lead'), 'other teams and self are out of scope');
+      const sub = r.rows.find((x) => x.label === 'sub')!;
+      assert.deepEqual(sub.cost, { USD: '270.50' });
+      assert.equal(sub.approvedMinutes, 610);
+      assert.ok(sub.avgApprovalHours !== null && sub.avgApprovalHours >= 0);
+      assert.ok(sub.flaggedDays >= 1);
+    });
+
+    it('by project, team and period; Finance/Auditor sees everyone', async () => {
+      const byProject = await ok(await api('aud', `/timesheets/reports?groupBy=project&${range()}`), 200, TimesheetReportSchema);
+      const web = byProject.rows.find((x) => x.label === 'Website')!;
+      assert.deepEqual(web.cost, { USD: '75.00' }, '2 h 30 m on Website at the 30.00 override');
+      assert.deepEqual(byProject.rows.find((x) => x.label === 'No project')?.cost, { USD: '195.50' });
+      const byTeam = await ok(await api('aud', `/timesheets/reports?groupBy=team&${range()}`), 200, TimesheetReportSchema);
+      assert.ok(byTeam.rows.some((x) => x.label === 'Build') && byTeam.rows.some((x) => x.label === 'Design'));
+      const byPeriod = await ok(await api('hr', `/timesheets/reports?groupBy=period&${range()}`), 200, TimesheetReportSchema);
+      assert.ok(byPeriod.rows.some((x) => x.key === lastMon));
+      const projectOnly = await ok(await api('aud', `/timesheets/reports?groupBy=user&projectId=${projectId}&${range()}`), 200, TimesheetReportSchema);
+      assert.deepEqual(projectOnly.rows.map((x) => x.label), ['sub']);
+    });
+
+    it('subcontractors and employees cannot run reports; ranges are bounded', async () => {
+      assert.equal((await api('sub', `/timesheets/reports?${range()}`)).status, 403);
+      assert.equal((await api('emp', `/timesheets/reports?${range()}`)).status, 403);
+      assert.equal((await api('aud', `/timesheets/reports?from=2025-01-01&to=2026-12-31`)).status, 400);
+      assert.equal((await api('aud', `/timesheets/reports?from=${today}&to=${lastMon}`)).status, 400);
+    });
+
+    it('CSV export: a download, formula injection neutralised, audited', async () => {
+      await adminPool.query(`UPDATE users SET display_name = '=HYPERLINK("http://evil.test","x")' WHERE id = $1`, [U.emp.id]);
+      try {
+        const res = await api('aud', `/timesheets/reports?groupBy=user&format=csv&${range()}`);
+        assert.equal(res.status, 200);
+        assert.match(res.headers.get('content-type') ?? '', /^text\/csv/);
+        assert.match(res.headers.get('content-disposition') ?? '', /attachment; filename="timesheets-by-user-.*\.csv"/);
+        // res.text() would strip the BOM; keep it to prove Excel gets UTF-8.
+        const csv = new TextDecoder('utf-8', { ignoreBOM: true }).decode(await res.arrayBuffer());
+        assert.ok(csv.startsWith('﻿Person,Timesheets,Attendance (h),Logged (h),Approved (h),Variance (h),Flagged days,Cost USD,Avg approval (h)'));
+        assert.ok(csv.includes(`"'=HYPERLINK(""http://evil.test"",""x"")"`), 'the formula is quoted and prefixed');
+        assert.ok(!/(^|,)=HYPERLINK/m.test(csv));
+        const subLine = csv.split('\r\n').find((l) => l.startsWith('sub,'))!;
+        assert.match(subLine, /^sub,\d+,8,[\d.]+,10\.17,[\d.-]+,\d+,270\.5,[\d.]+$/, 'hours as numbers, 2 decimals; cost as a plain amount');
+        assert.ok(!csv.split('\r\n').some((l) => l.startsWith('aud,')), 'no timesheets for the read-only auditor');
+
+        const xlsx = await api('aud', `/timesheets/reports?groupBy=user&format=xlsx&${range()}`);
+        assert.equal(xlsx.status, 200);
+        assert.equal(xlsx.headers.get('content-type'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        const wb = new ExcelJS.Workbook();
+        await wb.xlsx.load(Buffer.from(await xlsx.arrayBuffer()) as unknown as ArrayBuffer);
+        const ws = wb.getWorksheet('Timesheets')!;
+        const names: unknown[] = [];
+        ws.eachRow((row, i) => {
+          if (i > 1) names.push(row.getCell(1).value);
+          row.eachCell((c) => assert.notEqual(c.type, ExcelJS.ValueType.Formula));
+        });
+        assert.ok(names.includes(`'=HYPERLINK("http://evil.test","x")`));
+        const subRow = ws.getRows(2, ws.rowCount - 1)!.find((r) => r.getCell(1).value === 'sub')!;
+        assert.equal(subRow.getCell(8).value, 270.5);
+      } finally {
+        await adminPool.query(`UPDATE users SET display_name = 'emp' WHERE id = $1`, [U.emp.id]);
+      }
+      const audit = await adminPool.query(`SELECT after FROM audit_logs WHERE org_id = $1 AND action = 'TIMESHEET_REPORT_EXPORTED' ORDER BY created_at`, [ORG]);
+      assert.equal(audit.rowCount, 2);
+      assert.equal(audit.rows[1].after.format, 'xlsx');
     });
   });
 

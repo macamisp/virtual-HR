@@ -8,11 +8,13 @@ import { addDaysIso } from '../planning/planning-rules.ts';
 import { NotificationsService } from './notifications.service.ts';
 import type { NewNotification } from './notifications.service.ts';
 import { dueInstant, escalationDue, localDate, reminderStage, weeklySummaryDue } from './reminder-rules.ts';
+import { approversFor } from '../timesheets/timesheets.service.ts';
 
 interface OrgRow {
   id: string;
   timezone: string;
   task_acceptance_escalation_hours: number;
+  timesheet_submit_due_days: number;
 }
 
 const PRESENCE_RETENTION_DAYS = 90;
@@ -158,6 +160,95 @@ export class ScheduledWorkService {
     });
   }
 
+  // ---------------------------------------------------------------- FR-TS-012 / FR-TS-005
+
+  /**
+   * Every 15 minutes, all deduplicated:
+   *  - owners: "submit by <due date>" once the period's last day has come, then "overdue" once
+   *    past the due date (period end + org submit days); only for periods with any time;
+   *  - approvers: one digest a day while timesheets have waited more than 24 h;
+   *  - owners: a variance alert per flagged past day of an open timesheet (re-armed when the
+   *    figures change).
+   */
+  async timesheetReminders(now: Date = new Date()): Promise<number> {
+    return await this.perOrg('timesheet-reminders', async (org) => {
+      const today = localDate(now, org.timezone);
+      const created = await this.prisma.runWithTenantContext(org.id, async (db) => {
+        const items: NewNotification[] = [];
+        const open = await db.query<{ id: string; user_id: string; ps: string; pe: string }>(
+          `SELECT t.id, t.user_id, to_char(t.period_start, 'YYYY-MM-DD') AS ps, to_char(t.period_end, 'YYYY-MM-DD') AS pe
+           FROM timesheets t JOIN users u ON u.id = t.user_id
+           WHERE t.org_id = $1 AND t.status IN ('DRAFT', 'REJECTED') AND t.period_end <= $2::date
+             AND u.status = 'ACTIVE' AND (t.attendance_minutes > 0 OR t.logged_minutes > 0)`,
+          [org.id, today],
+        );
+        for (const t of open.rows) {
+          const due = addDaysIso(t.pe, org.timesheet_submit_due_days);
+          const base = { userId: t.user_id, link: `/timesheets/${t.id}`, entityType: 'TIMESHEET', entityId: t.id, email: true };
+          if (today > due) {
+            items.push({ ...base, type: 'TIMESHEET_OVERDUE', title: `Timesheet overdue (${t.ps} – ${t.pe})`, body: `It was due on ${due}. Submit it as soon as you can.`, dedupeKey: `ts-overdue:${t.id}` });
+          } else {
+            items.push({ ...base, type: 'TIMESHEET_SUBMIT_REMINDER', title: `Submit your timesheet by ${due}`, body: `Period ${t.ps} – ${t.pe}. Check flagged days, then submit it for approval.`, dedupeKey: `ts-submit:${t.id}` });
+          }
+        }
+
+        const waiting = await db.query<{ id: string; user_id: string; name: string; ps: string; pe: string }>(
+          `SELECT t.id, t.user_id, COALESCE(u.display_name, u.email) AS name,
+                  to_char(t.period_start, 'YYYY-MM-DD') AS ps, to_char(t.period_end, 'YYYY-MM-DD') AS pe
+           FROM timesheets t JOIN users u ON u.id = t.user_id
+           WHERE t.org_id = $1 AND t.status = 'SUBMITTED' AND t.submitted_at < $2
+           ORDER BY t.submitted_at`,
+          [org.id, new Date(now.getTime() - 24 * 3_600_000)],
+        );
+        const perApprover = new Map<string, string[]>();
+        for (const w of waiting.rows) {
+          for (const a of await approversFor(db, w.user_id)) {
+            perApprover.set(a, [...(perApprover.get(a) ?? []), `${w.name}: ${w.ps} – ${w.pe}`]);
+          }
+        }
+        for (const [userId, lines] of perApprover) {
+          items.push({
+            userId, type: 'TIMESHEET_APPROVAL_REMINDER',
+            title: `${lines.length} timesheet${lines.length === 1 ? '' : 's'} waiting for your approval`,
+            body: [...lines.slice(0, 10), ...(lines.length > 10 ? [`…and ${lines.length - 10} more`] : [])].join('\n'),
+            link: '/timesheets/review', dedupeKey: `ts-approve:${today}`, email: true,
+          });
+        }
+
+        const flagged = await db.query<{ user_id: string; timesheet_id: string; d: string; attendance_minutes: number; logged_minutes: number; variance_minutes: number; variance_pct: number | null; flags: string[] }>(
+          `SELECT d.user_id, d.timesheet_id, to_char(d.work_date, 'YYYY-MM-DD') AS d, d.attendance_minutes, d.logged_minutes,
+                  d.variance_minutes, d.variance_pct, d.flags
+           FROM timesheet_days d JOIN timesheets t ON t.id = d.timesheet_id
+           WHERE d.org_id = $1 AND d.flags <> '{}' AND d.alerted_at IS NULL AND t.status IN ('DRAFT', 'REJECTED')
+             AND d.work_date < $2::date AND d.work_date >= $3::date`,
+          [org.id, today, addDaysIso(today, -14)],
+        );
+        for (const f of flagged.rows) {
+          const what = f.flags.includes('NO_ATTENDANCE')
+            ? `${hours(f.logged_minutes)} logged on a day with no attendance.`
+            : f.flags.includes('VARIANCE')
+              ? `Attended ${hours(f.attendance_minutes)}, logged ${hours(f.logged_minutes)} on tasks (${f.variance_pct ?? 0}% apart).`
+              : 'Manual time is over the daily limit.';
+          items.push({
+            userId: f.user_id, type: 'TIMESHEET_VARIANCE', title: `Check your time for ${f.d}`, body: `${what} Fix it or explain it in the timesheet notes.`,
+            link: `/timesheets/${f.timesheet_id}`, entityType: 'TIMESHEET', entityId: f.timesheet_id,
+            dedupeKey: `ts-var:${f.d}:${f.flags.join(',')}:${f.variance_minutes}`,
+          });
+        }
+        if (flagged.rows.length > 0) {
+          await db.query(
+            `UPDATE timesheet_days SET alerted_at = now()
+             WHERE org_id = $1 AND flags <> '{}' AND alerted_at IS NULL AND (user_id, work_date) IN (SELECT * FROM unnest($2::uuid[], $3::date[]))`,
+            [org.id, flagged.rows.map((f) => f.user_id), flagged.rows.map((f) => f.d)],
+          );
+        }
+        return await this.notifications.create(db, org.id, items);
+      });
+      await this.notifications.deliver(org.id, created);
+      return created.length;
+    });
+  }
+
   // ---------------------------------------------------------------- FR-TASK-016 weekly summary
 
   async weeklySummary(now: Date = new Date()): Promise<number> {
@@ -192,7 +283,7 @@ export class ScheduledWorkService {
             teamOpen += s.open;
             lines.push(
               `${p.display_name ?? p.email}: ${s.done.length} completed, ${s.open} pending (${s.overdue} overdue), ` +
-              `${hours(s.workedMinutes)} worked, ${hours(s.estimateDoneMinutes)} estimated on completed tasks`,
+              `${hours(s.workedMinutes)} worked, ${hours(s.loggedMinutes)} logged on tasks, ${hours(s.estimateDoneMinutes)} estimated on completed tasks`,
             );
             if (r.role === 'SUBCONTRACTOR') lines.push(...s.done.slice(0, 10).map((t) => `  - done: ${t}`));
           }
@@ -204,7 +295,7 @@ export class ScheduledWorkService {
             body: [
               r.role === 'SUBCONTRACTOR' ? 'Your week:' : `Your team this week: ${teamDone} completed, ${teamOpen} pending.`,
               ...lines,
-              'Hours worked come from attendance; time per task arrives with timesheets.',
+              'Hours worked come from attendance; time on tasks from timers and manual entries.',
             ].join('\n'),
             link: r.role === 'SUBCONTRACTOR' ? '/tasks/week' : '/tasks/workload',
             dedupeKey: `weekly:${weekStart}`,
@@ -236,7 +327,13 @@ export class ScheduledWorkService {
        WHERE org_id = $1 AND user_id = $2 AND work_date BETWEEN $3 AND $4`,
       [org.id, userId, weekStart, weekEnd],
     );
+    const logged = await db.query<{ minutes: number }>(
+      `SELECT COALESCE(sum(minutes), 0)::int AS minutes FROM time_entries
+       WHERE org_id = $1 AND user_id = $2 AND work_date BETWEEN $3::date AND $4::date AND ended_at IS NOT NULL`,
+      [org.id, userId, weekStart, weekEnd],
+    );
     return {
+      loggedMinutes: logged.rows[0]!.minutes,
       done: done.rows.map((d) => d.title),
       estimateDoneMinutes: done.rows.reduce((s, d) => s + (d.estimate ?? 0), 0),
       open: open.rows[0]!.open,

@@ -99,6 +99,9 @@ test.describe.serial('Timesheets: timer, manual time, submit, reject, approve (F
     await page.getByRole('link', { name: 'My timesheet' }).click();
     await page.getByTestId('my-timesheets').getByRole('link').first().click();
     await expect(page.getByTestId('rejection')).toContainText('Split the workshop by task, please');
+    await page.getByTestId('notification-bell').click();
+    await expect(page.getByTestId('notification-panel')).toContainText('Leo Lead returned your timesheet');
+    await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Submit for approval' }).click();
     await expect(page.getByTestId('timesheet-status')).toHaveText('Submitted');
 
@@ -118,5 +121,20 @@ test.describe.serial('Timesheets: timer, manual time, submit, reject, approve (F
     await page.reload();
     await expect(page.getByTestId('timesheet-status')).toHaveText('Approved · locked');
     await expect(page.getByRole('button', { name: 'Submit for approval' })).toHaveCount(0);
+  });
+
+  test('the lead reports by person with the approved cost and exports CSV', async ({ page }) => {
+    await signIn(page, USERS.lead.email);
+    await passNoticeGate(page);
+    await page.getByRole('link', { name: 'Timesheet reports' }).click();
+    const row = page.getByTestId('timesheet-report').getByRole('row', { name: new RegExp(USERS.sub.name) });
+    await expect(row).toContainText('63.75');
+    await expect(row).toContainText('2h 30m');
+    const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'CSV' }).click()]);
+    expect(download.suggestedFilename()).toMatch(/^timesheets-by-user-\d{4}-\d{2}-\d{2}-to-\d{4}-\d{2}-\d{2}\.csv$/);
+    const fs = await import('node:fs/promises');
+    const text = await fs.readFile((await download.path())!, 'utf8');
+    expect(text).toContain('Person,Timesheets');
+    expect(text).toMatch(new RegExp(`${USERS.sub.name},\\d+,[\\d.,-]*,63\\.75,`));
   });
 });

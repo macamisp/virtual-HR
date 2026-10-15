@@ -76,6 +76,17 @@ export function parseMultiplier(value: string): bigint {
   return parseScaled(value, MULTIPLIER, 'overtime multiplier');
 }
 
+const AMOUNT = /^-?(0|[1-9]\d{0,11})(\.\d{1,2})?$/; // numeric(14,2), as read back from the DB
+
+/** A stored amount ("1211.25", up to numeric(14,2)) -> cents, for summing in reports. */
+export function parseAmount(value: string): bigint {
+  if (typeof value !== 'string' || !AMOUNT.test(value)) throw new Error(`Invalid amount: ${JSON.stringify(value)}`);
+  const neg = value.startsWith('-');
+  const [whole, frac = ''] = (neg ? value.slice(1) : value).split('.');
+  const cents = BigInt(whole!) * 100n + BigInt(frac.padEnd(2, '0'));
+  return neg ? -cents : cents;
+}
+
 export function formatMoney(cents: bigint): string {
   const neg = cents < 0n;
   const abs = neg ? -cents : cents;

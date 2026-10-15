@@ -1,6 +1,6 @@
 # ADR 008: Timesheets and Time Tracking
 
-**Status:** Accepted (slice 1 of 2: time entries, timesheets, approvals, payable)
+**Status:** Accepted (slices 1–2: time entries, timesheets, approvals, payable; reminders, alerts, reports, exports)
 **Date:** 15 October 2026
 **Requirements:** SRS 5.6 FR-TS-001..006, 009, 011..013; 6.3 daily close; 6.4 parameters; 7.4 time_entries, timesheets.
 
@@ -11,7 +11,7 @@
 | Finance role | No new role: `AUDITOR` is the SRS §3 "Finance / Auditor" role. It gets `timesheets.read.all` (timesheets, rates, reports, exports) and nothing that changes data. |
 | Rates | A minimal `subcontractor_profiles` now, with only the FR-ORG-002 rate fields: `rate_type`, `rate`, `currency`, `overtime_multiplier`, `weekly_hours_cap`. Plus `project_members.rate_override` (FR-ORG-004). HR edits them on the Rates page. Encrypted tax and bank fields come with the ORG slice. Only subcontractors get an amount; employees get hours. |
 | Overtime | Per ISO week, hours above the profile's weekly cap (else the work-schedule capacity, else 40 h) are paid at rate × multiplier. HOURLY = hours × rate. DAILY = each day with time pays the day rate; hours beyond 8 h that day are paid at rate / 8 × multiplier. FIXED = the rate per period, with no overtime and no overrides. |
-| XLSX | Hand-written Office Open XML in a zip, built with Node's own `zlib` (`deflateRaw`, `crc32`). No new package. |
+| XLSX | Reuse `exceljs`, which is already a dependency (the attendance export has used it since commit 7cbe56c). No new package. The first answer was "hand-written writer"; that choice rested on my wrong statement that exceljs would be a new package. Corrected and re-decided on 15 Oct. |
 
 ## 2. Data model (`20261017000000_timesheets`)
 
@@ -86,3 +86,51 @@ The old table is **renamed** to `draft_timesheets_legacy`, not dropped, and `hrv
   - the full submit / reject / resubmit / approve / reopen cycle, with amounts, locking in the API and the DB, versions, visibility and route permissions;
   - RLS on every table, append-only approvals, and no access to the legacy table.
 - **Playwright `09-timesheets.spec.ts`:** a timer from the task page and the header badge; manual time with its reason, over-limit flag and payable USD 63.75; submit; the lead rejects (a comment is required); resubmit; approve and lock.
+
+## 6. Slice 2: reminders, alerts, reports, exports (FR-TS-005 alerts, FR-TS-012, FR-TS-013)
+
+- **Decision notifications** (`TimesheetNotificationsListener` on `TimesheetEvents`, fired after commit):
+  - a submission goes to the approvers (the manager; else the team's leads and managers; else HR), in-app and by email;
+  - a rejection goes to the owner with the comment, in-app and by email;
+  - a reopening goes to the owner with the reason, in-app and by email;
+  - an approval goes to the owner, in-app only.
+  Bodies contain periods and comments, never amounts.
+- **`timesheet-reminders` job** (BullMQ, every 15 min, all deduplicated per user):
+  - **Owners:** "Submit your timesheet by <due>" from the period's last day, then "Timesheet overdue" once past the due date, by email. The due date is `period_end + timesheet_submit_due_days`. Only periods with any time get these.
+  - **Approvers:** one digest a day ("N timesheets waiting for your approval") while submissions have waited more than 24 h.
+  - **Variance alert (FR-TS-005):** an in-app alert per flagged past day of an open timesheet, within the last 14 days. It sets `timesheet_days.alerted_at`. A day that becomes clean resets it, and the dedupe key includes the figures, so a changed day alerts again.
+- **Daily drafts only for timesheet keepers:** the attendance daily close builds day drafts only for roles with `timesheets.use`. Before this, the read-only auditor got empty timesheets; found by the report test.
+- **Reports** (`GET /timesheets/reports`, JSON / `format=csv` / `format=xlsx`):
+  - Grouped by person (the subcontractor view), project, team or period. Each row shows timesheets, attendance, logged and approved minutes, variance, flagged days, **cost per currency** (approved amounts only, never summed across currencies; exact bigint sums) and the average hours from submission to approval.
+  - Timesheets whose period overlaps the range count in full; ranges are at most 366 days.
+  - Project cost comes from the per-project lines stored at approval, so it adds up to the timesheet amounts.
+  - Scope: `timesheets.approve.team` sees team and direct reports; `approve.all` or `read.all` sees the organisation. Subcontractors and employees get 403.
+- **Exports:**
+  - `common/export-format.ts` prefixes any text cell that starts with `= + - @`, a tab, a CR, or their full-width forms, with an apostrophe. This applies in CSV and XLSX alike, header included. Numbers stay numeric.
+  - CSV follows RFC 4180, with CRLF and a UTF-8 BOM. XLSX is built with exceljs, and a test proves no cell is ever a formula.
+  - Files are sent as `StreamableFile` with `Cache-Control: no-store`. CORS now exposes `Content-Disposition` so the web app can use the server's filename.
+  - Every export is written to the audit log (`TIMESHEET_REPORT_EXPORTED`, filters and row count, never the data).
+  - Money is exact text until the spreadsheet cell, where it becomes a display number.
+- **Weekly summary (ADR 007)** now also lists hours logged on tasks.
+- **Web:** a Timesheet reports page (grouping, date range, table, CSV and Excel buttons with authenticated download); a `notification-bell` entry for each event.
+
+### Tests (slice 2)
+
+- `export-format.test.ts` (written first): the formula-trigger list, CSV quoting and escaping, and XLSX read back with exceljs (types kept, no formulas).
+- `timesheets-e2e.test.ts` (now 33 tests):
+  - who is notified of each decision;
+  - submit reminder on the last day, then overdue, once each;
+  - the approver digest only after 24 h, once a day;
+  - the variance alert once, with `alerted_at` set;
+  - reports by person, project, team and period, with the scope, per-currency cost (270.50 = 75.00 project + 195.50 base) and a project filter;
+  - 403s and range limits;
+  - CSV and XLSX exports with a `=HYPERLINK(...)` display name neutralised, and audited;
+  - no timesheet for the auditor.
+- Playwright `09-timesheets.spec.ts`: the bell shows the "returned" notice; the lead's report shows the approved cost and the CSV download works.
+
+### Known gaps
+
+- FR-TS-007 (multi-level approval chains), FR-TS-008 (billable flags per project/task beyond the entry flag) and FR-TS-010 (invoice PDF) are P2 and not built. LOCKED and PAID statuses are reserved for payroll and offboarding.
+- Subcontractor tax ID and bank details (encrypted) arrive with the ORG slice. A rate change does not split a period: the profile in force at approval applies.
+- `draft_timesheets_legacy` still has to be dropped by a later migration, after you confirm the merged data.
+- Hours in exports are rounded to 2 decimals. Report rows count overlapping timesheets in full, rather than splitting them by day.

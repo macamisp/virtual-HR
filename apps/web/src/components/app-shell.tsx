@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { BadgeDollarSign, CheckSquare, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Timer, Users } from 'lucide-react';
+import { BadgeDollarSign, BarChart3, CheckSquare, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Timer, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { NotificationBell } from '@/components/notification-bell';
@@ -206,6 +206,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {canApproveTimesheets || canReadAllTimesheets ? (
               <li>
                 <NavLink href="/timesheets/review" icon={ClipboardCheck}>Review timesheets</NavLink>
+              </li>
+            ) : null}
+            {canApproveTimesheets || canReadAllTimesheets ? (
+              <li>
+                <NavLink href="/timesheets/reports" icon={BarChart3}>Timesheet reports</NavLink>
               </li>
             ) : null}
             {canRates ? (

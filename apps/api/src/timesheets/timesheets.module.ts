@@ -9,12 +9,13 @@ import { TimeEntriesService } from './time-entries.service.ts';
 import { TimesheetsService } from './timesheets.service.ts';
 import { RatesService } from './rates.service.ts';
 import { TimesheetEvents } from './timesheet-events.ts';
+import { TimesheetReportsService } from './reports.service.ts';
 
 /** FR-TS-001..006, 009, 011..013 (ADR 008). */
 @Module({
   imports: [AttendanceModule, TasksModule, PlanningModule],
   controllers: [TimeEntriesController, TimesheetsController],
-  providers: [PrismaService, TimeEntriesService, TimesheetsService, RatesService, TimesheetEvents],
+  providers: [PrismaService, TimeEntriesService, TimesheetsService, RatesService, TimesheetEvents, TimesheetReportsService],
   exports: [TimeEntriesService, TimesheetsService, TimesheetEvents],
 })
 export class TimesheetsModule {}

@@ -30,6 +30,7 @@ import type {
   AttendanceExportFilter,
 } from '../../../../packages/shared/src/attendance/types.ts';
 import { findDay, refreshDay } from '../timesheets/timesheet-store.ts';
+import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
 import type { TimesheetDayRow } from '../timesheets/timesheet-store.ts';
 
 export type SessionClosedListener = (session: AttendanceSession) => Promise<void>;
@@ -793,7 +794,13 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
   }
 
   public async refreshTimesheetDay(orgId: string, userId: string, workDate: string): Promise<void> {
-    await this.withRls(orgId, (client) => refreshDay(client, orgId, userId, workDate));
+    await this.withRls(orgId, async (client) => {
+      // FR-TS-001: drafts for people who keep timesheets (not e.g. the read-only auditor).
+      const res = await client.query<{ role: string }>(`SELECT role FROM users WHERE id = $1`, [userId]);
+      const role = res.rows[0]?.role;
+      if (!role || !hasPermission(role, Permission.TIMESHEETS_USE)) return;
+      await refreshDay(client, orgId, userId, workDate);
+    });
   }
 
   public async findTimesheetDay(orgId: string, userId: string, workDate: string): Promise<TimesheetDayRow | null> {

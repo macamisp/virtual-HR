@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Header, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Put, Query, StreamableFile, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.ts';
 import { PermissionsGuard } from '../common/guards/permissions.guard.ts';
 import { CurrentUser } from '../common/decorators/current-user.decorator.ts';
@@ -14,6 +14,7 @@ import {
   SubmitTimesheetDtoSchema,
   TimesheetListQuerySchema,
   TimesheetNotesDtoSchema,
+  TimesheetReportQuerySchema,
   TimesheetSettingsDtoSchema,
 } from '../../../../packages/shared/src/timesheets/types.ts';
 import type {
@@ -25,11 +26,13 @@ import type {
   SubmitTimesheetDto,
   TimesheetListQuery,
   TimesheetNotesDto,
+  TimesheetReportQuery,
   TimesheetSettingsDto,
 } from '../../../../packages/shared/src/timesheets/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import { TimesheetsService } from './timesheets.service.ts';
 import { RatesService } from './rates.service.ts';
+import { TimesheetReportsService } from './reports.service.ts';
 
 const id = new ParseUUIDPipe({ version: '4' });
 const READERS = [Permission.TIMESHEETS_USE, Permission.TIMESHEETS_READ_ALL] as const;
@@ -44,6 +47,7 @@ export class TimesheetsController {
   constructor(
     private readonly timesheets: TimesheetsService,
     private readonly rates: RatesService,
+    private readonly reports: TimesheetReportsService,
   ) {}
 
   @Get('timesheets')
@@ -68,6 +72,17 @@ export class TimesheetsController {
   @RequirePermissions(Permission.ORG_MANAGE)
   updateSettings(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(TimesheetSettingsDtoSchema)) dto: TimesheetSettingsDto) {
     return this.rates.updateSettings(user, dto);
+  }
+
+  /** FR-TS-013: JSON for the page, or a CSV / XLSX download (audited). Declared before :id. */
+  @Get('timesheets/reports')
+  @RequireAnyPermission(Permission.TIMESHEETS_APPROVE_TEAM, Permission.TIMESHEETS_APPROVE_ALL, Permission.TIMESHEETS_READ_ALL)
+  @Header('Cache-Control', 'no-store')
+  async report(@CurrentUser() user: AuthenticatedUser, @Query(new ZodValidationPipe(TimesheetReportQuerySchema)) q: TimesheetReportQuery) {
+    if (q.format === 'json') return await this.reports.report(user, q);
+    const file = await this.reports.export(user, q);
+    const body = typeof file.body === 'string' ? Buffer.from(file.body, 'utf8') : file.body;
+    return new StreamableFile(body, { type: file.contentType, disposition: `attachment; filename="${file.filename}"`, length: body.length });
   }
 
   @Get('timesheets/:id')

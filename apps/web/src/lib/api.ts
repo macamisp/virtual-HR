@@ -57,11 +57,11 @@ function bearer(mode: AuthMode): string | null {
  * cookie), validates the JSON response with Zod and, on a 401, refreshes once via the
  * httpOnly cookie and retries.
  */
-export async function apiFetch<T>(path: string, opts: ApiOptions<T> = {}): Promise<T> {
+async function request<T>(path: string, opts: ApiOptions<T>, accept: string): Promise<Response> {
   const mode = opts.auth ?? 'access';
 
   const send = async (): Promise<Response> => {
-    const headers: Record<string, string> = { Accept: 'application/json', ...(opts.headers ?? {}) };
+    const headers: Record<string, string> = { Accept: accept, ...(opts.headers ?? {}) };
     if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
     const token = bearer(mode);
     if (token) headers.Authorization = `Bearer ${token}`;
@@ -93,7 +93,11 @@ export async function apiFetch<T>(path: string, opts: ApiOptions<T> = {}): Promi
   if (!res.ok) {
     throw new ApiError(res.status, await errorMessage(res));
   }
+  return res;
+}
 
+export async function apiFetch<T>(path: string, opts: ApiOptions<T> = {}): Promise<T> {
+  const res = await request(path, opts, 'application/json');
   if (!opts.schema) return undefined as T;
   const json: unknown = res.status === 204 ? null : await res.json();
   const parsed = opts.schema.safeParse(json);
@@ -101,4 +105,24 @@ export async function apiFetch<T>(path: string, opts: ApiOptions<T> = {}): Promi
     throw new ApiError(0, 'The server sent an unexpected response.');
   }
   return parsed.data;
+}
+
+/** Authenticated file download (exports). Returns the file and the server's filename. */
+export async function apiDownload(path: string): Promise<{ blob: Blob; filename: string }> {
+  const res = await request(path, {}, '*/*');
+  const disposition = res.headers.get('content-disposition') ?? '';
+  const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'download';
+  return { blob: await res.blob(), filename };
+}
+
+/** Saves a blob through a temporary object URL. */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

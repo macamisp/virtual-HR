@@ -8,7 +8,7 @@ import { ScheduledWorkService } from './scheduled-work.service.ts';
 
 export const JOBS_QUEUE = 'hrvo-jobs';
 
-type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attendance-reconcile' | 'attendance-daily-close' | 'presence-retention';
+type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attendance-reconcile' | 'attendance-daily-close' | 'presence-retention' | 'timesheet-reminders';
 
 /** Repeatable jobs. BullMQ job schedulers are de-duplicated in Redis, so N API instances run each tick once. */
 export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs: number }> = [
@@ -18,6 +18,7 @@ export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs: number }> =
   { name: 'weekly-summary', everyMs: 15 * 60_000 },
   { name: 'attendance-daily-close', everyMs: 15 * 60_000 },
   { name: 'presence-retention', everyMs: 60 * 60_000 },
+  { name: 'timesheet-reminders', everyMs: 15 * 60_000 },
 ];
 
 export function jobsEnabled(): boolean {
@@ -86,6 +87,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatch
       case 'attendance-reconcile': return await work.attendanceReconcile(now);
       case 'attendance-daily-close': return await work.attendanceDailyClose(now);
       case 'presence-retention': return await work.presenceRetention(now);
+      case 'timesheet-reminders': return await work.timesheetReminders(now);
       case 'notification-email': {
         const data = job.data as { orgId: string; notificationId: string };
         return await this.sender.send(data.orgId, data.notificationId);

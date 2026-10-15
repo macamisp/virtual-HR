@@ -1,5 +1,6 @@
 /**
- * In-app notifications (FR-NOTIF-001) for task events and reminders (FR-TASK-011, 016).
+ * In-app notifications (FR-NOTIF-001) for task events and reminders (FR-TASK-011, 016) and
+ * timesheet approvals, reminders and variance alerts (FR-TS-005, 012).
  */
 import { z } from 'zod';
 
@@ -15,6 +16,15 @@ export const NotificationType = {
   TASK_OVERDUE: 'TASK_OVERDUE',
   TASK_ESCALATED: 'TASK_ESCALATED',
   WEEKLY_SUMMARY: 'WEEKLY_SUMMARY',
+  // FR-TS-005 / FR-TS-012
+  TIMESHEET_SUBMITTED: 'TIMESHEET_SUBMITTED',
+  TIMESHEET_APPROVED: 'TIMESHEET_APPROVED',
+  TIMESHEET_REJECTED: 'TIMESHEET_REJECTED',
+  TIMESHEET_REOPENED: 'TIMESHEET_REOPENED',
+  TIMESHEET_SUBMIT_REMINDER: 'TIMESHEET_SUBMIT_REMINDER',
+  TIMESHEET_OVERDUE: 'TIMESHEET_OVERDUE',
+  TIMESHEET_APPROVAL_REMINDER: 'TIMESHEET_APPROVAL_REMINDER',
+  TIMESHEET_VARIANCE: 'TIMESHEET_VARIANCE',
 } as const;
 export type NotificationType = (typeof NotificationType)[keyof typeof NotificationType];
 
