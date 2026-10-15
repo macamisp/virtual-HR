@@ -83,6 +83,9 @@ jobs:
       - name: Fail on drift between migrations and schema.prisma
         run: npx prisma migrate diff --from-url "$DIRECT_DATABASE_URL" --to-schema-datamodel apps/api/prisma/schema.prisma --exit-code
 
+      - name: Lint (API, shared, web)
+        run: npm run lint
+
       - name: Typecheck
         run: npm run typecheck
 

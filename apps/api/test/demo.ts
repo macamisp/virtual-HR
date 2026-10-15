@@ -27,14 +27,8 @@ import { AttendanceService } from '../src/attendance/attendance.service.ts';
 import { PostgresAttendanceRepository } from '../src/attendance/attendance-repository.ts';
 import {
   AttendanceState,
-  ClockOutSource,
   SessionStatus,
   UserRole,
-  CorrectionStatus,
-  DayStatus,
-  LivePresenceStatus,
-  InMemoryHolidayProvider,
-  InMemoryLeaveProvider,
 } from '../../../packages/shared/src/attendance/types.ts';
 import type { AttendanceSession, Clock, HeartbeatPayload } from '../../../packages/shared/src/attendance/types.ts';
 
@@ -101,8 +95,8 @@ async function runDemo() {
     const pool = repository.getPool();
     await pool.query('SELECT 1');
     console.log(`  [PERSISTENCE] PostgreSQL 16 Connected on localhost:5433 with Row-Level Security (RLS).`);
-  } catch (err: any) {
-    console.log(`  [PERSISTENCE] PostgreSQL not available (${err.message}). Falling back to memory store.`);
+  } catch (err) {
+    console.log(`  [PERSISTENCE] PostgreSQL not available (${err instanceof Error ? err.message : String(err)}). Falling back to memory store.`);
     repository = undefined;
   }
 
@@ -353,8 +347,8 @@ async function runDemo() {
     try {
       await restoredService.ingestHeartbeat(oldSeqHb, clock.now());
       console.log(`  [FAIL] Sequence replay was not blocked.`);
-    } catch (err: any) {
-      console.log(`  [SECURITY PASS] Monotonic sequence check from PostgreSQL blocked replay: "${err.message}"`);
+    } catch (err) {
+      console.log(`  [SECURITY PASS] Monotonic sequence check from PostgreSQL blocked replay: "${err instanceof Error ? err.message : String(err)}"`);
     }
 
     console.log(`  [POSTGRESQL RECOVERY CONFIRMED] Monotonic sequences and sessions are durable across restarts.`);
@@ -401,8 +395,8 @@ async function runDemo() {
         approved: true,
       });
       console.log(`  [FAIL] Self-approval was not blocked.`);
-    } catch (err: any) {
-      console.log(`  [SECURITY PASS] Self-approval blocked: "${err.message}"`);
+    } catch (err) {
+      console.log(`  [SECURITY PASS] Self-approval blocked: "${err instanceof Error ? err.message : String(err)}"`);
     }
 
     // Manager approval

@@ -48,7 +48,7 @@
 - `helmet` 8.3.0 (approved): CSP `default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, nosniff, CORP same-site, HSTS in production.
 - CORS: exact-match allow-list from `CORS_ORIGINS` (required in production, `*` rejected), shared with the Socket.IO adapter. WebSocket handshakes with a disallowed `Origin` are refused (`allowRequest`), because CORS does not cover the websocket transport.
 - Rate limits with `@nestjs/throttler` 6.7.1 (approved): named buckets `login`, `refresh`, `passwordReset` per client IP (`2fa/verify` uses `login`), and a `heartbeat` bucket per user via the throttler storage. Limits come from env. **The store is in-memory, so limits are per instance**; a Redis store is required before horizontal scaling.
-- CSRF for cookie-based `/auth/refresh`: cookie `SameSite=Strict`, `HttpOnly`, `Path=/auth/refresh`, `Secure` in production; plus required header `X-HRVO-CSRF: 1` (forces a preflight the allow-list rejects) and an allowed `Origin` when present. A refresh token sent in the body is not ambient and needs neither.
+- CSRF for cookie-based `/auth/refresh`: cookie `SameSite=Strict`, `HttpOnly`, `Path=/auth/refresh`, `Secure` in production; plus required header `X-HRVO-CSRF: 1` (forces a preflight the allow-list rejects) and an allowed `Origin` when present. A refresh token sent in the body is not ambient and needs neither. *(Superseded 15 Oct 2026, ADR 006 §8: body tokens are no longer accepted or returned; every refresh is cookie-only and CSRF-checked.)*
 - Production refuses to start with a missing/placeholder `JWT_SECRET`, missing `CORS_ORIGINS`, the local breach stub, or the dev SMTP transport.
 - Removed logging of token prefixes (JWT guard), and test/demo output of invite tokens, access tokens and heartbeat secrets.
 
@@ -62,7 +62,7 @@
 
 ## 8. Open items
 
-- Refresh token is also returned in the JSON body (see traceability FR-AUTH-003).
+- ~~Refresh token is also returned in the JSON body~~ — resolved in ADR 006 §8 (cookie-only).
 - TOTP secrets stored unencrypted; invite emails not sent; CAPTCHA and lockout email (FR-AUTH-007) missing; production mail provider; Redis-backed rate-limit store.
 - `fn_lookup_user_for_auth` matches email across organisations; if the same email exists in two orgs, login picks an arbitrary one.
-- No linter is configured in the repo (AGENTS.md asks for lint); adding ESLint needs package approval.
+- ~~No linter is configured~~ — resolved in ADR 006 §8 (ESLint in CI).

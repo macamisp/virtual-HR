@@ -362,7 +362,7 @@ export interface TransparencyInfo {
     state: string;
     seq: number;
     ip?: string | null;
-    meta?: Record<string, unknown>;
+    meta?: Record<string, unknown> | null;
   }>;
 }
 

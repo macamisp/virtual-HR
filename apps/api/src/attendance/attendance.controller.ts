@@ -24,7 +24,6 @@ import { InvalidTransitionError } from './attendance-state-machine.ts';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.ts';
 import { PermissionsGuard } from '../common/guards/permissions.guard.ts';
 import { CurrentUser } from '../common/decorators/current-user.decorator.ts';
-import { CurrentOrg } from '../common/decorators/current-org.decorator.ts';
 import { RequirePermissions } from '../common/decorators/permissions.decorator.ts';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.ts';
 import {
@@ -52,7 +51,7 @@ import type {
 function toHttpError(err: unknown): unknown {
   if (err instanceof InvalidTransitionError) return new ConflictException(err.message);
   if (!(err instanceof Error)) return err;
-  if (/cannot approve their own|Unauthorized to review|Insufficient permissions|has no assigned team/i.test(err.message)) {
+  if (/cannot approve their own|Unauthorized to review|Insufficient permissions|has no assigned team|permission denied/i.test(err.message)) {
     return new ForbiddenException(err.message);
   }
   if (/not found/i.test(err.message)) return new NotFoundException(err.message);

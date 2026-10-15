@@ -364,7 +364,8 @@ export class AttendanceStateMachine {
    */
   public handleSocketReconnect(
     session: AttendanceSession,
-    serverTime: Date,
+    // Unused here; kept so every transition handler has the same (session, serverTime) shape.
+    _serverTime: Date,
   ): StateMachineTransitionResult {
     const updated = { ...session };
     const prev = updated.currentState;
@@ -390,7 +391,8 @@ export class AttendanceStateMachine {
    */
   public handleGraceExpiration(
     session: AttendanceSession,
-    serverTime: Date,
+    // Unused here; kept so every transition handler has the same (session, serverTime) shape.
+    _serverTime: Date,
   ): StateMachineTransitionResult {
     const updated = { ...session };
     this.closeLastSegment(updated, updated.lastHeartbeatAt);
@@ -413,7 +415,8 @@ export class AttendanceStateMachine {
    */
   public handleMissingHeartbeatTimeout(
     session: AttendanceSession,
-    serverTime: Date,
+    // Unused here; kept so every transition handler has the same (session, serverTime) shape.
+    _serverTime: Date,
   ): StateMachineTransitionResult {
     const updated = { ...session };
     const prev = updated.currentState;

@@ -24,8 +24,6 @@ const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   transpilePackages: ['@hrvo/shared'],
-  // No linter is approved for this repo yet (see ADR 006).
-  eslint: { ignoreDuringBuilds: true },
   // The image optimizer is unused and has had RCE/DoS advisories; keep it off.
   images: { unoptimized: true },
   async headers() {

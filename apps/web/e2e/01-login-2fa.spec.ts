@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { generateSync } from 'otplib';
+import { otpauthQrDataUrl } from '../src/lib/qr';
 import { USERS } from './fixtures';
 import { passNoticeGate, signIn, signOut } from './helpers';
 
@@ -11,6 +12,14 @@ test.describe('Login with mandatory TOTP (FR-AUTH-004)', () => {
     await expect(page).toHaveURL(/\/2fa\/setup/);
     const secret = (await page.getByTestId('totp-secret').innerText()).replace(/\s+/g, '');
     expect(secret.length).toBeGreaterThanOrEqual(16);
+
+    // QR code (generated in the browser) encodes exactly the otpauth:// URI offered as a fallback link
+    const qr = page.getByTestId('totp-qr');
+    await expect(qr).toBeVisible();
+    const otpauthUrl = await page.getByRole('link', { name: /open it directly in an authenticator app/i }).getAttribute('href');
+    expect(otpauthUrl).toMatch(/^otpauth:\/\/totp\/.+secret=/);
+    expect(new URL(otpauthUrl!).searchParams.get('secret')).toBe(secret);
+    expect(await qr.getAttribute('src')).toBe(await otpauthQrDataUrl(otpauthUrl!));
 
     await page.getByLabel('Authentication code').fill(generateSync({ secret }) === '000000' ? '111111' : '000000');
     await page.getByRole('button', { name: 'Verify and enable' }).click();

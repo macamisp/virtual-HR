@@ -52,8 +52,18 @@ function requestMeta(req: Request): [string | undefined, string | undefined] {
   return [req.ip || req.socket.remoteAddress, req.headers['user-agent']];
 }
 
-function setRefreshCookie(res: Response, refreshToken: string): void {
-  res.cookie(REFRESH_COOKIE_NAME, refreshToken, { ...refreshCookieOptions(), maxAge: REFRESH_MAX_AGE_MS });
+/**
+ * FR-AUTH-003: the rotating refresh token travels ONLY as the httpOnly cookie (Secure in
+ * production, SameSite=Strict, Path=/auth/refresh). It is removed from every JSON body so
+ * page scripts can never read it.
+ */
+function moveRefreshTokenToCookie<T extends object>(res: Response, result: T): Omit<T, 'refreshToken'> {
+  if (!('refreshToken' in result)) return result;
+  const { refreshToken, ...body } = result as T & { refreshToken: unknown };
+  if (typeof refreshToken === 'string' && refreshToken.length > 0) {
+    res.cookie(REFRESH_COOKIE_NAME, refreshToken, { ...refreshCookieOptions(), maxAge: REFRESH_MAX_AGE_MS });
+  }
+  return body;
 }
 
 @Controller('auth')
@@ -93,19 +103,13 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.authService.login(dto, ...requestMeta(req));
-    if ('refreshToken' in result && result.refreshToken) {
-      // FR-AUTH-003: httpOnly, SameSite=Strict, Secure in production, scoped to /auth/refresh
-      setRefreshCookie(res, result.refreshToken);
-    }
-    return result;
+    return moveRefreshTokenToCookie(res, await this.authService.login(dto, ...requestMeta(req)));
   }
 
   /**
-   * Cookie-authenticated refresh is a CSRF target, so it additionally requires the
-   * X-HRVO-CSRF header (forces a CORS preflight, which the origin allow-list rejects)
-   * and an allowed Origin when one is sent. A token in the body is not ambient and
-   * needs neither.
+   * Refresh is authenticated only by the httpOnly cookie, which makes it a CSRF target, so it
+   * also requires the X-HRVO-CSRF header (forces a CORS preflight that the origin allow-list
+   * rejects) and an allowed Origin when one is sent. Tokens in the body are not accepted.
    */
   @Public()
   @Post('refresh')
@@ -113,20 +117,14 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async refresh(
     @Req() req: Request,
-    @Body('refreshToken') bodyRefreshToken: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const cookieToken: string | undefined = req.cookies?.[REFRESH_COOKIE_NAME];
-    const fromBody = typeof bodyRefreshToken === 'string' && bodyRefreshToken.length > 0;
-    if (!fromBody && cookieToken) {
-      if (req.headers[CSRF_HEADER] !== '1' || !isOriginAllowed(req.headers.origin)) {
-        throw new ForbiddenException('CSRF check failed');
-      }
+    if (req.headers[CSRF_HEADER] !== '1' || !isOriginAllowed(req.headers.origin)) {
+      throw new ForbiddenException('CSRF check failed');
     }
-    const token = fromBody ? bodyRefreshToken : cookieToken;
-    const result = await this.authService.refresh(token ?? '', ...requestMeta(req));
-    setRefreshCookie(res, result.refreshToken);
-    return result;
+    const cookieToken: unknown = req.cookies?.[REFRESH_COOKIE_NAME];
+    const token = typeof cookieToken === 'string' ? cookieToken : '';
+    return moveRefreshTokenToCookie(res, await this.authService.refresh(token, ...requestMeta(req)));
   }
 
   @Public()
@@ -171,11 +169,7 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.authService.verifyAndEnable2fa(user, dto.code, ...requestMeta(req));
-    if ('refreshToken' in result && typeof result.refreshToken === 'string') {
-      setRefreshCookie(res, result.refreshToken);
-    }
-    return result;
+    return moveRefreshTokenToCookie(res, await this.authService.verifyAndEnable2fa(user, dto.code, ...requestMeta(req)));
   }
 
   @Post('logout')

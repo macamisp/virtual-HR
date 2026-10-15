@@ -7,7 +7,7 @@
 import 'reflect-metadata';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
@@ -26,6 +26,7 @@ import {
   createBreachedPasswordChecker,
 } from '../src/auth/breached-password.ts';
 import type { JwtPayload } from '../../../packages/shared/src/index.ts';
+import { cookieValue, refreshCookie, refreshTokenFields, refreshWithCookie } from './support/refresh-cookie.ts';
 
 const ORG = '99990000-0000-4000-8000-000000000001';
 const SLUG = 'auth-hardening-e2e';
@@ -43,11 +44,11 @@ const U = {
   sweep: { id: '99990000-0000-4000-8000-000000000017', email: 'sweep@hardening.test', role: 'EMPLOYEE' },
   csrf: { id: '99990000-0000-4000-8000-000000000018', email: 'csrf@hardening.test', role: 'EMPLOYEE' },
   limits: { id: '99990000-0000-4000-8000-000000000019', email: 'limits@hardening.test', role: 'EMPLOYEE' },
+  nobody: { id: '99990000-0000-4000-8000-000000000020', email: 'cookieonly@hardening.test', role: 'ADMIN' },
 } as const;
 
 interface LoginResult {
   accessToken?: string;
-  refreshToken?: string;
   sessionId?: string;
   sessionSecret?: string;
   enrollmentToken?: string;
@@ -123,11 +124,12 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
     return { res, body: (await res.json()) as LoginResult };
   }
 
-  async function loginOk(email: string): Promise<Required<Pick<LoginResult, 'accessToken' | 'refreshToken' | 'sessionId' | 'sessionSecret'>>> {
+  /** Signs in like a browser: tokens from the body, refresh token only from the httpOnly cookie. */
+  async function loginOk(email: string): Promise<{ accessToken: string; sessionId: string; sessionSecret: string; refreshCookie: string }> {
     const { res, body } = await login(email);
     assert.equal(res.status, 200, `login ${email}: ${body.message}`);
-    assert.ok(body.accessToken && body.refreshToken && body.sessionId && body.sessionSecret);
-    return body as Required<Pick<LoginResult, 'accessToken' | 'refreshToken' | 'sessionId' | 'sessionSecret'>>;
+    assert.ok(body.accessToken && body.sessionId && body.sessionSecret);
+    return { accessToken: body.accessToken, sessionId: body.sessionId, sessionSecret: body.sessionSecret, refreshCookie: refreshCookie(res) };
   }
 
   function connect(token: string | undefined, opts: { port?: number; origin?: string } = {}): Promise<Socket> {
@@ -232,7 +234,7 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       assert.equal(res.status, 200);
       assert.equal(body.requires2faSetup, true);
       assert.equal(body.accessToken, undefined);
-      assert.equal(body.refreshToken, undefined);
+      assert.deepEqual(refreshTokenFields(body), []);
       assert.deepEqual(res.headers.getSetCookie(), []);
       assert.ok(body.enrollmentToken);
       enrollmentToken = body.enrollmentToken;
@@ -271,7 +273,9 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       assert.equal(good.status, 200);
       const enrolled = (await good.json()) as LoginResult & { recoveryCodes: string[] };
       assert.equal(enrolled.recoveryCodes.length, 10);
-      assert.ok(enrolled.accessToken && enrolled.refreshToken);
+      assert.ok(enrolled.accessToken);
+      assert.deepEqual(refreshTokenFields(enrolled), []);
+      refreshCookie(good);
       assert.ok(decodeJwt(enrolled.accessToken).sid);
 
       const me = await fetch(`${base}/users/me`, { headers: { Authorization: `Bearer ${enrolled.accessToken}` } });
@@ -384,13 +388,8 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       const ev = await gone;
       assert.equal(ev.authReason, 'PASSWORD_RESET');
 
-      for (const rt of [oldSession.refreshToken, second.refreshToken]) {
-        const r = await fetch(`${base}/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: rt }),
-        });
-        assert.equal(r.status, 401);
+      for (const cookie of [oldSession.refreshCookie, second.refreshCookie]) {
+        assert.equal((await refreshWithCookie(base, cookie)).status, 401);
       }
       const live = await adminPool.query(
         `SELECT count(*)::int AS n FROM auth_sessions WHERE user_id = $1 AND NOT is_revoked`,
@@ -489,13 +488,7 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
 
     it('disconnects every socket of the family when refresh-token reuse revokes it', async () => {
       const s = await loginOk(U.life.email);
-      const rotate = (rt: string) =>
-        fetch(`${base}/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: rt }),
-        });
-      const r1 = await rotate(s.refreshToken);
+      const r1 = await refreshWithCookie(base, s.refreshCookie);
       assert.equal(r1.status, 200);
       const rotated = (await r1.json()) as LoginResult;
 
@@ -505,7 +498,7 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       const goneOld = serverDisconnect(oldSocket);
       const goneNew = serverDisconnect(newSocket);
 
-      const replay = await rotate(s.refreshToken);
+      const replay = await refreshWithCookie(base, s.refreshCookie);
       assert.equal(replay.status, 401);
       assert.equal((await goneOld).authReason, 'FAMILY_REUSE');
       assert.equal((await goneNew).authReason, 'FAMILY_REUSE');
@@ -523,11 +516,7 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
         const again = await login(user.email);
         assert.equal(again.res.status, 401);
         assert.match(again.body.message ?? '', /not active/);
-        const refresh = await fetch(`${base}/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: s.refreshToken }),
-        });
+        const refresh = await refreshWithCookie(base, s.refreshCookie);
         assert.equal(refresh.status, 401);
         await assert.rejects(connect(s.accessToken), /Unauthorized/);
 
@@ -649,12 +638,7 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
     it('refresh: 3rd request in the window gets 429', async () => {
       const statuses: number[] = [];
       for (let i = 0; i < 3; i++) {
-        const r = await fetch(`${limitedBase}/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: 'f'.repeat(64) }),
-        });
-        statuses.push(r.status);
+        statuses.push((await refreshWithCookie(limitedBase, `refreshToken=${'f'.repeat(64)}`)).status);
       }
       assert.deepEqual(statuses, [401, 401, 429]);
     });
@@ -670,6 +654,78 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       assert.notEqual(acks[1].error, 'Rate limit exceeded');
       assert.deepEqual(acks[2], { success: false, error: 'Rate limit exceeded' });
       socket.disconnect();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  describe('Refresh token is cookie-only (FR-AUTH-003)', { concurrency: false }, () => {
+    /** Asserts a JSON body has no refresh-token field and does not contain the cookie's value anywhere. */
+    async function assertNoRefreshTokenInBody(res: Response, expectCookie: boolean): Promise<Record<string, unknown>> {
+      const text = await res.text();
+      const body = JSON.parse(text) as Record<string, unknown>;
+      assert.deepEqual(refreshTokenFields(body), [], `${res.url} body has no refresh token field`);
+      const cookie = res.headers.getSetCookie().find((c) => c.startsWith('refreshToken='));
+      if (expectCookie) {
+        assert.ok(cookie, `${res.url} sets the refresh cookie`);
+        assert.match(cookie, /HttpOnly/);
+        assert.match(cookie, /SameSite=Strict/);
+        assert.ok(!text.includes(cookieValue(cookie.split(';')[0]!)), `${res.url} body does not echo the cookie value`);
+      }
+      return body;
+    }
+
+    it('login, 2FA-enrollment verify, refresh and invitation accept never return a refresh token in the body', async () => {
+      // Login (full session)
+      const loginRes = await fetch(`${base}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: U.csrf.email, password: PASSWORD }),
+      });
+      assert.equal(loginRes.status, 200);
+      await assertNoRefreshTokenInBody(loginRes.clone(), true);
+
+      // Refresh (rotation)
+      const refreshed = await refreshWithCookie(base, refreshCookie(loginRes));
+      assert.equal(refreshed.status, 200);
+      await assertNoRefreshTokenInBody(refreshed, true);
+
+      // 2FA enrollment verify, which completes a login for a mandatory-2FA role
+      const first = await login(U.nobody.email);
+      assert.ok(first.body.enrollmentToken);
+      const setup = await fetch(`${base}/auth/2fa/setup`, { method: 'POST', headers: { Authorization: `Bearer ${first.body.enrollmentToken}` } });
+      const { secret } = (await setup.json()) as { secret: string };
+      const verify = await fetch(`${base}/auth/2fa/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${first.body.enrollmentToken}` },
+        body: JSON.stringify({ code: generateSync({ secret }) }),
+      });
+      assert.equal(verify.status, 200);
+      await assertNoRefreshTokenInBody(verify, true);
+
+      // Invitation accept
+      const inviteToken = randomBytes(32).toString('hex');
+      await adminPool.query(
+        `INSERT INTO invitations (org_id, email, role, token_hash, invited_by, expires_at)
+         VALUES ($1, 'invitee@hardening.test', 'EMPLOYEE', $2, $3, now() + interval '1 day')`,
+        [ORG, sha256(inviteToken), U.hr.id],
+      );
+      const accept = await fetch(`${base}/auth/invitations/accept`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inviteToken, password: 'InviteePassphrase!45', displayName: 'Invitee' }),
+      });
+      assert.equal(accept.status, 201);
+      await assertNoRefreshTokenInBody(accept, false);
+    });
+
+    it('a refresh token sent in the JSON body is ignored (cookie only)', async () => {
+      const s = await loginOk(U.csrf.email);
+      const res = await fetch(`${base}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-HRVO-CSRF': '1' },
+        body: JSON.stringify({ refreshToken: cookieValue(s.refreshCookie) }),
+      });
+      assert.equal(res.status, 401);
     });
   });
 

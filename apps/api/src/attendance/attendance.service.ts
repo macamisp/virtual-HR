@@ -35,22 +35,24 @@ import type {
   AttendanceCorrection,
   ScheduleComplianceResult,
   AttendanceDaily,
-  DraftTimesheet,
   LiveBoardUser,
-  LiveBoardFilter,
   AttendanceExportFilter,
   TransparencyInfo,
   MonitoringConsent,
   IHolidayProvider,
   ILeaveProvider,
 } from '../../../../packages/shared/src/attendance/types.ts';
-export function sanitizeExportCell(val: any): any {
+export function sanitizeExportCell<T>(val: T): T | string {
   if (val === null || val === undefined) return '';
   const str = String(val);
   if (/^[=+\-@\t\r]/.test(str)) {
     return `'${str}`;
   }
   return val;
+}
+
+function isRepository(value: unknown): value is IAttendanceRepository {
+  return !!value && typeof (value as Partial<IAttendanceRepository>).findOpenSessionByUserId === 'function';
 }
 
 export class AttendanceService {
@@ -74,26 +76,31 @@ export class AttendanceService {
   // horizontal scaling needs a shared lock (ADR 006).
   private sessionLocks = new Map<string, Promise<void>>();
 
+  /**
+   * Two call shapes are supported (kept for existing callers):
+   *  - (config, clock, repository?, defaultOrgId?, holidayProvider?, leaveProvider?)
+   *  - (repository, clock?, clock?, holidayProvider?, leaveProvider?)
+   */
   constructor(
-    configOrRepo?: any,
-    clockOrUndefined?: any,
-    repoOrClock?: any,
-    defaultOrgIdOrHoliday?: any,
-    holidayOrLeave?: any,
-    leaveProvider?: any,
+    configOrRepo?: Partial<AttendanceConfig> | IAttendanceRepository,
+    clockOrUndefined?: Clock,
+    repoOrClock?: IAttendanceRepository | Clock,
+    defaultOrgIdOrHoliday?: string | IHolidayProvider,
+    holidayOrLeave?: IHolidayProvider | ILeaveProvider,
+    leaveProvider?: ILeaveProvider,
   ) {
-    if (configOrRepo && typeof configOrRepo.findOpenSessionByUserId === 'function') {
+    if (isRepository(configOrRepo)) {
       this.repository = configOrRepo;
       this.config = { ...DEFAULT_ATTENDANCE_CONFIG };
-      this.clock = repoOrClock || clockOrUndefined || new SystemClock();
-      this.holidayProvider = defaultOrgIdOrHoliday;
-      this.leaveProvider = holidayOrLeave;
+      this.clock = (repoOrClock as Clock | undefined) || clockOrUndefined || new SystemClock();
+      this.holidayProvider = defaultOrgIdOrHoliday as IHolidayProvider | undefined;
+      this.leaveProvider = holidayOrLeave as ILeaveProvider | undefined;
     } else {
-      this.config = { ...DEFAULT_ATTENDANCE_CONFIG, ...(configOrRepo as Partial<AttendanceConfig>) };
+      this.config = { ...DEFAULT_ATTENDANCE_CONFIG, ...(configOrRepo ?? {}) };
       this.clock = clockOrUndefined || new SystemClock();
-      this.repository = repoOrClock;
-      this.defaultOrgId = defaultOrgIdOrHoliday;
-      this.holidayProvider = holidayOrLeave;
+      this.repository = repoOrClock as IAttendanceRepository | undefined;
+      this.defaultOrgId = defaultOrgIdOrHoliday as string | undefined;
+      this.holidayProvider = holidayOrLeave as IHolidayProvider | undefined;
       this.leaveProvider = leaveProvider;
     }
     this.stateMachine = new AttendanceStateMachine(this.config);
@@ -313,7 +320,7 @@ export class AttendanceService {
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
     return await this.withSessionLock(targetOrgId, userId, async () => {
-      let session = await this.getSession(userId, targetOrgId);
+      const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
       const result = this.stateMachine.handleSocketDisconnect(session, serverTime);
@@ -335,7 +342,7 @@ export class AttendanceService {
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
     return await this.withSessionLock(targetOrgId, userId, async () => {
-      let session = await this.getSession(userId, targetOrgId);
+      const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
       const result = this.stateMachine.handleSocketReconnect(session, serverTime);
@@ -357,7 +364,7 @@ export class AttendanceService {
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
     return await this.withSessionLock(targetOrgId, userId, async () => {
-      let session = await this.getSession(userId, targetOrgId);
+      const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
       const result = this.stateMachine.handleExplicitLogout(session, serverTime);
@@ -380,7 +387,7 @@ export class AttendanceService {
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
     return await this.withSessionLock(targetOrgId, userId, async () => {
-      let session = await this.getSession(userId, targetOrgId);
+      const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
       const result = this.stateMachine.handleUserStartsBreak(session, serverTime);
@@ -402,7 +409,7 @@ export class AttendanceService {
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
     return await this.withSessionLock(targetOrgId, userId, async () => {
-      let session = await this.getSession(userId, targetOrgId);
+      const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
       const result = this.stateMachine.handleUserEndsBreak(session, serverTime);
@@ -425,7 +432,7 @@ export class AttendanceService {
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
     return await this.withSessionLock(targetOrgId, userId, async () => {
-      let session = await this.getSession(userId, targetOrgId);
+      const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
       const result = this.stateMachine.handleJoinMeeting(session, meetingId, serverTime);
@@ -447,7 +454,7 @@ export class AttendanceService {
   ): Promise<StateMachineTransitionResult | null> {
     const targetOrgId = orgId || this.defaultOrgId;
     return await this.withSessionLock(targetOrgId, userId, async () => {
-      let session = await this.getSession(userId, targetOrgId);
+      const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
       const result = this.stateMachine.handleLeaveMeeting(session, serverTime);
@@ -1172,15 +1179,15 @@ export class AttendanceService {
     if (!this.repository) {
       throw new Error('Repository is required for export');
     }
-    const allowed = [UserRole.HR, UserRole.ADMIN, UserRole.MANAGER, UserRole.TEAM_LEAD];
-    if (!allowed.includes(params.callerRole as any)) {
+    // Same rule as the route guard (was a hard-coded list that rejected HR_MANAGER/SUPER_ADMIN).
+    if (!hasPermission(params.callerRole, Permission.ATTENDANCE_EXPORT)) {
       throw new Error('Export permission denied: caller lacks export permission');
     }
 
     const records = await this.repository.findDailyAttendanceInRange(params.orgId, params.filter);
 
     let csv = 'work_date,user_id,display_name,email,first_in,last_out,net_hours,status\n';
-    for (const r of records as any[]) {
+    for (const r of records) {
       const netHours = (r.netSeconds / 3600).toFixed(2);
       const firstIn = r.firstIn ? r.firstIn.toISOString() : '';
       const lastOut = r.lastOut ? r.lastOut.toISOString() : '';
@@ -1215,15 +1222,17 @@ export class AttendanceService {
     if (!this.repository) {
       throw new Error('Repository is required for export');
     }
-    const allowed = [UserRole.HR, UserRole.ADMIN, UserRole.MANAGER, UserRole.TEAM_LEAD];
-    if (!allowed.includes(params.callerRole as any)) {
+    // Same rule as the route guard (was a hard-coded list that rejected HR_MANAGER/SUPER_ADMIN).
+    if (!hasPermission(params.callerRole, Permission.ATTENDANCE_EXPORT)) {
       throw new Error('Export permission denied: caller lacks export permission');
     }
 
     const records = await this.repository.findDailyAttendanceInRange(params.orgId, params.filter);
 
-    const ExcelJS = await import('exceljs');
-    const WorkbookClass = (ExcelJS as any).default?.Workbook || (ExcelJS as any).Workbook;
+    // exceljs is CommonJS: under NodeNext the classes may sit on `default`.
+    type ExcelModule = typeof import('exceljs');
+    const ExcelJS = (await import('exceljs')) as ExcelModule & { default?: ExcelModule };
+    const WorkbookClass = ExcelJS.default?.Workbook ?? ExcelJS.Workbook;
     const workbook = new WorkbookClass();
     const sheet = workbook.addWorksheet('Attendance');
 
@@ -1238,7 +1247,7 @@ export class AttendanceService {
       { header: 'status', key: 'status', width: 15 },
     ];
 
-    for (const r of records as any[]) {
+    for (const r of records) {
       sheet.addRow({
         work_date: sanitizeExportCell(r.workDate),
         user_id: sanitizeExportCell(r.userId),

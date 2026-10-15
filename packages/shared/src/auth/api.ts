@@ -1,6 +1,7 @@
 /**
  * Wire (JSON) contracts for /auth endpoints, validated by apps/web.
- * The web client never reads `refreshToken` from a body: it relies on the httpOnly cookie.
+ * Refresh tokens never appear in any body: the API sets them only as the httpOnly cookie.
+ * The schemas are strict about it (`refreshToken` is rejected if it ever reappears).
  * Ref: docs/SRS.md 5.1 (FR-AUTH-001..004, 008), ADR 005.
  */
 import { z } from 'zod';
@@ -15,11 +16,15 @@ export const SessionUserSchema = z.object({
 export type SessionUser = z.infer<typeof SessionUserSchema>;
 
 /** Successful login / refresh / 2FA-enrollment completion. */
+/** Fails validation if a body ever carries a refresh token (FR-AUTH-003). */
+const noRefreshToken = { refreshToken: z.never().optional() };
+
 export const SessionResponseSchema = z.object({
   accessToken: z.string(),
   sessionId: z.string(),
   sessionSecret: z.string(),
   user: SessionUserSchema,
+  ...noRefreshToken,
 });
 export type SessionResponse = z.infer<typeof SessionResponseSchema>;
 
@@ -34,6 +39,7 @@ export const MfaSetupResponseSchema = z.object({ secret: z.string(), otpauthUrl:
 export type MfaSetupResponse = z.infer<typeof MfaSetupResponseSchema>;
 
 export const MfaVerifyResponseSchema = z.object({
+  ...noRefreshToken,
   success: z.literal(true),
   recoveryCodes: z.array(z.string()),
   accessToken: z.string().optional(),
@@ -43,5 +49,5 @@ export const MfaVerifyResponseSchema = z.object({
 });
 export type MfaVerifyResponse = z.infer<typeof MfaVerifyResponseSchema>;
 
-export const AcceptInvitationResponseSchema = z.object({ success: z.literal(true), user: SessionUserSchema });
+export const AcceptInvitationResponseSchema = z.object({ success: z.literal(true), user: SessionUserSchema, ...noRefreshToken });
 export const MessageResponseSchema = z.object({ success: z.boolean(), message: z.string().optional() });

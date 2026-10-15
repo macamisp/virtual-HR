@@ -12,6 +12,7 @@ import { FormField } from '@/components/form-field';
 import { LoadingState } from '@/components/state-views';
 import { apiFetch } from '@/lib/api';
 import { useAuthStore } from '@/lib/auth-store';
+import { otpauthQrDataUrl } from '@/lib/qr';
 
 function groupSecret(secret: string): string {
   return secret.replace(/(.{4})/g, '$1 ').trim();
@@ -36,6 +37,23 @@ function SetupFlow() {
   const [saved, setSaved] = useState(false);
   const [pendingSession, setPendingSession] = useState<Parameters<typeof setSession>[0] | null>(null);
   const started = useRef(false);
+  const [qr, setQr] = useState<string | null>(null);
+  const [qrFailed, setQrFailed] = useState(false);
+
+  useEffect(() => {
+    if (!setup) return;
+    let cancelled = false;
+    otpauthQrDataUrl(setup.otpauthUrl)
+      .then((url) => {
+        if (!cancelled) setQr(url);
+      })
+      .catch(() => {
+        if (!cancelled) setQrFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [setup]);
 
   useEffect(() => {
     // Run once: a second call would replace the secret the user is looking at.
@@ -135,8 +153,26 @@ function SetupFlow() {
           {!setup && !setupError ? <LoadingState label="Generating your secret" rows={2} /> : null}
           {setup ? (
             <>
+              <div className="space-y-2">
+                <p className="text-sm font-medium">1. Scan this QR code with your authenticator app</p>
+                {qr ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- a generated data: URL; next/image adds nothing here and its optimizer is disabled
+                  <img
+                    src={qr}
+                    width={192}
+                    height={192}
+                    alt="QR code to add HRVO to your authenticator app. If you can't scan it, enter the key below."
+                    data-testid="totp-qr"
+                    className="rounded-md border bg-white"
+                  />
+                ) : qrFailed ? (
+                  <p className="text-sm text-muted-foreground">The QR code could not be drawn. Use the key below instead.</p>
+                ) : (
+                  <LoadingState label="Drawing QR code" rows={1} />
+                )}
+              </div>
               <div className="space-y-1">
-                <p className="text-sm font-medium">1. Enter this key in your authenticator app</p>
+                <p className="text-sm font-medium">Can&apos;t scan? Enter this key instead</p>
                 <p data-testid="totp-secret" className="select-all rounded-md bg-muted p-3 font-mono text-sm tracking-wider">
                   {groupSecret(setup.secret)}
                 </p>

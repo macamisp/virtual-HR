@@ -169,7 +169,7 @@ describe('AttendanceService & Heartbeat Cryptographic Ingestion', () => {
     await service.registerSessionSecret(sessionId, sessionSecret);
 
     const hb = createSignedPayload(service, sessionSecret, { sequenceNumber: 1, nonce: 'nonce-priv' });
-    (hb as any).keystrokes = 'user password';
+    (hb as unknown as Record<string, unknown>).keystrokes = 'user password';
 
     await assert.rejects(
       async () => await service.ingestHeartbeat(hb),

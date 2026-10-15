@@ -474,7 +474,7 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
 
     // Privacy violation with DB
     const privHb = createSignedHeartbeat(service, { sequenceNumber: 1 });
-    (privHb as any).keystrokes = 'secret-keys';
+    (privHb as unknown as Record<string, unknown>).keystrokes = 'secret-keys';
     await assert.rejects(
       async () => await service.ingestHeartbeat(privHb),
       /Privacy violation/,
@@ -603,7 +603,7 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
 
     await assert.rejects(
       async () => {
-        await (repository as any).queryWithRls(null, 'SELECT 1');
+        await repository.queryWithRls(null as unknown as string, 'SELECT 1');
       },
       /Tenant context missing: orgId must be provided/,
     );

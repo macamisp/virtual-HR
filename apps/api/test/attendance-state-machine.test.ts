@@ -13,7 +13,6 @@ import {
 } from '../../../packages/shared/src/attendance/types.ts';
 import type {
   HeartbeatPayload,
-  AttendanceSession,
 } from '../../../packages/shared/src/attendance/types.ts';
 import { AttendanceStateMachine } from '../src/attendance/attendance-state-machine.ts';
 
@@ -378,9 +377,10 @@ describe('Requirements FR-ATT-001..005 Specific Verification', () => {
     assert.equal(typeof hb.tabVisible, 'boolean');
     assert.equal(typeof hb.windowFocused, 'boolean');
     // Ensure no content fields exist in type
-    assert.equal((hb as any).keystrokes, undefined);
-    assert.equal((hb as any).screenshots, undefined);
-    assert.equal((hb as any).url, undefined);
+    const raw = hb as unknown as Record<string, unknown>;
+    assert.equal(raw.keystrokes, undefined);
+    assert.equal(raw.screenshots, undefined);
+    assert.equal(raw.url, undefined);
   });
 
   it('FR-ATT-005: Idle time is segregated and excluded from net payable seconds', () => {

@@ -18,8 +18,6 @@ import pg from 'pg';
 import {
   UserRole,
   CorrectionStatus,
-  DayStatus,
-  LivePresenceStatus,
   InMemoryHolidayProvider,
   InMemoryLeaveProvider,
 } from '../../../packages/shared/src/attendance/types.ts';
@@ -515,7 +513,7 @@ describe('Advanced Attendance Capabilities (FR-ATT-013..020, FR-TS-001, RLS & Au
       const logs = await repo.findAuditLogs(orgA, 'EXPORT');
       assert.equal(logs.length, 1);
       assert.equal(logs[0].action, 'ATTENDANCE_EXPORTED');
-      assert.equal((logs[0].after as any)?.format, 'CSV');
+      assert.equal((logs[0].after as { format?: string } | null)?.format, 'CSV');
     });
 
     it('HR exports XLSX with exceljs: returns valid binary buffer and creates an audit log entry', async () => {
@@ -535,7 +533,7 @@ describe('Advanced Attendance Capabilities (FR-ATT-013..020, FR-TS-001, RLS & Au
       const logs = await repo.findAuditLogs(orgA, 'EXPORT');
       assert.equal(logs.length, 2);
       assert.equal(logs[1].action, 'ATTENDANCE_EXPORTED');
-      assert.equal((logs[1].after as any)?.format, 'XLSX');
+      assert.equal((logs[1].after as { format?: string } | null)?.format, 'XLSX');
     });
   });
 

@@ -18,10 +18,9 @@
 import './support/refuse-in-production.ts'; // must stay the first import
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
-import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
-import { io, Socket } from 'socket.io-client';
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { io } from 'socket.io-client';
+import { randomBytes } from 'node:crypto';
 import argon2 from 'argon2';
 import { generateSecret, generateSync } from 'otplib';
 import { AppModule } from '../src/app.module.ts';
@@ -38,6 +37,20 @@ function logSection(title: string) {
 function logStep(step: number | string, title: string, details: string) {
   console.log(`[Step ${step}] ${title}`);
   console.log(`  -> ${details}\n`);
+}
+
+/** The response fields this demo reads (bodies are printed, never trusted). */
+interface DemoBody {
+  requires2fa?: boolean;
+  message?: string;
+  accessToken?: string;
+  sessionId?: string;
+  sessionSecret?: string;
+  user?: { displayName?: string; role?: string };
+  id?: string;
+  status?: string;
+  correction?: { status?: string };
+  valid?: boolean;
 }
 
 async function runDemo() {
@@ -110,9 +123,11 @@ async function runDemo() {
 
   // Helper fetch function with cookie handling
   let storedCookies: string[] = [];
-  async function apiRequest(path: string, options: RequestInit = {}): Promise<{ status: number; body: any; cookies: string[] }> {
+  async function apiRequest(path: string, options: RequestInit = {}): Promise<{ status: number; body: DemoBody; cookies: string[] }> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      // Cookie-authenticated /auth/refresh requires the CSRF header (ADR 005); harmless elsewhere.
+      'X-HRVO-CSRF': '1',
       ...(options.headers as Record<string, string> || {}),
     };
     if (storedCookies.length > 0) {
@@ -126,12 +141,12 @@ async function runDemo() {
     if (setCookieHeader) {
       storedCookies = [setCookieHeader];
     }
-    let body: any = null;
+    let body: DemoBody = {};
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
-      body = await res.json();
+      body = (await res.json()) as DemoBody;
     } else {
-      body = await res.text();
+      body = { message: await res.text() };
     }
     return { status: res.status, body, cookies: storedCookies };
   }
@@ -178,7 +193,6 @@ async function runDemo() {
     const step6 = await apiRequest('/auth/refresh', { method: 'POST' });
     console.log(`  Refresh Status: ${step6.status}`);
     console.log(`  Rotated Access Token Issued: ${step6.body.accessToken ? 'yes' : 'no'}`);
-    const newWorkerAccessToken = step6.body.accessToken;
     const newRefreshCookie = storedCookies[0];
 
     logStep(7, 'Replay Attack Detection', 'Malicious actor attempts to reuse the previous invalidated refresh token');
@@ -243,9 +257,10 @@ async function runDemo() {
       socket.on('connect', async () => {
         console.log(`  Socket Connected! ID: ${socket.id}`);
 
-        let attendanceEventReceived: any = null;
+        // Holder object: assignments inside callbacks are invisible to TS control-flow narrowing.
+        const received: { attendance?: { currentState?: string; session?: { id?: string } } } = {};
         socket.on('attendance:event', (event) => {
-          attendanceEventReceived = event;
+          received.attendance = event;
         });
 
         // Sign a valid 30s heartbeat payload with session secret (FR-ATT-001, FR-ATT-004)
@@ -257,7 +272,7 @@ async function runDemo() {
           orgId: demoOrgId,
           userId: workerId,
           deviceId,
-          sessionId: activeSessionId,
+          sessionId: activeSessionId ?? '',
           sequenceNumber: 1,
           nonce,
           activeSeconds: 30,
@@ -267,7 +282,7 @@ async function runDemo() {
           inCall: false,
         };
 
-        const signature = validator.signHeartbeat(hbData, activeSessionSecret);
+        const signature = validator.signHeartbeat(hbData, activeSessionSecret ?? '');
 
         const heartbeatPayload = {
           ...hbData,
@@ -281,6 +296,7 @@ async function runDemo() {
         // Allow event loop to process local socket broadcast
         await new Promise((r) => setTimeout(r, 100));
 
+        const attendanceEventReceived = received.attendance;
         if (attendanceEventReceived) {
           console.log(`  Received attendance:event from server:`);
           console.log(`    State: ${attendanceEventReceived.currentState}, Session ID: ${attendanceEventReceived.session?.id}`);

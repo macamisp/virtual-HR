@@ -10,7 +10,7 @@
 - Approved dependencies (exact-pinned): `@tanstack/react-query` 5.104.2, `zustand` 5.0.15, `zod` 4.6.7, `socket.io-client` 4.8.4, `tailwindcss` 3.4.19 (+ `postcss`, `autoprefixer`, `tailwindcss-animate`), the shadcn/ui helpers `class-variance-authority`, `clsx`, `tailwind-merge`, `@radix-ui/react-slot`, `@radix-ui/react-label`, `lucide-react`, and `@playwright/test` 1.64.1. shadcn components are vendored in `apps/web/src/components/ui`.
 - **npm workspaces** (`apps/web`, `packages/shared` as `@hrvo/shared`) rather than pnpm + Turborepo. The API stays the root package. A pnpm/Turborepo migration remains a separate decision.
 - The root `tsconfig.json` excludes `apps/web`; the web app has its own (`moduleResolution: bundler`). `@hrvo/shared` is transpiled by Next (`transpilePackages`).
-- No linter: ESLint was not approved, so `next build` skips linting (`eslint.ignoreDuringBuilds`).
+- Linting: ESLint 9 (see §8). `next build` lints; `eslint.ignoreDuringBuilds` was removed.
 
 ## 2. API contract additions (SRS 8.3)
 
@@ -44,7 +44,7 @@
 ## 3. Session handling in the browser
 
 - The access token, session id and heartbeat secret live **only in memory** (a Zustand store, no persistence). Every API call sends `Authorization: Bearer`. Cookies are never used for access tokens.
-- A reload restores the session via the httpOnly `refreshToken` cookie (`POST /auth/refresh` with `X-HRVO-CSRF: 1`, `credentials: 'include'`). The web app ignores the `refreshToken` field in JSON bodies.
+- A reload restores the session via the httpOnly `refreshToken` cookie (`POST /auth/refresh` with `X-HRVO-CSRF: 1`, `credentials: 'include'`). No response body ever carries the refresh token (§8); the shared Zod schemas reject one if it reappears.
 - Refresh is **single-flight per tab and serialised across tabs with a Web Lock** (`hrvo-auth-refresh`). Refresh tokens rotate, and two tabs presenting the same cookie at once would trip reuse detection and revoke the family. A refresh is scheduled 60 s before `exp`, and any 401 triggers one refresh-and-retry.
 - Mandatory 2FA: the login response's `enrollmentToken` is kept in memory and used only by `/2fa/setup`. Completing verification returns the full session.
 - Invitation and reset tokens are read from the URL fragment (`#token=`) and then removed from the address bar.
@@ -78,11 +78,19 @@ Playwright (`apps/web/e2e`) runs the real API (port 3101; login/refresh/heartbea
 - a correction requested by a worker and approved by their lead with a note;
 - role-based access (an employee is denied the live board and the queue in the UI) and the lead's board updating in real time.
 
-## 7. Known gaps / follow-ups
+## 7. Known limits, gaps and follow-ups
 
+- **Per-user session serialization is in-process only.** The lock that orders a user's session mutations (heartbeats, disconnects, breaks, reconciler) lives in one API process. A multi-instance deployment needs a distributed lock (Redis), together with the Socket.IO Redis adapter and a Redis store for rate limits.
 - Times are shown in the browser's timezone. The org timezone (SRS 2.5) is not exposed by the API yet.
-- No QR code for TOTP enrolment (manual key + `otpauth://` link): a QR library was not approved.
 - No i18n framework yet (SRS 8.2). The office map as home screen is P2.
 - The live-board team filter is limited to the caller's scope (no teams API yet). The PDF export (FR-ATT-019) isn't in the UI.
-- CSP nonces; ESLint; pnpm/Turborepo.
+- CSP nonces; pnpm/Turborepo.
 - Remaining `npm audit` items: Next's bundled build-time `postcss@8.4.31` (processes only our own CSS), `prisma`/`deepmerge-ts` (CLI), `exceljs`/`uuid` (API, pre-existing).
+
+## 8. Housekeeping (15 October 2026)
+
+- **Refresh token is cookie-only (FR-AUTH-003).** Login, 2FA-enrolment verify and refresh set it only as the httpOnly cookie (Secure in production, SameSite=Strict, Path=/auth/refresh) and strip it from the JSON body; invitation accept never issues one. `/auth/refresh` no longer accepts a token in the body, so every refresh passes the CSRF check (`X-HRVO-CSRF` + allowed Origin). Test: `auth-hardening-e2e.test.ts` "Refresh token is cookie-only".
+- **ESLint** (approved, exact-pinned): `eslint` 9.39.5 (`eslint-config-next` 15 does not support ESLint 10), `typescript-eslint` 8.71.2, `eslint-config-next` 15.5.28. Flat configs: `eslint.config.mjs` (API + shared, `typescript-eslint` recommended) and `apps/web/eslint.config.mjs` (Next core-web-vitals + TypeScript, via `FlatCompat` from ESLint's own `@eslint/eslintrc`). Both enforce `no-explicit-any`. `npm run lint` runs in CI. The 93 initial findings were fixed, not suppressed: the `any`s became real types (pg rows use `pg.QueryResultRow`), unused code was removed, and one lint-driven fix exposed an export bug (below). The one inline disable is `@next/next/no-img-element` on the QR `<img>` (a generated data URL; `next/image` adds nothing).
+- **Export permission bug** (found while removing `as any`): the CSV/XLSX export service used a hard-coded role list, so HR_MANAGER and SUPER_ADMIN passed the route's `attendance.export` guard and then got a 500. It now uses the same permission check, and "permission denied" maps to 403.
+- **QR code for TOTP enrolment** (`qrcode` 1.5.4, approved; typed by a local `src/types/qrcode.d.ts` instead of adding `@types/qrcode`). It is generated in the browser as an SVG data URL (`src/lib/qr.ts`), so the secret never leaves the page; CSP `img-src data:` already allows it. The manual key and `otpauth://` link remain as fallbacks. SVG output is deterministic, so the Playwright test regenerates the QR from the page's otpauth link and compares it exactly.
+

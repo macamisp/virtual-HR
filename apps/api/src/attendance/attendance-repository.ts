@@ -31,6 +31,18 @@ import type {
   AttendanceExportFilter,
 } from '../../../../packages/shared/src/attendance/types.ts';
 
+/** A raw presence event as shown to the user (FR-ATT-020). */
+export interface PresenceEventRecord {
+  id: string;
+  serverTs: Date;
+  clientTs: Date | null;
+  eventType: string;
+  state: string;
+  seq: number;
+  ip: string | null;
+  meta: Record<string, unknown> | null;
+}
+
 export interface CorrectionRequester {
   requesterName: string | null;
   requesterEmail: string;
@@ -88,8 +100,8 @@ export interface IAttendanceRepository {
   // Transparency & Consent (FR-ATT-020 & FR-AUD-004)
   saveMonitoringConsent(consent: MonitoringConsent): Promise<void>;
   findMonitoringConsentsByUser(orgId: string, userId: string): Promise<MonitoringConsent[]>;
-  recordPresenceEvent(event: { orgId: string; userId: string; sessionId?: string; serverTs: Date; clientTs?: Date; eventType: string; state: string; seq: number; ip?: string; meta?: any }): Promise<void>;
-  findPresenceEventsByUser(orgId: string, userId: string, limit?: number): Promise<any[]>;
+  recordPresenceEvent(event: { orgId: string; userId: string; sessionId?: string; serverTs: Date; clientTs?: Date; eventType: string; state: string; seq: number; ip?: string; meta?: Record<string, unknown> }): Promise<void>;
+  findPresenceEventsByUser(orgId: string, userId: string, limit?: number): Promise<PresenceEventRecord[]>;
   cleanupOldPresenceEvents(orgId: string, olderThan: Date): Promise<number>;
 
   clearAll(): Promise<void>;
@@ -188,10 +200,10 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
    * 2. Mandatory orgId validation (fails immediately if orgId is missing or empty)
    * 3. Calling SELECT set_config('app.org_id', $1, true) BEFORE executing any query
    */
-  public async queryWithRls<T extends pg.QueryResultRow = any>(
+  public async queryWithRls<T extends pg.QueryResultRow = pg.QueryResultRow>(
     orgId: string,
     text: string,
-    params: any[] = [],
+    params: unknown[] = [],
   ): Promise<pg.QueryResult<T>> {
     if (!orgId || typeof orgId !== 'string' || orgId.trim() === '') {
       throw new Error('Tenant context missing: orgId must be provided for all repository queries');
@@ -598,7 +610,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     return res.rows.map(this.mapRowToCorrection);
   }
 
-  private mapRowToCorrection(row: any): AttendanceCorrection {
+  private mapRowToCorrection(row: pg.QueryResultRow): AttendanceCorrection {
     return {
       id: row.id,
       orgId: row.org_id,
@@ -671,7 +683,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
 
   public async findDailyAttendanceInRange(orgId: string, filter: AttendanceExportFilter): Promise<AttendanceDaily[]> {
     let query = `SELECT d.*, u.display_name, u.email FROM attendance_daily d JOIN users u ON u.id = d.user_id WHERE d.org_id = $1 AND d.work_date >= $2 AND d.work_date <= $3`;
-    const params: any[] = [orgId, filter.startDate, filter.endDate];
+    const params: unknown[] = [orgId, filter.startDate, filter.endDate];
     if (filter.userId) {
       params.push(filter.userId);
       query += ` AND d.user_id = $${params.length}`;
@@ -731,7 +743,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     }));
   }
 
-  private mapRowToDaily(row: any): AttendanceDaily {
+  private mapRowToDaily(row: pg.QueryResultRow): AttendanceDaily {
     return {
       orgId: row.org_id,
       userId: row.user_id,
@@ -830,14 +842,14 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
 
   public async findAllUsers(orgId: string, teamId?: string): Promise<Array<{ id: string; orgId: string; email: string; displayName: string; role: string; teamId: string | null; managerId: string | null }>> {
     let query = `SELECT id, org_id, email, display_name, role, team_id, manager_id FROM users WHERE org_id = $1`;
-    const params: any[] = [orgId];
+    const params: unknown[] = [orgId];
     if (teamId) {
       params.push(teamId);
       query += ` AND team_id = $2`;
     }
     query += ` ORDER BY display_name ASC`;
     const res = await this.queryWithRls(orgId, query, params);
-    return res.rows.map((r: any) => ({
+    return res.rows.map((r: pg.QueryResultRow) => ({
       id: r.id,
       orgId: r.org_id,
       email: r.email,
@@ -849,16 +861,17 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
   }
 
   // Audit Logs (FR-AUD-001)
-  public static canonicalJson(obj: any): string {
+  public static canonicalJson(obj: unknown): string {
     if (obj === null || obj === undefined) return '{}';
     if (typeof obj !== 'object') return JSON.stringify(obj);
     if (Array.isArray(obj)) {
       return '[' + obj.map((item) => (typeof item === 'object' ? PostgresAttendanceRepository.canonicalJson(item) : JSON.stringify(item))).join(',') + ']';
     }
-    const sortedKeys = Object.keys(obj).sort();
+    const record = obj as Record<string, unknown>;
+    const sortedKeys = Object.keys(record).sort();
     const pairs: string[] = [];
     for (const k of sortedKeys) {
-      const val = obj[k];
+      const val = record[k];
       if (val === undefined) continue;
       const valStr = typeof val === 'object' && val !== null ? PostgresAttendanceRepository.canonicalJson(val) : JSON.stringify(val);
       pairs.push(`${JSON.stringify(k)}:${valStr}`);
@@ -931,7 +944,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
 
   public async findAuditLogs(orgId: string, entityType?: string, entityId?: string): Promise<AuditLogEntry[]> {
     let query = `SELECT * FROM audit_logs WHERE org_id = $1`;
-    const params: any[] = [orgId];
+    const params: unknown[] = [orgId];
     if (entityType) {
       params.push(entityType);
       query += ` AND entity_type = $${params.length}`;
@@ -942,7 +955,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     }
     query += ` ORDER BY id ASC`;
     const res = await this.queryWithRls(orgId, query, params);
-    return res.rows.map((r: any) => ({
+    return res.rows.map((r: pg.QueryResultRow) => ({
       id: Number(r.id),
       orgId: r.org_id,
       actorId: r.actor_id,
@@ -990,7 +1003,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       `SELECT * FROM monitoring_consents WHERE org_id = $1 AND user_id = $2 ORDER BY accepted_at DESC`,
       [orgId, userId],
     );
-    return res.rows.map((r: any) => ({
+    return res.rows.map((r: pg.QueryResultRow) => ({
       id: r.id,
       orgId: r.org_id,
       userId: r.user_id,
@@ -1001,7 +1014,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     }));
   }
 
-  public async recordPresenceEvent(e: { orgId: string; userId: string; sessionId?: string; serverTs: Date; clientTs?: Date; eventType: string; state: string; seq: number; ip?: string; meta?: any }): Promise<void> {
+  public async recordPresenceEvent(e: { orgId: string; userId: string; sessionId?: string; serverTs: Date; clientTs?: Date; eventType: string; state: string; seq: number; ip?: string; meta?: Record<string, unknown> }): Promise<void> {
     await this.queryWithRls(
       e.orgId,
       `INSERT INTO presence_events (org_id, user_id, session_id, server_ts, client_ts, event_type, state, seq, ip, meta)
@@ -1021,13 +1034,13 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     );
   }
 
-  public async findPresenceEventsByUser(orgId: string, userId: string, limit: number = 100): Promise<any[]> {
+  public async findPresenceEventsByUser(orgId: string, userId: string, limit: number = 100): Promise<PresenceEventRecord[]> {
     const res = await this.queryWithRls(
       orgId,
       `SELECT * FROM presence_events WHERE org_id = $1 AND user_id = $2 ORDER BY server_ts DESC LIMIT $3`,
       [orgId, userId, limit],
     );
-    return res.rows.map((r: any) => ({
+    return res.rows.map((r: pg.QueryResultRow) => ({
       id: r.id,
       serverTs: new Date(r.server_ts),
       clientTs: r.client_ts ? new Date(r.client_ts) : null,
@@ -1118,7 +1131,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     await this.retentionPool.end();
   }
 
-  private mapRowToSession(row: any, segments: AttendanceSegment[]): AttendanceSession {
+  private mapRowToSession(row: pg.QueryResultRow, segments: AttendanceSegment[]): AttendanceSession {
     return {
       id: row.id,
       orgId: row.org_id,

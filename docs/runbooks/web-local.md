@@ -83,7 +83,7 @@ npm run web                   # http://localhost:3000
 
 **F. HR with mandatory 2FA**
 1. Sign out, then sign in as `hr@acme.demo`. You are sent to **Set up two-factor authentication**; no access to the app before that.
-2. Add the shown key to your authenticator app (or use the `otpauth://` link on a phone) and enter the 6-digit code.
+2. Scan the QR code with your authenticator app (or type the key shown under it, or tap the `otpauth://` link on a phone), then enter the 6-digit code.
 3. Save the 10 recovery codes, tick the box, and click **Continue**.
 4. Sign out and in again: after the password, the app asks for the code.
 
@@ -99,6 +99,7 @@ npm run web                   # http://localhost:3000
 ## 6. Automated checks
 
 ```bash
+npm run lint                  # ESLint: API, shared, web
 npm run typecheck && npm run web:typecheck
 npm test                      # API unit + e2e (needs Postgres)
 npm run e2e                   # Playwright: builds the API and web, runs on ports 3101/3100

@@ -25,7 +25,7 @@ export class UsersService {
       let query = `SELECT id, org_id, email, display_name, role, team_id, manager_id, status, created_at
                    FROM users
                    WHERE org_id = $1`;
-      const params: any[] = [orgId];
+      const params: unknown[] = [orgId];
       if (teamId) {
         query += ` AND team_id = $2`;
         params.push(teamId);

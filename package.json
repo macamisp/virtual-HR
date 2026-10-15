@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint . && npm run lint -w @hrvo/web",
     "test": "tsc && node --test dist/apps/api/test/*.test.js",
     "test:coverage": "tsc && node --test --experimental-test-coverage --test-coverage-exclude='**/test/**' --test-coverage-exclude='**/node_modules/**' --test-coverage-exclude='**/*.ts' dist/apps/api/test/*.test.js",
     "db:migrate": "prisma migrate deploy --schema apps/api/prisma/schema.prisma",
@@ -49,9 +50,11 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
+    "eslint": "9.39.5",
     "prisma": "6.19.3",
     "socket.io-client": "^4.8.4",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "typescript-eslint": "8.71.2"
   },
   "workspaces": [
     "apps/web",

@@ -4,14 +4,14 @@ import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
-import { io, Socket } from 'socket.io-client';
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { io } from 'socket.io-client';
+import { randomBytes, randomUUID } from 'node:crypto';
 import argon2 from 'argon2';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
-import { PrismaService } from '../src/common/prisma.service.ts';
 import { HeartbeatValidator } from '../src/attendance/heartbeat-validator.ts';
 import { UserRole } from '../../../packages/shared/src/auth/types.ts';
+import { cookieValue, refreshCookie, refreshTokenFields, refreshWithCookie } from './support/refresh-cookie.ts';
 
 describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway, REST)', { concurrency: false }, () => {
   let app: INestApplication;
@@ -39,7 +39,6 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
 
   let empSessionId: string;
   let empSessionSecret: string;
-  let empRefreshToken: string;
 
   before(async () => {
     process.env.BREACHED_PASSWORD_CHECK = 'local';
@@ -235,7 +234,8 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
       assert.equal(resMfaSuccess.status, 200);
       const successData = await resMfaSuccess.json();
       assert.ok(successData.accessToken);
-      assert.ok(successData.refreshToken);
+      assert.deepEqual(refreshTokenFields(successData), []);
+      refreshCookie(resMfaSuccess);
       adminAccessToken = successData.accessToken;
     });
 
@@ -249,13 +249,13 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
       assert.equal(resEmp.status, 200);
       const dataEmp = await resEmp.json();
       assert.ok(dataEmp.accessToken);
-      assert.ok(dataEmp.refreshToken);
+      assert.deepEqual(refreshTokenFields(dataEmp), []);
       assert.ok(dataEmp.sessionId);
       assert.ok(dataEmp.sessionSecret); // Issued at login for WebSocket heartbeat signing
       empAccessToken = dataEmp.accessToken;
       empSessionId = dataEmp.sessionId;
       empSessionSecret = dataEmp.sessionSecret;
-      empRefreshToken = dataEmp.refreshToken;
+      refreshCookie(resEmp);
 
       // Team Lead A
       const resLead = await fetch(`${baseUrl}/auth/login`, {
@@ -360,49 +360,30 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
         body: JSON.stringify({ email: 'worker@acme.com', password: 'ComplexPassword123!' }),
       });
       assert.equal(loginRes.status, 200);
-      const loginData = await loginRes.json();
-      const testRefreshToken = loginData.refreshToken;
+      const originalCookie = refreshCookie(loginRes);
 
-      // 1. Initial refresh with testRefreshToken
-      const refresh1Res = await fetch(`${baseUrl}/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: testRefreshToken }),
-      });
+      // 1. Initial refresh with the login cookie rotates it
+      const refresh1Res = await refreshWithCookie(baseUrl, originalCookie);
       assert.equal(refresh1Res.status, 200);
       const data1 = await refresh1Res.json();
       assert.ok(data1.accessToken);
-      assert.ok(data1.refreshToken);
-      assert.notEqual(data1.refreshToken, testRefreshToken); // Rotated!
+      assert.deepEqual(refreshTokenFields(data1), []);
+      const activeCookie = refreshCookie(refresh1Res);
+      assert.notEqual(cookieValue(activeCookie), cookieValue(originalCookie)); // Rotated!
 
-      const activeRefreshToken = data1.refreshToken;
-
-      // 2. Second refresh using the new active token succeeds
-      const refresh2Res = await fetch(`${baseUrl}/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: activeRefreshToken }),
-      });
+      // 2. Second refresh using the new cookie succeeds
+      const refresh2Res = await refreshWithCookie(baseUrl, activeCookie);
       assert.equal(refresh2Res.status, 200);
-      const data2 = await refresh2Res.json();
-      const latestRefreshToken = data2.refreshToken;
+      const latestCookie = refreshCookie(refresh2Res);
 
-      // 3. REUSE DETECTION: Replaying the old (now revoked) testRefreshToken triggers family revocation!
-      const replayRes = await fetch(`${baseUrl}/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: testRefreshToken }),
-      });
+      // 3. REUSE DETECTION: replaying the original (rotated) cookie revokes the family
+      const replayRes = await refreshWithCookie(baseUrl, originalCookie);
       assert.equal(replayRes.status, 401);
       const replayData = await replayRes.json();
       assert.match(replayData.message, /Refresh token reuse detected/i);
 
-      // 4. Now even the latest valid token in that family is revoked!
-      const blockedRes = await fetch(`${baseUrl}/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: latestRefreshToken }),
-      });
+      // 4. Now even the latest cookie in that family is revoked
+      const blockedRes = await refreshWithCookie(baseUrl, latestCookie);
       assert.equal(blockedRes.status, 401);
     });
   });
@@ -495,15 +476,18 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
       assert.ok(socket.connected);
 
       // Prepare events capture
-      let presenceUpdateReceived: any = null;
-      let attendanceEventReceived: any = null;
+      // Holder object: assignments inside callbacks are invisible to TS control-flow narrowing.
+      const received: {
+        presence?: { userId: string; state: string };
+        attendance?: { currentState: string };
+      } = {};
 
       socket.on('presence:update', (data) => {
-        presenceUpdateReceived = data;
+        received.presence = data;
       });
 
       socket.on('attendance:event', (data) => {
-        attendanceEventReceived = data;
+        received.attendance = data;
       });
 
       // Send first valid active heartbeat signed with session HMAC secret (FR-ATT-001, FR-ATT-004)
@@ -540,12 +524,12 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
       // Wait a moment for socket broadcast
       await new Promise((r) => setTimeout(r, 100));
 
-      assert.ok(presenceUpdateReceived);
-      assert.equal(presenceUpdateReceived.userId, empAId);
-      assert.equal(presenceUpdateReceived.state, 'ACTIVE');
+      assert.ok(received.presence);
+      assert.equal(received.presence.userId, empAId);
+      assert.equal(received.presence.state, 'ACTIVE');
 
-      assert.ok(attendanceEventReceived);
-      assert.equal(attendanceEventReceived.currentState, 'ACTIVE');
+      assert.ok(received.attendance);
+      assert.equal(received.attendance.currentState, 'ACTIVE');
 
       // Verify PostgreSQL session was created with server UTC clock
       const sessRes = await adminPool.query(
@@ -573,7 +557,7 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
       assert.ok(Array.isArray(board));
       assert.ok(board.length >= 2);
 
-      const workerEntry = board.find((u: any) => u.userId === empAId);
+      const workerEntry = (board as Array<{ userId: string; displayName: string }>).find((u) => u.userId === empAId);
       assert.ok(workerEntry);
       assert.equal(workerEntry.displayName, 'Acme Worker');
     });

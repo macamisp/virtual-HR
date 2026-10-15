@@ -500,14 +500,17 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
 
       // Parse generated XLSX buffer to verify cell content
       const ExcelJS = await import('exceljs');
-      const WorkbookClass = (ExcelJS as any).default?.Workbook || (ExcelJS as any).Workbook;
+      type ExcelModule = typeof import('exceljs');
+      const excel = ExcelJS as ExcelModule & { default?: ExcelModule };
+      const WorkbookClass = excel.default?.Workbook ?? excel.Workbook;
       const wb = new WorkbookClass();
-      await wb.xlsx.load(buffer);
+      // exceljs bundles its own Node Buffer typings; the runtime value is the same Buffer.
+      await wb.xlsx.load(buffer as unknown as Parameters<typeof wb.xlsx.load>[0]);
       const sheet = wb.getWorksheet('Attendance');
       assert.ok(sheet);
 
       let found = false;
-      sheet.eachRow((row: any) => {
+      sheet.eachRow((row) => {
         const val = String(row.getCell(3).value || '');
         if (val.includes('calc')) {
           assert.ok(val.startsWith("'"), 'Malicious cell in Excel must be prefixed with single quote');
@@ -1054,7 +1057,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
         segments: [],
         consecutiveIdleSeconds: 0,
       };
-      (inMem as any).sessions.set(memUser, memSession);
+      (inMem as unknown as { sessions: Map<string, AttendanceSession> }).sessions.set(memUser, memSession);
 
       await inMem.onSocketDisconnect(memUser);
       await inMem.onSocketReconnect(memUser);
@@ -1324,7 +1327,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
         consecutiveIdleSeconds: 0,
       };
       await repo.saveSession(testOpenSess);
-      (service as any).sessions.set(targetUser, testOpenSess);
+      (service as unknown as { sessions: Map<string, AttendanceSession> }).sessions.set(targetUser, testOpenSess);
 
       // Exercise service lifecycle with repository
       await service.startBreak(targetUser);
@@ -1335,12 +1338,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
       await service.onSocketReconnect(targetUser);
       await service.onExplicitLogout(targetUser);
 
-      // 2. Reconcile with CLOSED session in sessions map (hits continue)
-      const closedSess: AttendanceSession = {
-        ...testOpenSess,
-        id: crypto.randomUUID(),
-        status: SessionStatus.CLOSED,
-      };
+      // 2. Reconcile after logout: no open sessions remain, so nothing is closed or split
       await service.runReconciliation(new Date('2026-10-14T03:45:00Z'), orgId);
 
       // 3. Custom config branches (maxCorrectionAgeDays and currentNoticeVersion)
@@ -1359,10 +1357,10 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
         id: crypto.randomUUID(),
         orgId: 'org-custom-1',
       };
-      (inMem as any).sessions.set('u-custom', inMemSess);
+      (inMem as unknown as { sessions: Map<string, AttendanceSession> }).sessions.set('u-custom', inMemSess);
       const openOrgList = await inMem.getAllOpenSessions('org-custom-1');
       assert.equal(openOrgList.length, 1);
-      (inMem as any).closedSessions.set(inMemSess.id, inMemSess);
+      (inMem as unknown as { closedSessions: Map<string, AttendanceSession> }).closedSessions.set(inMemSess.id, inMemSess);
       const foundClosed = await inMem.getClosedSession(inMemSess.id, 'org-custom-1');
       assert.ok(foundClosed);
 
@@ -1416,7 +1414,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
         eventType: 'HEARTBEAT',
         state: 'ACTIVE',
         seq: 99,
-        meta: JSON.stringify({ rawString: true }),
+        meta: { rawString: true },
       });
       const userEvents = await repo.findPresenceEventsByUser(orgId, userEmp, 1);
       assert.ok(userEvents.length >= 1);
@@ -1424,7 +1422,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
 
       // 8. Repository: cleanupOldPresenceEvents error catch branch
       const faultyRepo = new PostgresAttendanceRepository();
-      await (faultyRepo as any).retentionPool.end();
+      await (faultyRepo as unknown as { retentionPool: pg.Pool }).retentionPool.end();
       await assert.rejects(
         async () => await faultyRepo.cleanupOldPresenceEvents(orgId, new Date()),
       );
