@@ -27,6 +27,14 @@ model Organization {
   timesheetSubmitDueDays        Int                       @default(1) @map("timesheet_submit_due_days")
   /// FR-DOC-005 / SRS 6.4: minutes a re-authentication opens the vault (1..60).
   vaultReauthMinutes            Int                       @default(10) @map("vault_reauth_minutes")
+  attMissedHeartbeatSeconds     Int                       @default(90) @map("att_missed_heartbeat_seconds")
+  attDisconnectGraceSeconds     Int                       @default(120) @map("att_disconnect_grace_seconds")
+  attIdleSeconds                Int                       @default(300) @map("att_idle_seconds")
+  attPauseSeconds               Int                       @default(900) @map("att_pause_seconds")
+  attMaxSessionSeconds          Int                       @default(50400) @map("att_max_session_seconds")
+  attPaidBreakMinutes           Int                       @default(60) @map("att_paid_break_minutes")
+  retentionPresenceDays         Int                       @default(90) @map("retention_presence_days")
+  retentionNotificationsDays    Int                       @default(365) @map("retention_notifications_days")
   createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz()
   users                         User[]
   teams                         Team[]
@@ -73,6 +81,7 @@ model Organization {
   documentPasswordAttempts      DocumentPasswordAttempt[]
   documentShareLinks            DocumentShareLink[]
   documentRetentionRules        DocumentRetentionRule[]
+  orgRoles                      OrgRole[]
 
   @@map("organizations")
 }
@@ -85,6 +94,7 @@ model User {
   role                String    @default("EMPLOYEE") @db.VarChar(50)
   teamId              String?   @map("team_id") @db.Uuid
   managerId           String?   @map("manager_id") @db.Uuid
+  customRoleId        String?   @map("custom_role_id") @db.Uuid
   passwordHash        String?   @map("password_hash") @db.VarChar(255)
   mfaEnabled          Boolean   @default(false) @map("mfa_enabled")
   mfaSecret           String?   @map("mfa_secret") @db.VarChar(255)
@@ -97,6 +107,7 @@ model User {
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   team         Team?        @relation("TeamMembers", fields: [teamId], references: [id], onDelete: SetNull)
   manager      User?        @relation("UserSubordinates", fields: [managerId], references: [id], onDelete: SetNull)
+  customRole   OrgRole?     @relation(fields: [customRoleId], references: [id], onDelete: SetNull)
   subordinates User[]       @relation("UserSubordinates")
   ledTeams     Team[]       @relation("TeamLead")
 
@@ -383,6 +394,8 @@ model MonitoringConsent {
   orgId         String   @map("org_id") @db.Uuid
   userId        String   @map("user_id") @db.Uuid
   noticeVersion String   @map("notice_version") @db.VarChar(50)
+  consentType   String   @default("MONITORING") @map("consent_type") @db.VarChar(20)
+  granted       Boolean  @default(true)
   acceptedAt    DateTime @map("accepted_at") @db.Timestamptz()
   ip            String?  @db.VarChar(45)
   userAgent     String?  @map("user_agent") @db.Text
@@ -1136,4 +1149,25 @@ model DocumentRetentionRule {
 
   @@id([orgId, category])
   @@map("document_retention_rules")
+}
+
+/// FR-ADM-002: a custom role = a built-in base role (which keeps its scope rules) plus/minus permissions.
+model OrgRole {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId              String   @map("org_id") @db.Uuid
+  name               String   @db.VarChar(80)
+  description        String   @default("") @db.Text
+  baseRole           String   @map("base_role") @db.VarChar(50)
+  addedPermissions   String[] @default([]) @map("added_permissions")
+  removedPermissions String[] @default([]) @map("removed_permissions")
+  createdBy          String?  @map("created_by") @db.Uuid
+  version            Int      @default(1)
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt          DateTime @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  users        User[]
+
+  @@unique([orgId, name])
+  @@map("org_roles")
 }

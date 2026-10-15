@@ -15,9 +15,10 @@ interface OrgRow {
   timezone: string;
   task_acceptance_escalation_hours: number;
   timesheet_submit_due_days: number;
+  /** FR-ADM-004 retention settings. */
+  retention_presence_days: number;
+  retention_notifications_days: number;
 }
-
-const PRESENCE_RETENTION_DAYS = 90;
 
 function envNumber(name: string, fallback: number): number {
   const n = Number.parseInt(process.env[name] ?? '', 10);
@@ -366,13 +367,18 @@ export class ScheduledWorkService {
     });
   }
 
-  /** Once per org-local day: drop raw presence events older than the notice's retention period. */
+  /**
+   * Once per org-local day: drop raw presence events and notifications older than the
+   * organisation's retention settings (FR-ADM-004; presence defaults to the notice's 90 days).
+   */
   async presenceRetention(now: Date = new Date()): Promise<number> {
     return await this.perOrg('presence-retention', async (org) => {
       const day = localDate(now, org.timezone);
       const first = await this.prisma.runWithTenantContext(org.id, (db) => this.onceFor(db, org.id, 'presence-retention', day));
       if (!first) return 0;
-      return await this.attendanceRepo.cleanupOldPresenceEvents(org.id, new Date(now.getTime() - PRESENCE_RETENTION_DAYS * 86_400_000));
+      const presence = await this.attendanceRepo.cleanupOldPresenceEvents(org.id, new Date(now.getTime() - org.retention_presence_days * 86_400_000));
+      const notifications = await this.attendanceRepo.cleanupOldNotifications(org.id, new Date(now.getTime() - org.retention_notifications_days * 86_400_000));
+      return presence + notifications;
     });
   }
 }

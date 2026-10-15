@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { BadgeDollarSign, BarChart3, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Timer, Users } from 'lucide-react';
+import { Archive, BadgeDollarSign, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Timer, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { NotificationBell } from '@/components/notification-bell';
@@ -15,21 +15,11 @@ import { useAuthStore } from '@/lib/auth-store';
 import { logout, refreshSession, secondsUntilExpiry } from '@/lib/session';
 import { Permission, useCan } from '@/lib/permissions';
 import { useConsent } from '@/lib/queries';
+import { useMyAccess } from '@/lib/admin-queries';
 import { useHeartbeat } from '@/heartbeat/use-heartbeat';
 import { cn } from '@/lib/utils';
+import { ROLE_LABEL } from '@hrvo/shared';
 
-const ROLE_LABEL: Record<string, string> = {
-  SUPER_ADMIN: 'Super admin',
-  ADMIN: 'Admin',
-  HR_MANAGER: 'HR manager',
-  HR: 'HR',
-  MANAGER: 'Manager',
-  TEAM_LEAD: 'Team lead',
-  EMPLOYEE: 'Employee',
-  SUBCONTRACTOR: 'Subcontractor',
-  INTERN: 'Intern',
-  AUDITOR: 'Auditor',
-};
 
 /** Restores the session from the refresh cookie on load and refreshes ~60 s before expiry. */
 function useSessionBootstrap() {
@@ -92,6 +82,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canApproveTeam = useCan(Permission.TIMESHEETS_APPROVE_TEAM);
   const canApproveAll = useCan(Permission.TIMESHEETS_APPROVE_ALL);
   const canManageRates = useCan(Permission.RATES_MANAGE);
+  const access = useMyAccess();
+  const canManageOrg = useCan(Permission.ORG_MANAGE);
+  const canManageRoles = useCan(Permission.ROLES_MANAGE);
   const canApproveTimesheets = canApproveTeam || canApproveAll;
   const canRates = canManageRates || canReadAllTimesheets;
   const [navOpen, setNavOpen] = useState(false);
@@ -156,7 +149,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <TimerBadge />
           <NotificationBell />
           <span className="hidden text-sm text-muted-foreground sm:inline" data-testid="current-user">
-            {user.displayName ?? user.email} · {ROLE_LABEL[user.role] ?? user.role}
+            {user.displayName ?? user.email} · {access.data?.customRoleName ?? ROLE_LABEL[user.role as keyof typeof ROLE_LABEL] ?? user.role}
           </span>
           <Button variant="outline" size="sm" onClick={() => void signOut()}>
             <LogOut aria-hidden="true" />
@@ -228,6 +221,32 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {canRates ? (
               <li>
                 <NavLink href="/timesheets/rates" icon={BadgeDollarSign}>Rates</NavLink>
+              </li>
+            ) : null}
+            <li>
+              <NavLink href="/account/consents" icon={UserCheck}>My consents</NavLink>
+            </li>
+            {canManageOrg || canManageRoles || canAudit ? (
+              <li className="px-2 pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground" aria-hidden="true">Administration</li>
+            ) : null}
+            {canManageOrg ? (
+              <li>
+                <NavLink href="/admin/policy" icon={Settings2}>Policy settings</NavLink>
+              </li>
+            ) : null}
+            {canManageOrg ? (
+              <li>
+                <NavLink href="/admin/retention" icon={Archive}>Data retention</NavLink>
+              </li>
+            ) : null}
+            {canManageRoles ? (
+              <li>
+                <NavLink href="/admin/roles" icon={KeyRound}>Roles and permissions</NavLink>
+              </li>
+            ) : null}
+            {canAudit ? (
+              <li>
+                <NavLink href="/admin/audit" icon={History}>Audit log</NavLink>
               </li>
             ) : null}
           </ul>

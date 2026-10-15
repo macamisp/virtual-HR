@@ -8,7 +8,7 @@ import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import { AttendanceStateMachine } from './attendance-state-machine.ts';
 import { HeartbeatValidator } from './heartbeat-validator.ts';
 import type { IAttendanceRepository } from './attendance-repository.ts';
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type {
   MyToday,
   MyDay,
@@ -75,6 +75,10 @@ export class AttendanceService {
   // so a slow disconnect cannot overwrite a newer heartbeat (lost update). Single-instance only;
   // horizontal scaling needs a shared lock (ADR 006).
   private sessionLocks = new Map<string, Promise<void>>();
+  // FR-ADM-001: per-organisation attendance policy (SRS 6.4), cached for 30 s per org.
+  private policyProvider?: (orgId: string) => Promise<Partial<AttendanceConfig> | null>;
+  private policyCache = new Map<string, { at: number; config: AttendanceConfig; machine: AttendanceStateMachine }>();
+  private static readonly POLICY_TTL_MS = 30_000;
 
   /**
    * Two call shapes are supported (kept for existing callers):
@@ -105,6 +109,30 @@ export class AttendanceService {
     }
     this.stateMachine = new AttendanceStateMachine(this.config);
     this.validator = new HeartbeatValidator(300_000, this.clock);
+  }
+
+  /** FR-ADM-001: where each organisation's thresholds come from (the org settings table). */
+  public setPolicyProvider(provider: (orgId: string) => Promise<Partial<AttendanceConfig> | null>): void {
+    this.policyProvider = provider;
+    this.policyCache.clear();
+  }
+
+  /** Called after an admin changes the policy, so the next evaluation uses it. */
+  public invalidatePolicy(orgId: string): void {
+    this.policyCache.delete(orgId);
+  }
+
+  /** The organisation's config and a state machine built from it. */
+  private async policy(orgId: string | undefined): Promise<{ config: AttendanceConfig; machine: AttendanceStateMachine }> {
+    if (!orgId || !this.policyProvider) return { config: this.config, machine: this.stateMachine };
+    const now = Date.now();
+    const hit = this.policyCache.get(orgId);
+    if (hit && now - hit.at < AttendanceService.POLICY_TTL_MS) return hit;
+    const overrides = (await this.policyProvider(orgId)) ?? {};
+    const config = { ...this.config, ...overrides };
+    const entry = { at: now, config, machine: new AttendanceStateMachine(config) };
+    this.policyCache.set(orgId, entry);
+    return entry;
   }
 
   private async withSessionLock<T>(orgId: string | undefined, userId: string, fn: () => Promise<T>): Promise<T> {
@@ -273,10 +301,10 @@ export class AttendanceService {
       // Section 6.2: DISCONNECTED -> reconnect within grace -> previous state. A valid, signed
       // heartbeat proves the client is connected again (covers socket reconnects and new tabs).
       if (existingSession && existingSession.currentState === AttendanceState.DISCONNECTED) {
-        existingSession = this.stateMachine.handleSocketReconnect(existingSession, serverTime).session;
+        existingSession = (await this.policy(payload.orgId)).machine.handleSocketReconnect(existingSession, serverTime).session;
       }
 
-      const result = this.stateMachine.handleHeartbeat(
+      const result = (await this.policy(payload.orgId)).machine.handleHeartbeat(
         existingSession,
         payload,
         serverTime,
@@ -323,7 +351,7 @@ export class AttendanceService {
       const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
-      const result = this.stateMachine.handleSocketDisconnect(session, serverTime);
+      const result = (await this.policy(targetOrgId)).machine.handleSocketDisconnect(session, serverTime);
       if (this.repository) {
         await this.repository.saveSession(result.session);
       }
@@ -345,7 +373,7 @@ export class AttendanceService {
       const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
-      const result = this.stateMachine.handleSocketReconnect(session, serverTime);
+      const result = (await this.policy(targetOrgId)).machine.handleSocketReconnect(session, serverTime);
       if (this.repository) {
         await this.repository.saveSession(result.session);
       }
@@ -367,7 +395,7 @@ export class AttendanceService {
       const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
-      const result = this.stateMachine.handleExplicitLogout(session, serverTime);
+      const result = (await this.policy(targetOrgId)).machine.handleExplicitLogout(session, serverTime);
       if (this.repository) {
         await this.repository.saveSession(result.session);
       }
@@ -390,7 +418,7 @@ export class AttendanceService {
       const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
-      const result = this.stateMachine.handleUserStartsBreak(session, serverTime);
+      const result = (await this.policy(targetOrgId)).machine.handleUserStartsBreak(session, serverTime);
       if (this.repository) {
         await this.repository.saveSession(result.session);
       }
@@ -412,7 +440,7 @@ export class AttendanceService {
       const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
-      const result = this.stateMachine.handleUserEndsBreak(session, serverTime);
+      const result = (await this.policy(targetOrgId)).machine.handleUserEndsBreak(session, serverTime);
       if (this.repository) {
         await this.repository.saveSession(result.session);
       }
@@ -435,7 +463,7 @@ export class AttendanceService {
       const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
-      const result = this.stateMachine.handleJoinMeeting(session, meetingId, serverTime);
+      const result = (await this.policy(targetOrgId)).machine.handleJoinMeeting(session, meetingId, serverTime);
       if (this.repository) {
         await this.repository.saveSession(result.session);
       }
@@ -457,7 +485,7 @@ export class AttendanceService {
       const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
-      const result = this.stateMachine.handleLeaveMeeting(session, serverTime);
+      const result = (await this.policy(targetOrgId)).machine.handleLeaveMeeting(session, serverTime);
       if (this.repository) {
         await this.repository.saveSession(result.session);
       }
@@ -506,7 +534,8 @@ export class AttendanceService {
         if (!session || session.id !== listed.id || session.status !== SessionStatus.OPEN) return;
 
         // 2. Midnight boundary split (must precede timeout so cross-midnight sessions split cleanly)
-        const midRes = this.stateMachine.handleMidnightCheck(session, serverTime);
+        const { machine, config } = await this.policy(targetOrgId);
+        const midRes = machine.handleMidnightCheck(session, serverTime);
         let currentSession = session;
         if (midRes.splitSession) {
           if (this.repository) {
@@ -520,7 +549,7 @@ export class AttendanceService {
         }
 
         // 3. Max session length (>14 hours)
-        const maxRes = this.stateMachine.handleMaxLengthCheck(currentSession, serverTime);
+        const maxRes = machine.handleMaxLengthCheck(currentSession, serverTime);
         if (maxRes.session.status === SessionStatus.CLOSED) {
           if (this.repository) {
             await this.repository.saveSession(maxRes.session);
@@ -537,7 +566,7 @@ export class AttendanceService {
           currentSession.graceTimerExpiresAt &&
           serverTime.getTime() >= currentSession.graceTimerExpiresAt.getTime()
         ) {
-          const res = this.stateMachine.handleGraceExpiration(currentSession, serverTime);
+          const res = machine.handleGraceExpiration(currentSession, serverTime);
           if (this.repository) {
             await this.repository.saveSession(res.session);
           }
@@ -552,9 +581,9 @@ export class AttendanceService {
           (serverTime.getTime() - currentSession.lastHeartbeatAt.getTime()) / 1000;
         if (
           currentSession.currentState !== AttendanceState.DISCONNECTED &&
-          silenceSeconds > this.config.missedHeartbeatTimeoutSeconds
+          silenceSeconds > config.missedHeartbeatTimeoutSeconds
         ) {
-          const res = this.stateMachine.handleMissingHeartbeatTimeout(currentSession, serverTime);
+          const res = machine.handleMissingHeartbeatTimeout(currentSession, serverTime);
           if (this.repository) {
             await this.repository.saveSession(res.session);
           }
@@ -715,6 +744,7 @@ export class AttendanceService {
     orgId: string;
     reviewerId: string;
     reviewerRole: string;
+    reviewerPermissions?: readonly string[];
     correctionId: string;
     approved: boolean;
     reviewNote?: string;
@@ -735,8 +765,8 @@ export class AttendanceService {
     // Role check: Only user's manager or HR/Admin may review
     const requester = await this.repository.findUserById(params.orgId, correction.userId);
     const isManager = requester?.managerId === params.reviewerId || params.reviewerRole === UserRole.MANAGER;
-    const isHrOrAdmin = hasPermission(params.reviewerRole, Permission.ATTENDANCE_READ_ALL) &&
-      hasPermission(params.reviewerRole, Permission.ATTENDANCE_CORRECTIONS_REVIEW);
+    const isHrOrAdmin = userCan({ role: params.reviewerRole, permissions: params.reviewerPermissions }, Permission.ATTENDANCE_READ_ALL) &&
+      userCan({ role: params.reviewerRole, permissions: params.reviewerPermissions }, Permission.ATTENDANCE_CORRECTIONS_REVIEW);
     if (!isManager && !isHrOrAdmin) {
       throw new Error('Unauthorized to review correction: Only manager or HR/Admin may review');
     }
@@ -1059,6 +1089,7 @@ export class AttendanceService {
     orgId: string;
     callerUserId: string;
     callerRole: string;
+    callerPermissions?: readonly string[];
     callerTeamId?: string | null;
     filterTeamId?: string;
   }): Promise<LiveBoardUser[]> {
@@ -1071,9 +1102,9 @@ export class AttendanceService {
     // RBAC Scoping
     // RBAC scoping by permission: org-wide readers (HR, admins, managers) may filter by any
     // team; team readers (team leads) are pinned to their own team.
-    if (hasPermission(params.callerRole, Permission.ATTENDANCE_READ_ALL) || params.callerRole === UserRole.MANAGER) {
+    if (userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_READ_ALL) || params.callerRole === UserRole.MANAGER) {
       targetTeamId = params.filterTeamId;
-    } else if (hasPermission(params.callerRole, Permission.ATTENDANCE_READ_TEAM)) {
+    } else if (userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_READ_TEAM)) {
       if (!params.callerTeamId) {
         throw new Error('Team lead has no assigned team');
       }
@@ -1161,13 +1192,14 @@ export class AttendanceService {
     orgId: string;
     callerUserId: string;
     callerRole: string;
+    callerPermissions?: readonly string[];
     filter: AttendanceExportFilter;
   }): Promise<string> {
     if (!this.repository) {
       throw new Error('Repository is required for export');
     }
     // Same rule as the route guard (was a hard-coded list that rejected HR_MANAGER/SUPER_ADMIN).
-    if (!hasPermission(params.callerRole, Permission.ATTENDANCE_EXPORT)) {
+    if (!userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_EXPORT)) {
       throw new Error('Export permission denied: caller lacks export permission');
     }
 
@@ -1204,13 +1236,14 @@ export class AttendanceService {
     orgId: string;
     callerUserId: string;
     callerRole: string;
+    callerPermissions?: readonly string[];
     filter: AttendanceExportFilter;
   }): Promise<Buffer> {
     if (!this.repository) {
       throw new Error('Repository is required for export');
     }
     // Same rule as the route guard (was a hard-coded list that rejected HR_MANAGER/SUPER_ADMIN).
-    if (!hasPermission(params.callerRole, Permission.ATTENDANCE_EXPORT)) {
+    if (!userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_EXPORT)) {
       throw new Error('Export permission denied: caller lacks export permission');
     }
 
@@ -1276,6 +1309,7 @@ export class AttendanceService {
     }
 
     const events = await this.repository.findPresenceEventsByUser(params.orgId, params.userId, 100);
+    const retentionDays = (await this.policy(params.orgId)).config.presenceRetentionDays ?? 90;
 
     return {
       plainLanguageNotice:
@@ -1283,10 +1317,10 @@ export class AttendanceService {
         'server timestamps of clock in/out, interval counters of active vs idle seconds, in-call/meeting status, ' +
         'IP address, and client device identifier. ' +
         'No screenshots. No keystroke content, no browser history, no URLs, and no webcam feeds are captured or stored. ' +
-        'All presence events are retained for 90 days in accordance with company privacy policy.',
+        `All presence events are retained for ${retentionDays} days in accordance with company privacy policy.`,
       noticeVersion: this.config.currentNoticeVersion ?? 'v1.0.0',
       collectedFields: ['server_ts', 'event_type', 'state', 'seq', 'ip', 'active_seconds', 'idle_seconds', 'in_call'],
-      retentionDays: 90,
+      retentionDays,
       events,
     };
   }
@@ -1360,7 +1394,9 @@ export class AttendanceService {
       (session.status === SessionStatus.OPEN && open?.state === AttendanceState.ON_BREAK ? openElapsed : 0);
     const meetingSeconds = session.meetingSeconds +
       (session.status === SessionStatus.OPEN && open?.state === AttendanceState.IN_MEETING ? openElapsed : 0);
-    const paidBreak = Math.min(breakSeconds, this.config.paidBreakMinutesPerDay * 60);
+    // The org's break rule when its policy is loaded (it is, once the org has had a heartbeat).
+    const paidBreakMinutes = (this.policyCache.get(session.orgId)?.config ?? this.config).paidBreakMinutesPerDay;
+    const paidBreak = Math.min(breakSeconds, paidBreakMinutes * 60);
     const netSeconds = session.flags.includes('MULTI_DEVICE')
       ? Math.max(session.netSeconds, 0)
       : session.activeSeconds + meetingSeconds + paidBreak;
@@ -1471,10 +1507,11 @@ export class AttendanceService {
     orgId: string;
     callerId: string;
     callerRole: string;
+    callerPermissions?: readonly string[];
   }): Promise<CorrectionQueueItem[]> {
     if (!this.repository) return [];
-    const orgWide = (hasPermission(params.callerRole, Permission.ATTENDANCE_READ_ALL) &&
-      hasPermission(params.callerRole, Permission.ATTENDANCE_CORRECTIONS_REVIEW)) ||
+    const orgWide = (userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_READ_ALL) &&
+      userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_CORRECTIONS_REVIEW)) ||
       params.callerRole === UserRole.MANAGER;
     const pending = await this.repository.findPendingCorrectionsWithRequester(params.orgId);
     return pending

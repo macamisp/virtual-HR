@@ -12,6 +12,9 @@ export const USERS = {
   sub: { id: '66660000-0000-4000-8000-000000000014', email: 'sub@web-e2e.test', name: 'Sam Subcontractor', role: 'SUBCONTRACTOR' },
 } as const;
 
+/** Seeded with 2FA already enrolled (FR-AUTH-004), for the administration spec. Test-only secret. */
+export const ADMIN_USER = { id: '66660000-0000-4000-8000-000000000015', email: 'admin@web-e2e.test', name: 'Ada Admin', role: 'ADMIN', totp: 'KVKFKRCPNZQUYMLXOVYDSQKJKZDTSRLD' } as const;
+
 export function adminPool(): pg.Pool {
   return new pg.Pool({
     host: process.env.PGHOST || 'localhost',

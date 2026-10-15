@@ -4,7 +4,7 @@ import { PrismaService } from '../common/prisma.service.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
 import { toCsv, toXlsx } from '../common/export-format.ts';
 import type { Cell } from '../common/export-format.ts';
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import type { Payable, ReportRow, TimesheetReport, TimesheetReportQuery, TimesheetStatus } from '../../../../packages/shared/src/timesheets/types.ts';
 import { formatMoney, parseAmount } from './money.ts';
@@ -69,8 +69,8 @@ export class TimesheetReportsService {
 
   async report(user: AuthenticatedUser, q: TimesheetReportQuery): Promise<TimesheetReport> {
     ensureRange(q.from, q.to, MAX_REPORT_DAYS);
-    const seesAll = hasPermission(user.role, Permission.TIMESHEETS_READ_ALL) || hasPermission(user.role, Permission.TIMESHEETS_APPROVE_ALL);
-    if (!seesAll && !hasPermission(user.role, Permission.TIMESHEETS_APPROVE_TEAM)) throw new ForbiddenException('Reports need approval or read-all access');
+    const seesAll = userCan(user, Permission.TIMESHEETS_READ_ALL) || userCan(user, Permission.TIMESHEETS_APPROVE_ALL);
+    if (!seesAll && !userCan(user, Permission.TIMESHEETS_APPROVE_TEAM)) throw new ForbiddenException('Reports need approval or read-all access');
 
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const params: unknown[] = [user.orgId, q.from, q.to];

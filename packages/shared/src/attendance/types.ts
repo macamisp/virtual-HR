@@ -118,6 +118,7 @@ export interface AttendanceConfig {
   orgTimezone: string;                   // default Asia/Colombo
   maxCorrectionAgeDays?: number;         // default 7 days
   currentNoticeVersion?: string;         // default 'v1.0.0'
+  presenceRetentionDays?: number;        // default 90 (FR-ADM-004, per organisation)
 }
 
 export const DEFAULT_ATTENDANCE_CONFIG: AttendanceConfig = {

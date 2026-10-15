@@ -9,7 +9,7 @@
  *  - Nobody approves their own timesheet. Approved = locked; only timesheet.reopen reopens.
  *  - Subcontractors hold none of the wider permissions, so they only ever see their own.
  */
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import { EDITABLE_TIMESHEET_STATUSES } from '../../../../packages/shared/src/timesheets/types.ts';
 import type { TimesheetPermissions, TimesheetStatus } from '../../../../packages/shared/src/timesheets/types.ts';
 
@@ -17,6 +17,8 @@ export interface TimesheetActor {
   id: string;
   role: string;
   teamId: string | null;
+  /** Effective permissions (custom roles, FR-ADM-002); absent = the role's defaults. */
+  permissions?: readonly string[];
 }
 
 export interface TimesheetFacts {
@@ -28,23 +30,23 @@ export interface TimesheetFacts {
 
 export function inApprovalScope(actor: TimesheetActor, owner: { id: string; managerId: string | null; teamId: string | null }): boolean {
   if (owner.id === actor.id) return false;
-  if (hasPermission(actor.role, Permission.TIMESHEETS_APPROVE_ALL)) return true;
-  if (!hasPermission(actor.role, Permission.TIMESHEETS_APPROVE_TEAM)) return false;
+  if (userCan(actor, Permission.TIMESHEETS_APPROVE_ALL)) return true;
+  if (!userCan(actor, Permission.TIMESHEETS_APPROVE_TEAM)) return false;
   return owner.managerId === actor.id || (!!actor.teamId && owner.teamId === actor.teamId);
 }
 
 export function timesheetPermissions(actor: TimesheetActor, f: TimesheetFacts): TimesheetPermissions {
   const isOwner = f.ownerId === actor.id;
   const approver = inApprovalScope(actor, { id: f.ownerId, managerId: f.ownerManagerId, teamId: f.ownerTeamId });
-  const canView = isOwner || approver || hasPermission(actor.role, Permission.TIMESHEETS_READ_ALL);
+  const canView = isOwner || approver || userCan(actor, Permission.TIMESHEETS_READ_ALL);
   if (!canView) return { canView: false, canEdit: false, canSubmit: false, canApprove: false, canReopen: false };
   const editable = EDITABLE_TIMESHEET_STATUSES.includes(f.status);
-  const ownerMayUse = isOwner && hasPermission(actor.role, Permission.TIMESHEETS_USE);
+  const ownerMayUse = isOwner && userCan(actor, Permission.TIMESHEETS_USE);
   return {
     canView,
     canEdit: ownerMayUse && editable,
     canSubmit: ownerMayUse && editable,
     canApprove: approver && f.status === 'SUBMITTED',
-    canReopen: !isOwner && f.status === 'APPROVED' && hasPermission(actor.role, Permission.TIMESHEET_REOPEN),
+    canReopen: !isOwner && f.status === 'APPROVED' && userCan(actor, Permission.TIMESHEET_REOPEN),
   };
 }

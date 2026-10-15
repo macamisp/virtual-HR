@@ -1,6 +1,6 @@
 import argon2 from 'argon2';
 import { ADMIN_GUARD } from './guard';
-import { ORG_ID, ORG_SLUG, PASSWORD, TEAM_ID, USERS, adminPool } from './fixtures';
+import { ADMIN_USER, ORG_ID, ORG_SLUG, PASSWORD, TEAM_ID, USERS, adminPool } from './fixtures';
 
 /** Re-seeds the dedicated e2e organisation. Never touches other tenants. */
 export default async function globalSetup(): Promise<void> {
@@ -18,6 +18,11 @@ export default async function globalSetup(): Promise<void> {
         [u.id, ORG_ID, u.email, u.name, u.role, u.role === 'HR' ? null : TEAM_ID, hash],
       );
     }
+    await pool.query(
+      `INSERT INTO users (id, org_id, email, display_name, role, password_hash, status, mfa_enabled, mfa_secret)
+       VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', true, $7)`,
+      [ADMIN_USER.id, ORG_ID, ADMIN_USER.email, ADMIN_USER.name, ADMIN_USER.role, hash, ADMIN_USER.totp],
+    );
     await pool.query(`UPDATE users SET manager_id = $1 WHERE id = ANY($2::uuid[])`, [USERS.lead.id, [USERS.worker.id, USERS.sub.id]]);
     await pool.query(`UPDATE teams SET lead_id = $1 WHERE id = $2`, [USERS.lead.id, TEAM_ID]);
   } finally {

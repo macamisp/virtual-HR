@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import type {
   ProjectRateDto,
@@ -45,7 +45,7 @@ export class RatesService {
             : null,
         })),
         projectRates: overrides.rows.map((o) => ({ projectId: o.project_id, projectName: o.name, user: userRef(o.user_id, o.display_name, o.email, o.role), rateOverride: o.rate_override })),
-        canManage: hasPermission(user.role, Permission.RATES_MANAGE),
+        canManage: userCan(user, Permission.RATES_MANAGE),
       };
     });
   }

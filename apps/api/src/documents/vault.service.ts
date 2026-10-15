@@ -6,7 +6,7 @@ import { PrismaService } from '../common/prisma.service.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
 import type { RequestContext } from '../common/decorators/request-context.decorator.ts';
 import { NotificationsService } from '../notifications/notifications.service.ts';
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import { DOCUMENT_CATEGORIES } from '../../../../packages/shared/src/documents/types.ts';
 import type {
@@ -224,7 +224,7 @@ export class VaultService {
 
   /** SRS 10.1 step 5: vault.recover re-wraps every version from the escrow with a new password. */
   async recoverPassword(user: AuthenticatedUser, documentId: string, dto: RecoverDocumentPasswordDto, ctx: RequestContext): Promise<DocumentSummary> {
-    if (!hasPermission(user.role, Permission.VAULT_RECOVER)) throw new ForbiddenException('Recovery needs the vault.recover permission');
+    if (!userCan(user, Permission.VAULT_RECOVER)) throw new ForbiddenException('Recovery needs the vault.recover permission');
     const { ownerId, confidential } = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const doc = await loadDocument(db, user, documentId, LEVEL.VIEW, { forUpdate: true });
       if (!doc.password_protected) throw new ConflictException('This document has no password to recover');
@@ -322,7 +322,7 @@ export class VaultService {
       const by = new Map(res.rows.map((r) => [r.category, r]));
       return {
         rules: DOCUMENT_CATEGORIES.map((c) => ({ category: c, minYears: by.get(c)?.min_years ?? null, autoShredYears: by.get(c)?.auto_shred_years ?? null })),
-        canManage: hasPermission(user.role, Permission.DOCUMENTS_RETENTION),
+        canManage: userCan(user, Permission.DOCUMENTS_RETENTION),
       };
     });
   }

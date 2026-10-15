@@ -135,6 +135,7 @@ export class AttendanceController {
       orgId: user.orgId,
       callerId: user.id,
       callerRole: user.role,
+      callerPermissions: user.permissions,
     });
   }
 
@@ -152,6 +153,7 @@ export class AttendanceController {
       orgId: user.orgId,
       callerUserId: user.id,
       callerRole: user.role,
+      callerPermissions: user.permissions,
       callerTeamId: user.teamId,
       filterTeamId: teamId,
     }));
@@ -238,6 +240,7 @@ export class AttendanceController {
       correctionId,
       reviewerId: user.id,
       reviewerRole: user.role,
+      reviewerPermissions: user.permissions,
       approved: dto.status === 'APPROVED',
       reviewNote: dto.reviewNote,
     }));
@@ -268,6 +271,7 @@ export class AttendanceController {
           orgId: user.orgId,
           callerUserId: user.id,
           callerRole: user.role,
+          callerPermissions: user.permissions,
           filter,
         });
 
@@ -285,6 +289,7 @@ export class AttendanceController {
           orgId: user.orgId,
           callerUserId: user.id,
           callerRole: user.role,
+          callerPermissions: user.permissions,
           filter,
         });
 

@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import type { Contract, ContractDto, ContractUpdateDto } from '../../../../packages/shared/src/documents/types.ts';
 import { userRef } from '../tasks/tasks.sql.ts';
@@ -61,7 +61,7 @@ export class ContractsService {
   }
 
   async list(user: AuthenticatedUser): Promise<{ items: Contract[]; canManage: boolean }> {
-    const manage = hasPermission(user.role, Permission.CONTRACTS_MANAGE);
+    const manage = userCan(user, Permission.CONTRACTS_MANAGE);
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const res = await db.query<Row>(`${SELECT} ${manage ? '' : 'WHERE c.user_id = $1'} ORDER BY c.start_date DESC, u.display_name NULLS LAST`, manage ? [] : [user.id]);
       return { items: res.rows.map((r) => this.map(r, manage)), canManage: manage };

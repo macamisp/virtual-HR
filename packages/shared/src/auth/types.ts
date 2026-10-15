@@ -57,6 +57,13 @@ export const Permission = {
   /** FR-DOC-017: place and lift legal holds; manage retention rules. */
   DOCUMENTS_LEGAL_HOLD: 'documents.legal_hold',
   DOCUMENTS_RETENTION: 'documents.retention',
+  /** FR-ADM-002: create custom roles and assign them. */
+  ROLES_MANAGE: 'roles.manage',
+  /** FR-REP-001..008: reports beyond one's own data (scope still follows role and team). */
+  REPORTS_TEAM: 'reports.team',
+  REPORTS_ALL: 'reports.all',
+  /** FR-AUD-002/003: data-subject export and anonymisation. */
+  PRIVACY_MANAGE: 'privacy.manage',
 } as const;
 export type Permission = (typeof Permission)[keyof typeof Permission];
 
@@ -89,6 +96,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.VAULT_RECOVER,
     Permission.DOCUMENTS_LEGAL_HOLD,
     Permission.DOCUMENTS_RETENTION,
+    Permission.ROLES_MANAGE,
+    Permission.REPORTS_TEAM,
+    Permission.REPORTS_ALL,
+    Permission.PRIVACY_MANAGE,
   ],
   ADMIN: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -117,6 +128,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.CONTRACTS_MANAGE,
     Permission.DOCUMENTS_LEGAL_HOLD,
     Permission.DOCUMENTS_RETENTION,
+    Permission.ROLES_MANAGE,
+    Permission.REPORTS_TEAM,
+    Permission.REPORTS_ALL,
+    Permission.PRIVACY_MANAGE,
   ],
   HR_MANAGER: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -146,6 +161,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.VAULT_RECOVER,
     Permission.DOCUMENTS_LEGAL_HOLD,
     Permission.DOCUMENTS_RETENTION,
+    Permission.REPORTS_TEAM,
+    Permission.REPORTS_ALL,
+    Permission.PRIVACY_MANAGE,
   ],
   HR: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -171,6 +189,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.DOCUMENTS_USE,
     Permission.DOCUMENTS_READ_ALL,
     Permission.CONTRACTS_MANAGE,
+    Permission.REPORTS_TEAM,
+    Permission.REPORTS_ALL,
   ],
   MANAGER: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -185,6 +205,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TIMESHEETS_USE,
     Permission.TIMESHEETS_APPROVE_TEAM,
     Permission.DOCUMENTS_USE,
+    Permission.REPORTS_TEAM,
   ],
   TEAM_LEAD: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -198,6 +219,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.TIMESHEETS_USE,
     Permission.TIMESHEETS_APPROVE_TEAM,
     Permission.DOCUMENTS_USE,
+    Permission.REPORTS_TEAM,
   ],
   EMPLOYEE: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -231,6 +253,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.AUDIT_READ,
     Permission.TIMESHEETS_READ_ALL,
     Permission.DOCUMENTS_USE,
+    Permission.REPORTS_TEAM,
+    Permission.REPORTS_ALL,
   ],
 };
 
@@ -246,11 +270,92 @@ export function isMfaRequiredRole(role: string): boolean {
   return (MFA_REQUIRED_ROLES as readonly string[]).includes(role);
 }
 
+/**
+ * FR-ADM-002: permissions that need 2FA (FR-AUTH-004) whoever holds them. A custom role may
+ * only add them to a base role that already requires 2FA.
+ */
+export const MFA_SENSITIVE_PERMISSIONS: readonly Permission[] = [
+  Permission.ORG_MANAGE,
+  Permission.USERS_MANAGE,
+  Permission.ROLES_MANAGE,
+  Permission.PRIVACY_MANAGE,
+  Permission.VAULT_RECOVER,
+];
+
+export function requiresMfa(role: string, permissions: readonly string[] = []): boolean {
+  return isMfaRequiredRole(role) || MFA_SENSITIVE_PERMISSIONS.some((p) => permissions.includes(p));
+}
+
 export function hasPermission(role: string, permission: Permission): boolean {
   const perms = ROLE_PERMISSIONS[role as UserRole];
   if (!perms) return false;
   return perms.includes(permission);
 }
+
+/**
+ * FR-ADM-002: what a user may do. `permissions` is filled by the API's permission resolver
+ * (built-in base role + a custom role's additions and removals); without it, the base role's
+ * defaults apply. Use this for the signed-in user; hasPermission(role) for other people.
+ */
+export function userCan(user: { role: string; permissions?: readonly string[] }, permission: Permission): boolean {
+  return user.permissions ? user.permissions.includes(permission) : hasPermission(user.role, permission);
+}
+
+/** Effective permissions of a custom role. */
+export function effectivePermissions(baseRole: string, added: readonly string[] = [], removed: readonly string[] = []): Permission[] {
+  const base = ROLE_PERMISSIONS[baseRole as UserRole] ?? [];
+  const all = new Set<string>([...base, ...added]);
+  for (const r of removed) all.delete(r);
+  return [...all].filter((p): p is Permission => (Object.values(Permission) as string[]).includes(p));
+}
+
+/** Labels and groups for the roles & permissions screen (FR-ADM-002). */
+export const PERMISSION_GROUPS: ReadonlyArray<{ group: string; items: ReadonlyArray<{ permission: Permission; label: string }> }> = [
+  { group: 'Attendance', items: [
+    { permission: Permission.ATTENDANCE_READ_OWN, label: 'See own attendance' },
+    { permission: Permission.ATTENDANCE_READ_TEAM, label: 'See team attendance and live board' },
+    { permission: Permission.ATTENDANCE_READ_ALL, label: 'See everyone\'s attendance' },
+    { permission: Permission.ATTENDANCE_CORRECTIONS_CREATE, label: 'Request corrections' },
+    { permission: Permission.ATTENDANCE_CORRECTIONS_REVIEW, label: 'Review corrections' },
+    { permission: Permission.ATTENDANCE_EXPORT, label: 'Export attendance' },
+  ] },
+  { group: 'Tasks', items: [
+    { permission: Permission.TASKS_USE, label: 'Use tasks' },
+    { permission: Permission.TASKS_ASSIGN, label: 'Assign tasks to others' },
+    { permission: Permission.TASKS_READ_TEAM, label: 'See team tasks' },
+    { permission: Permission.TASKS_READ_ALL, label: 'See all tasks' },
+    { permission: Permission.PROJECTS_MANAGE, label: 'Manage projects' },
+  ] },
+  { group: 'Timesheets', items: [
+    { permission: Permission.TIMESHEETS_USE, label: 'Keep a timesheet' },
+    { permission: Permission.TIMESHEETS_APPROVE_TEAM, label: 'Approve team timesheets' },
+    { permission: Permission.TIMESHEETS_APPROVE_ALL, label: 'Approve all timesheets' },
+    { permission: Permission.TIMESHEETS_READ_ALL, label: 'Read all timesheets and rates' },
+    { permission: Permission.TIMESHEET_REOPEN, label: 'Reopen approved timesheets' },
+    { permission: Permission.RATES_MANAGE, label: 'Manage rates' },
+  ] },
+  { group: 'Documents', items: [
+    { permission: Permission.DOCUMENTS_USE, label: 'Use documents' },
+    { permission: Permission.DOCUMENTS_READ_ALL, label: 'Manage all documents' },
+    { permission: Permission.CONTRACTS_MANAGE, label: 'Manage contracts' },
+    { permission: Permission.VAULT_RECOVER, label: 'Recover document passwords' },
+    { permission: Permission.DOCUMENTS_LEGAL_HOLD, label: 'Place legal holds' },
+    { permission: Permission.DOCUMENTS_RETENTION, label: 'Set document retention' },
+  ] },
+  { group: 'Reports and privacy', items: [
+    { permission: Permission.REPORTS_TEAM, label: 'Team reports and dashboard' },
+    { permission: Permission.REPORTS_ALL, label: 'Organisation-wide reports' },
+    { permission: Permission.AUDIT_READ, label: 'Read the audit log' },
+    { permission: Permission.PRIVACY_MANAGE, label: 'Data-subject export and anonymisation' },
+  ] },
+  { group: 'Administration', items: [
+    { permission: Permission.USERS_MANAGE, label: 'Manage users' },
+    { permission: Permission.USERS_INVITE, label: 'Invite users' },
+    { permission: Permission.ORG_MANAGE, label: 'Organisation policy and settings' },
+    { permission: Permission.ROLES_MANAGE, label: 'Roles and permissions' },
+    { permission: Permission.NOTIFICATIONS_READ_OWN, label: 'Notifications' },
+  ] },
+];
 
 // ==================== Zod Validation Schemas ====================
 
@@ -361,6 +466,9 @@ export interface AuthenticatedUser {
   teamId?: string | null;
   sessionId?: string;
   tokenType?: TokenType;
+  /** Filled by the permission resolver (FR-ADM-002); absent means the role's defaults. */
+  permissions?: Permission[];
+  customRoleId?: string | null;
 }
 
 export interface AuthTokens {

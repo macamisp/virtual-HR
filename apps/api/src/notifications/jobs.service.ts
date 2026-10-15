@@ -34,6 +34,8 @@ function redisConnection(): ConnectionOptions {
     host: process.env.REDIS_HOST || 'localhost',
     port: Number.parseInt(process.env.REDIS_PORT || '6379', 10),
     password: process.env.REDIS_PASSWORD || undefined,
+    // Separate logical databases keep e.g. a demo and the test suite off each other's queue.
+    db: Number.parseInt(process.env.REDIS_DB || '0', 10),
     // Required by BullMQ workers.
     maxRetriesPerRequest: null,
   };

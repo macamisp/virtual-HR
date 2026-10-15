@@ -12,8 +12,13 @@ export {
   UserRole,
   ROLE_PERMISSIONS,
   hasPermission,
+  userCan,
+  effectivePermissions,
+  PERMISSION_GROUPS,
   MFA_REQUIRED_ROLES,
   isMfaRequiredRole,
+  requiresMfa,
+  MFA_SENSITIVE_PERMISSIONS,
   LoginDtoSchema,
   PasswordForgotDtoSchema,
   PasswordResetDtoSchema,
@@ -42,3 +47,4 @@ export type {
   AuthTokens,
   MfaSetupResponse,
 } from './auth/types.ts';
+export * from './admin/types.ts';

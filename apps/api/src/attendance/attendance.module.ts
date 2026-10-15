@@ -4,6 +4,7 @@ import { AttendanceGateway } from './attendance.gateway.ts';
 import { AttendanceService } from './attendance.service.ts';
 import { PostgresAttendanceRepository } from './attendance-repository.ts';
 import { PrismaService } from '../common/prisma.service.ts';
+import { loadAttendancePolicy } from '../admin/policy-store.ts';
 import { SystemClock } from '../../../../packages/shared/src/index.ts';
 
 @Module({
@@ -18,10 +19,13 @@ import { SystemClock } from '../../../../packages/shared/src/index.ts';
     },
     {
       provide: AttendanceService,
-      useFactory: (repo: PostgresAttendanceRepository) => {
-        return new AttendanceService(undefined, new SystemClock(), repo);
+      useFactory: (repo: PostgresAttendanceRepository, prisma: PrismaService) => {
+        const service = new AttendanceService(undefined, new SystemClock(), repo);
+        // FR-ADM-001: thresholds per organisation (cached 30 s; the admin API invalidates it).
+        service.setPolicyProvider((orgId) => loadAttendancePolicy(prisma, orgId));
+        return service;
       },
-      inject: [PostgresAttendanceRepository],
+      inject: [PostgresAttendanceRepository, PrismaService],
     },
     AttendanceGateway,
   ],

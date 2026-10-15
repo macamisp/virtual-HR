@@ -110,6 +110,7 @@ export interface IAttendanceRepository {
   recordPresenceEvent(event: { orgId: string; userId: string; sessionId?: string; serverTs: Date; clientTs?: Date; eventType: string; state: string; seq: number; ip?: string; meta?: Record<string, unknown> }): Promise<void>;
   findPresenceEventsByUser(orgId: string, userId: string, limit?: number): Promise<PresenceEventRecord[]>;
   cleanupOldPresenceEvents(orgId: string, olderThan: Date): Promise<number>;
+  cleanupOldNotifications(orgId: string, olderThan: Date): Promise<number>;
 
   clearAll(): Promise<void>;
   close(): Promise<void>;
@@ -1011,7 +1012,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
   public async findMonitoringConsentsByUser(orgId: string, userId: string): Promise<MonitoringConsent[]> {
     const res = await this.queryWithRls(
       orgId,
-      `SELECT * FROM monitoring_consents WHERE org_id = $1 AND user_id = $2 ORDER BY accepted_at DESC`,
+      `SELECT * FROM monitoring_consents WHERE org_id = $1 AND user_id = $2 AND consent_type = 'MONITORING' AND granted ORDER BY accepted_at DESC`,
       [orgId, userId],
     );
     return res.rows.map((r: pg.QueryResultRow) => ({
@@ -1129,6 +1130,26 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         `DELETE FROM presence_events WHERE org_id = $1 AND server_ts < $2`,
         [orgId, olderThan],
       );
+      await client.query('COMMIT');
+      return res.rowCount || 0;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** FR-ADM-004: the app role cannot delete notifications; the retention role can. */
+  public async cleanupOldNotifications(orgId: string, olderThan: Date): Promise<number> {
+    if (!orgId || orgId.trim() === '') {
+      throw new Error('Tenant context missing: orgId is required');
+    }
+    const client = await this.retentionPool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.org_id', $1, true)`, [orgId]);
+      const res = await client.query(`DELETE FROM notifications WHERE org_id = $1 AND created_at < $2`, [orgId, olderThan]);
       await client.query('COMMIT');
       return res.rowCount || 0;
     } catch (err) {

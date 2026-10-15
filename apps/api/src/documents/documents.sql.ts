@@ -4,7 +4,7 @@
  * unexpired ACL grant (fn_acl_level, inherited through folders).
  */
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import type { DocumentSummary, ScanStatus } from '../../../../packages/shared/src/documents/types.ts';
 import { toIso, userRef } from '../tasks/tasks.sql.ts';
@@ -17,10 +17,11 @@ export interface DocActor {
   role: string;
   teamId: string | null;
   isHr: boolean;
+  permissions?: readonly string[];
 }
 
 export function docActor(user: AuthenticatedUser): DocActor {
-  return { id: user.id, role: user.role, teamId: user.teamId ?? null, isHr: hasPermission(user.role, Permission.DOCUMENTS_READ_ALL) };
+  return { id: user.id, role: user.role, teamId: user.teamId ?? null, isHr: userCan(user, Permission.DOCUMENTS_READ_ALL), permissions: user.permissions };
 }
 
 /** Appends the actor to params and returns the level expression for alias `d`. */

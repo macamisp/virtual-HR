@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import type pg from 'pg';
 import { formatInTimeZone } from 'date-fns-tz';
 import { PrismaService } from '../common/prisma.service.ts';
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type {
   ConfirmPlanDto,
   DailyPlan,
@@ -304,8 +304,8 @@ export class PlanningService {
   // ------------------------------------------------------------- Team workload (FR-TASK-005)
 
   async workload(user: AuthenticatedUser, start?: string, teamId?: string): Promise<Workload> {
-    if (!hasPermission(user.role, Permission.TASKS_READ_TEAM)) throw new ForbiddenException('Workload is for team leads, managers and HR');
-    const all = hasPermission(user.role, Permission.TASKS_READ_ALL);
+    if (!userCan(user, Permission.TASKS_READ_TEAM)) throw new ForbiddenException('Workload is for team leads, managers and HR');
+    const all = userCan(user, Permission.TASKS_READ_ALL);
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const { today } = await this.orgToday(db, user.orgId);
       const weekStart = start ?? weekStartOf(today);
@@ -377,7 +377,7 @@ export class PlanningService {
   }
 
   async saveView(user: AuthenticatedUser, dto: SavedViewDto): Promise<SavedView[]> {
-    if (dto.filters.scope === 'team' && !hasPermission(user.role, Permission.TASKS_READ_TEAM)) {
+    if (dto.filters.scope === 'team' && !userCan(user, Permission.TASKS_READ_TEAM)) {
       throw new ForbiddenException('Team views are for team leads, managers and HR');
     }
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {

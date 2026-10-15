@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { Project, ProjectDto, ProjectUpdateDto, UserRef } from '../../../../packages/shared/src/tasks/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import { userRef } from './tasks.sql.ts';
@@ -39,7 +39,7 @@ export class ProjectsService {
   constructor(private readonly prisma: PrismaService) {}
 
   private managesAll(user: AuthenticatedUser): boolean {
-    return hasPermission(user.role, Permission.PROJECTS_MANAGE) || hasPermission(user.role, Permission.TASKS_READ_ALL);
+    return userCan(user, Permission.PROJECTS_MANAGE) || userCan(user, Permission.TASKS_READ_ALL);
   }
 
   /** HR/managers see all projects; everyone else sees projects they belong to or manage. */
@@ -57,7 +57,7 @@ export class ProjectsService {
   }
 
   async create(user: AuthenticatedUser, dto: ProjectDto): Promise<Project> {
-    if (!hasPermission(user.role, Permission.PROJECTS_MANAGE)) throw new ForbiddenException('You cannot create projects');
+    if (!userCan(user, Permission.PROJECTS_MANAGE)) throw new ForbiddenException('You cannot create projects');
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       if (dto.managerId) await this.assertActiveUser(db, user.orgId, dto.managerId);
       try {
@@ -146,7 +146,7 @@ export class ProjectsService {
 
   /** People who can be added to projects (org directory for project admins only). */
   async candidates(user: AuthenticatedUser): Promise<UserRef[]> {
-    if (!hasPermission(user.role, Permission.PROJECTS_MANAGE)) throw new ForbiddenException('You cannot manage projects');
+    if (!userCan(user, Permission.PROJECTS_MANAGE)) throw new ForbiddenException('You cannot manage projects');
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const res = await db.query(
         `SELECT id, display_name, email, role FROM users WHERE org_id = $1 AND status = 'ACTIVE' ORDER BY display_name NULLS LAST, email`,
@@ -170,7 +170,7 @@ export class ProjectsService {
   private async assertCanAdminister(db: Client, user: AuthenticatedUser, projectId: string): Promise<void> {
     const res = await db.query(`SELECT manager_id FROM projects WHERE org_id = $1 AND id = $2`, [user.orgId, projectId]);
     if (res.rows.length === 0) throw new NotFoundException('Project not found');
-    if (!hasPermission(user.role, Permission.PROJECTS_MANAGE) && res.rows[0]!.manager_id !== user.id) {
+    if (!userCan(user, Permission.PROJECTS_MANAGE) && res.rows[0]!.manager_id !== user.id) {
       throw new ForbiddenException('Only project admins or the project manager can change this project');
     }
   }

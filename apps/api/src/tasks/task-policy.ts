@@ -8,13 +8,15 @@
  *  - managers/team leads for tasks assigned to their team or direct reports;
  *  - HR and admins: everything in the organisation.
  */
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AcceptanceStatus, TaskPermissions } from '../../../../packages/shared/src/tasks/types.ts';
 
 export interface TaskActor {
   id: string;
   role: string;
   teamId: string | null;
+  /** Effective permissions (custom roles, FR-ADM-002); absent = the role's defaults. */
+  permissions?: readonly string[];
 }
 
 export interface TaskFacts {
@@ -28,12 +30,12 @@ export interface TaskFacts {
 }
 
 export function seesAllTasks(actor: TaskActor): boolean {
-  return hasPermission(actor.role, Permission.TASKS_READ_ALL);
+  return userCan(actor, Permission.TASKS_READ_ALL);
 }
 
 /** Team scope: tasks whose assignee reports to the actor or sits in the actor's team. */
 function inTeamScope(actor: TaskActor, f: TaskFacts): boolean {
-  if (!hasPermission(actor.role, Permission.TASKS_READ_TEAM) || !f.assigneeId) return false;
+  if (!userCan(actor, Permission.TASKS_READ_TEAM) || !f.assigneeId) return false;
   return f.assigneeManagerId === actor.id || (!!actor.teamId && f.assigneeTeamId === actor.teamId);
 }
 
@@ -82,7 +84,7 @@ export function canAssignTo(
   ctx: { actorManagesProject: boolean; targetIsProjectMember: boolean },
 ): boolean {
   if (target.id === actor.id) return true;
-  if (!hasPermission(actor.role, Permission.TASKS_ASSIGN)) return false;
+  if (!userCan(actor, Permission.TASKS_ASSIGN)) return false;
   if (seesAllTasks(actor)) return true;
   if (target.managerId === actor.id) return true;
   if (actor.teamId && target.teamId === actor.teamId) return true;

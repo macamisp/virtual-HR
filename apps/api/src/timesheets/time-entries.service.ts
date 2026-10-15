@@ -11,7 +11,7 @@ import { fromZonedTime } from 'date-fns-tz';
 import { PrismaService } from '../common/prisma.service.ts';
 import { PostgresAttendanceRepository } from '../attendance/attendance-repository.ts';
 import { TasksService } from '../tasks/tasks.service.ts';
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import type { AttendanceSession } from '../../../../packages/shared/src/attendance/types.ts';
 import type {
@@ -269,7 +269,7 @@ export class TimeEntriesService implements OnModuleInit {
     const res = await db.query(
       `SELECT 1 FROM projects p WHERE p.id = $1 AND (
          $3 OR p.manager_id = $2 OR EXISTS (SELECT 1 FROM project_members m WHERE m.project_id = p.id AND m.user_id = $2))`,
-      [projectId, user.id, hasPermission(user.role, Permission.TASKS_READ_ALL)],
+      [projectId, user.id, userCan(user, Permission.TASKS_READ_ALL)],
     );
     if (res.rowCount === 0) throw new NotFoundException('Project not found');
   }
@@ -289,7 +289,7 @@ export class TimeEntriesService implements OnModuleInit {
       [ownerId],
     );
     const owner = res.rows[0];
-    const ok = owner && (hasPermission(user.role, Permission.TIMESHEETS_READ_ALL) || inApprovalScope(actorOf(user), { id: owner.id, managerId: owner.manager_id, teamId: owner.team_id }));
+    const ok = owner && (userCan(user, Permission.TIMESHEETS_READ_ALL) || inApprovalScope(actorOf(user), { id: owner.id, managerId: owner.manager_id, teamId: owner.team_id }));
     if (!ok) throw new ForbiddenException('You cannot see this person\'s time');
   }
 

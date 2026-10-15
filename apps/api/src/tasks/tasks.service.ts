@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import {
   canTransition,
   extractMentionIds,
@@ -51,7 +51,7 @@ type Client = pg.PoolClient;
 type PendingEvent = { [K in keyof TaskEventMap]: { name: K; payload: TaskEventMap[K] } }[keyof TaskEventMap];
 
 export function actorOf(user: AuthenticatedUser): TaskActor {
-  return { id: user.id, role: user.role, teamId: user.teamId ?? null };
+  return { id: user.id, role: user.role, teamId: user.teamId ?? null, permissions: user.permissions };
 }
 
 interface LockedTask {
@@ -96,7 +96,7 @@ export class TasksService {
         add((n) => `t.reporter_id = ${n}::uuid`, actor.id);
         break;
       case 'team':
-        if (!hasPermission(actor.role, Permission.TASKS_READ_TEAM)) {
+        if (!userCan(actor, Permission.TASKS_READ_TEAM)) {
           throw new ForbiddenException('Team view is for team leads, managers and HR');
         }
         if (!seesAllTasks(actor)) {
@@ -232,7 +232,7 @@ export class TasksService {
   async assignableUsers(user: AuthenticatedUser, projectId?: string): Promise<UserRef[]> {
     const actor = actorOf(user);
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      if (!hasPermission(actor.role, Permission.TASKS_ASSIGN)) {
+      if (!userCan(actor, Permission.TASKS_ASSIGN)) {
         const me = await db.query(`SELECT id, display_name, email, role FROM users WHERE id = $1`, [actor.id]);
         return me.rows.map((u) => userRef(u.id, u.display_name, u.email, u.role));
       }
@@ -704,7 +704,7 @@ export class TasksService {
       [orgId, projectId, actor.id],
     );
     const p = res.rows[0];
-    const allowed = p && (seesAllTasks(actor) || hasPermission(actor.role, Permission.PROJECTS_MANAGE) || p.is_pm || p.is_member);
+    const allowed = p && (seesAllTasks(actor) || userCan(actor, Permission.PROJECTS_MANAGE) || p.is_pm || p.is_member);
     if (!allowed) throw new BadRequestException('Project not found');
     if (p.status === 'ARCHIVED' || p.status === 'DONE') throw new BadRequestException('This project is closed for new work');
   }

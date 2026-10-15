@@ -10,7 +10,7 @@ import type pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../common/prisma.service.ts';
 import type { RequestContext } from '../common/decorators/request-context.decorator.ts';
-import { hasPermission, Permission, UserRole } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, UserRole, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import {
   MAX_UPLOAD_BYTES,
@@ -472,7 +472,7 @@ export class DocumentsService {
       if (u.rowCount === 0) throw new BadRequestException('Linked user not found');
     }
     if (out.linkedContractId && out.linkedContractId !== existing?.linked_contract_id) {
-      if (!hasPermission(user.role, Permission.CONTRACTS_MANAGE)) throw new ForbiddenException('Only contract managers link contracts');
+      if (!userCan(user, Permission.CONTRACTS_MANAGE)) throw new ForbiddenException('Only contract managers link contracts');
       const c = await db.query<{ user_id: string }>(`SELECT user_id FROM contracts WHERE id = $1`, [out.linkedContractId]);
       if (!c.rows[0]) throw new BadRequestException('Contract not found');
       out.linkedUserId ??= c.rows[0].user_id;
@@ -480,7 +480,7 @@ export class DocumentsService {
     if (out.linkedProjectId && out.linkedProjectId !== existing?.linked_project_id) {
       const p = await db.query(
         `SELECT 1 FROM projects p WHERE p.id = $1 AND ($3 OR p.manager_id = $2 OR EXISTS (SELECT 1 FROM project_members m WHERE m.project_id = p.id AND m.user_id = $2))`,
-        [out.linkedProjectId, user.id, a.isHr || hasPermission(user.role, Permission.TASKS_READ_ALL)],
+        [out.linkedProjectId, user.id, a.isHr || userCan(user, Permission.TASKS_READ_ALL)],
       );
       if (p.rowCount === 0) throw new BadRequestException('Project not found');
     }

@@ -3,7 +3,7 @@
  * filter mirrors timesheet-policy.ts (covered by the e2e tests).
  */
 import { ConflictException } from '@nestjs/common';
-import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
+import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import type { EntrySource, TimeEntry, TimesheetStatus } from '../../../../packages/shared/src/timesheets/types.ts';
 import { toIso } from '../tasks/tasks.sql.ts';
@@ -11,7 +11,7 @@ import { isEditable, TimesheetLockedError } from './timesheet-store.ts';
 import type { TimesheetActor } from './timesheet-policy.ts';
 
 export function actorOf(user: AuthenticatedUser): TimesheetActor {
-  return { id: user.id, role: user.role, teamId: user.teamId ?? null };
+  return { id: user.id, role: user.role, teamId: user.teamId ?? null, permissions: user.permissions };
 }
 
 export const ENTRY_SELECT = `
@@ -79,9 +79,9 @@ export function visibleOwnersSql(user: AuthenticatedUser, params: unknown[], sco
     params.push(user.id);
     return `u.id = $${params.length}`;
   }
-  const all = hasPermission(user.role, Permission.TIMESHEETS_READ_ALL) || hasPermission(user.role, Permission.TIMESHEETS_APPROVE_ALL);
+  const all = userCan(user, Permission.TIMESHEETS_READ_ALL) || userCan(user, Permission.TIMESHEETS_APPROVE_ALL);
   if (scope === 'all' && all) return 'TRUE';
-  if (!hasPermission(user.role, Permission.TIMESHEETS_APPROVE_TEAM) && !all) {
+  if (!userCan(user, Permission.TIMESHEETS_APPROVE_TEAM) && !all) {
     params.push(user.id);
     return `u.id = $${params.length}`;
   }
