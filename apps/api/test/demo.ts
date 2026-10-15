@@ -22,6 +22,7 @@
  * Run via: node --experimental-strip-types apps/api/test/demo.ts
  */
 
+import './support/refuse-in-production.ts'; // must stay the first import
 import { AttendanceService } from '../src/attendance/attendance.service.ts';
 import { PostgresAttendanceRepository } from '../src/attendance/attendance-repository.ts';
 import {

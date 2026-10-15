@@ -7,6 +7,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { SystemClock } from '../../../../packages/shared/src/attendance/types.ts';
 import type { Clock, HeartbeatPayload } from '../../../../packages/shared/src/attendance/types.ts';
 import type { IAttendanceRepository } from './attendance-repository.ts';
+import { heartbeatCanonicalString } from '../../../../packages/shared/src/attendance/heartbeat-signer.ts';
 
 export interface HeartbeatValidationResult {
   valid: boolean;
@@ -31,20 +32,7 @@ export class HeartbeatValidator {
    * Produce the canonical string representation of the heartbeat for signing
    */
   public getCanonicalString(hb: Omit<HeartbeatPayload, 'signature'>): string {
-    return [
-      hb.orgId,
-      hb.userId,
-      hb.deviceId,
-      hb.sessionId,
-      hb.sequenceNumber,
-      hb.nonce,
-      hb.activeSeconds,
-      hb.idleSeconds,
-      hb.tabVisible ? '1' : '0',
-      hb.windowFocused ? '1' : '0',
-      hb.inCall ? '1' : '0',
-      hb.meetingId ?? '',
-    ].join(':');
+    return heartbeatCanonicalString(hb);
   }
 
   /**

@@ -3,12 +3,12 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
-import cookieParser from 'cookie-parser';
 import pg from 'pg';
 import { io, Socket } from 'socket.io-client';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import argon2 from 'argon2';
 import { AppModule } from '../src/app.module.ts';
+import { configureApp } from '../src/common/configure-app.ts';
 import { PrismaService } from '../src/common/prisma.service.ts';
 import { HeartbeatValidator } from '../src/attendance/heartbeat-validator.ts';
 import { UserRole } from '../../../packages/shared/src/auth/types.ts';
@@ -42,6 +42,9 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
   let empRefreshToken: string;
 
   before(async () => {
+    process.env.BREACHED_PASSWORD_CHECK = 'local';
+    process.env.MAIL_TRANSPORT = 'memory';
+    process.env.RATE_LIMIT_LOGIN = '1000';
     process.env.DATABASE_URL =
       process.env.DATABASE_URL ||
       'postgresql://hrvo_app:hrvo_app_pass@localhost:5433/hrvo_dev?schema=public';
@@ -113,8 +116,7 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
 
     // 2. Bootstrap NestJS test application
     app = await NestFactory.create(AppModule, { logger: false });
-    app.use(cookieParser());
-    app.enableCors({ origin: true, credentials: true });
+    configureApp(app);
 
     port = 3033;
     await app.listen(port);
@@ -166,7 +168,7 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
       await adminPool.query(`UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = '${empAId}'`);
     });
 
-    it('FR-AUTH-004: Mandatory 2FA for Admin/HR requires setup before complete login', async () => {
+    it('FR-AUTH-004: Mandatory 2FA for Admin/HR requires enrollment before a full login', async () => {
       const res = await fetch(`${baseUrl}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -175,16 +177,30 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
       assert.equal(res.status, 200);
       const data = await res.json();
       assert.equal(data.requires2faSetup, true);
+      assert.equal(data.accessToken, undefined);
+      assert.ok(data.enrollmentToken);
       assert.match(data.message, /Two-factor authentication is mandatory/i);
 
-      // Pre-enable MFA for Admin with a known secret so Admin can login
-      const { generateSecret } = await import('otplib');
-      const testSecret = generateSecret();
-      await adminPool.query(
-        `UPDATE users SET mfa_enabled = true, mfa_secret = '${testSecret}' WHERE id = '${adminAId}'`,
-      );
+      // Enroll through the API with the enrollment token
+      const setupRes = await fetch(`${baseUrl}/auth/2fa/setup`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${data.enrollmentToken}` },
+      });
+      assert.equal(setupRes.status, 200);
+      const { secret } = await setupRes.json();
 
-      // Login without code prompts for code
+      const { generateSync } = await import('otplib');
+      const verifyRes = await fetch(`${baseUrl}/auth/2fa/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.enrollmentToken}` },
+        body: JSON.stringify({ code: generateSync({ secret }) }),
+      });
+      assert.equal(verifyRes.status, 200);
+      const enrolled = await verifyRes.json();
+      assert.equal(enrolled.recoveryCodes.length, 10);
+      assert.ok(enrolled.accessToken);
+
+      // Later logins prompt for the code
       const resMfaPrompt = await fetch(`${baseUrl}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -194,10 +210,23 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
       const promptData = await resMfaPrompt.json();
       assert.equal(promptData.requires2fa, true);
 
-      // Login with valid TOTP code succeeds
-      const { generateSync } = await import('otplib');
-      const validCode = generateSync({ secret: testSecret });
+      // A recovery code works exactly once
+      const recovery = enrolled.recoveryCodes[0];
+      const recoveryLogin = () =>
+        fetch(`${baseUrl}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: 'admin@acme.com', password: 'ComplexPassword123!', totpCode: recovery }),
+        });
+      const firstUse = await recoveryLogin();
+      assert.equal(firstUse.status, 200);
+      assert.ok((await firstUse.json()).accessToken);
+      const secondUse = await recoveryLogin();
+      assert.equal(secondUse.status, 401);
+      await adminPool.query(`UPDATE users SET failed_login_attempts = 0 WHERE id = '${adminAId}'`);
 
+      // Login with valid TOTP code succeeds
+      const validCode = generateSync({ secret });
       const resMfaSuccess = await fetch(`${baseUrl}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -264,7 +293,6 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
         }),
       });
       const inviteBody = await inviteRes.json();
-      console.log('DEBUG: inviteRes status:', inviteRes.status, 'body:', inviteBody, 'adminAccessToken:', adminAccessToken ? adminAccessToken.slice(0, 20) : 'null');
       assert.equal(inviteRes.status, 201);
       const inviteData = inviteBody;
       assert.ok(inviteData.inviteToken);
@@ -505,7 +533,6 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
       };
 
       const ackResponse = await socket.emitWithAck('presence:heartbeat', heartbeatPayload);
-      console.log('DEBUG ackResponse:', ackResponse);
       assert.equal(ackResponse.success, true);
       assert.equal(ackResponse.currentState, 'ACTIVE');
       assert.match(ackResponse.actionTaken, /Create session|SESSION_CREATED/i);

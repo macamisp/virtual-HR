@@ -87,12 +87,12 @@ describe('Advanced Attendance Capabilities (FR-ATT-013..020, FR-TS-001, RLS & Au
         ('${orgB}', 'Beta Corp', 'beta-advanced', 'Asia/Colombo')
     `);
 
-    // Seed teams
+    // Seed teams (lead_id is set after users exist: teams.lead_id references users)
     await adminPool.query(`
-      INSERT INTO teams (id, org_id, name, lead_id)
+      INSERT INTO teams (id, org_id, name)
       VALUES
-        ('${teamAlpha}', '${orgA}', 'Engineering Alpha', '${userLead}'),
-        ('${teamBeta}', '${orgA}', 'Marketing Beta', NULL)
+        ('${teamAlpha}', '${orgA}', 'Engineering Alpha'),
+        ('${teamBeta}', '${orgA}', 'Marketing Beta')
     `);
 
     // Seed users
@@ -106,6 +106,7 @@ describe('Advanced Attendance Capabilities (FR-ATT-013..020, FR-TS-001, RLS & Au
         ('${userOtherTeam}', '${orgA}', 'other@acme.com', 'Eve Marketing', 'EMPLOYEE', '${teamBeta}', '${userManager}'),
         ('${userOrgB}', '${orgB}', 'user@beta.com', 'Frank Beta', 'EMPLOYEE', NULL, NULL)
     `);
+    await adminPool.query(`UPDATE teams SET lead_id = '${userLead}' WHERE id = '${teamAlpha}'`);
 
     repo = new PostgresAttendanceRepository();
     service = new AttendanceService({}, clock, repo, orgA, holidayProvider, leaveProvider);

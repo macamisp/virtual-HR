@@ -8,32 +8,56 @@ import {
   HttpCode,
   HttpStatus,
   UsePipes,
+  ForbiddenException,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service.ts';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.ts';
 import { PermissionsGuard } from '../common/guards/permissions.guard.ts';
 import { Public } from '../common/decorators/public.decorator.ts';
+import { AllowMfaEnrollment } from '../common/decorators/allow-mfa-enrollment.decorator.ts';
 import { CurrentUser } from '../common/decorators/current-user.decorator.ts';
 import { RequirePermissions } from '../common/decorators/permissions.decorator.ts';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.ts';
+import { RateLimit } from '../common/rate-limit.ts';
+import {
+  CSRF_HEADER,
+  REFRESH_COOKIE_NAME,
+  isOriginAllowed,
+  refreshCookieOptions,
+} from '../common/config.ts';
 import {
   Permission,
   LoginDtoSchema,
   InviteUserDtoSchema,
   SignupInvitationDtoSchema,
   Verify2faDtoSchema,
+  PasswordForgotDtoSchema,
+  PasswordResetDtoSchema,
 } from '../../../../packages/shared/src/index.ts';
 import type {
   LoginDto,
   InviteUserDto,
   SignupInvitationDto,
   Verify2faDto,
+  PasswordForgotDto,
+  PasswordResetDto,
   AuthenticatedUser,
 } from '../../../../packages/shared/src/index.ts';
 
+const REFRESH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function requestMeta(req: Request): [string | undefined, string | undefined] {
+  return [req.ip || req.socket.remoteAddress, req.headers['user-agent']];
+}
+
+function setRefreshCookie(res: Response, refreshToken: string): void {
+  res.cookie(REFRESH_COOKIE_NAME, refreshToken, { ...refreshCookieOptions(), maxAge: REFRESH_MAX_AGE_MS });
+}
+
 @Controller('auth')
-@UseGuards(JwtAuthGuard, PermissionsGuard)
+@UseGuards(ThrottlerGuard, JwtAuthGuard, PermissionsGuard)
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
@@ -45,9 +69,7 @@ export class AuthController {
     @Body() dto: InviteUserDto,
     @Req() req: Request,
   ) {
-    const ip = req.ip || req.socket.remoteAddress;
-    const userAgent = req.headers['user-agent'];
-    return await this.authService.createInvitation(user, dto, ip, userAgent);
+    return await this.authService.createInvitation(user, dto, ...requestMeta(req));
   }
 
   @Public()
@@ -58,13 +80,12 @@ export class AuthController {
     @Body() dto: SignupInvitationDto,
     @Req() req: Request,
   ) {
-    const ip = req.ip || req.socket.remoteAddress;
-    const userAgent = req.headers['user-agent'];
-    return await this.authService.acceptInvitation(dto, ip, userAgent);
+    return await this.authService.acceptInvitation(dto, ...requestMeta(req));
   }
 
   @Public()
   @Post('login')
+  @RateLimit('login')
   @HttpCode(HttpStatus.OK)
   @UsePipes(new ZodValidationPipe(LoginDtoSchema))
   async login(
@@ -72,82 +93,100 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const ip = req.ip || req.socket.remoteAddress;
-    const userAgent = req.headers['user-agent'];
-    const result = await this.authService.login(dto, ip, userAgent);
-
+    const result = await this.authService.login(dto, ...requestMeta(req));
     if ('refreshToken' in result && result.refreshToken) {
-      // Set rotating refresh token in httpOnly, secure, sameSite cookie (FR-AUTH-003)
-      res.cookie('refreshToken', result.refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-        path: '/auth/refresh',
-      });
+      // FR-AUTH-003: httpOnly, SameSite=Strict, Secure in production, scoped to /auth/refresh
+      setRefreshCookie(res, result.refreshToken);
     }
-
     return result;
   }
 
+  /**
+   * Cookie-authenticated refresh is a CSRF target, so it additionally requires the
+   * X-HRVO-CSRF header (forces a CORS preflight, which the origin allow-list rejects)
+   * and an allowed Origin when one is sent. A token in the body is not ambient and
+   * needs neither.
+   */
   @Public()
   @Post('refresh')
+  @RateLimit('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(
     @Req() req: Request,
     @Body('refreshToken') bodyRefreshToken: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const token = req.cookies?.refreshToken || bodyRefreshToken;
-    const ip = req.ip || req.socket.remoteAddress;
-    const userAgent = req.headers['user-agent'];
-    const result = await this.authService.refresh(token, ip, userAgent);
+    const cookieToken: string | undefined = req.cookies?.[REFRESH_COOKIE_NAME];
+    const fromBody = typeof bodyRefreshToken === 'string' && bodyRefreshToken.length > 0;
+    if (!fromBody && cookieToken) {
+      if (req.headers[CSRF_HEADER] !== '1' || !isOriginAllowed(req.headers.origin)) {
+        throw new ForbiddenException('CSRF check failed');
+      }
+    }
+    const token = fromBody ? bodyRefreshToken : cookieToken;
+    const result = await this.authService.refresh(token ?? '', ...requestMeta(req));
+    setRefreshCookie(res, result.refreshToken);
+    return result;
+  }
 
-    // Set rotated refresh token
-    res.cookie('refreshToken', result.refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/auth/refresh',
-    });
+  @Public()
+  @Post('password/forgot')
+  @RateLimit('passwordReset')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @UsePipes(new ZodValidationPipe(PasswordForgotDtoSchema))
+  async forgotPassword(@Body() dto: PasswordForgotDto, @Req() req: Request) {
+    return await this.authService.requestPasswordReset(dto.email, ...requestMeta(req));
+  }
 
+  @Public()
+  @Post('password/reset')
+  @RateLimit('passwordReset')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(PasswordResetDtoSchema))
+  async resetPassword(
+    @Body() dto: PasswordResetDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.authService.resetPassword(dto.token, dto.newPassword, ...requestMeta(req));
+    res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
     return result;
   }
 
   @Post('2fa/setup')
+  @AllowMfaEnrollment()
   @HttpCode(HttpStatus.OK)
-  async setup2fa(@CurrentUser() user: AuthenticatedUser) {
-    return await this.authService.setup2fa(user);
+  async setup2fa(@CurrentUser() user: AuthenticatedUser, @Req() req: Request) {
+    return await this.authService.setup2fa(user, ...requestMeta(req));
   }
 
   @Post('2fa/verify')
+  @AllowMfaEnrollment()
+  @RateLimit('login')
   @HttpCode(HttpStatus.OK)
   @UsePipes(new ZodValidationPipe(Verify2faDtoSchema))
   async verify2fa(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: Verify2faDto,
     @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
   ) {
-    const ip = req.ip || req.socket.remoteAddress;
-    const userAgent = req.headers['user-agent'];
-    return await this.authService.verifyAndEnable2fa(user, dto.code, ip, userAgent);
+    const result = await this.authService.verifyAndEnable2fa(user, dto.code, ...requestMeta(req));
+    if ('refreshToken' in result && typeof result.refreshToken === 'string') {
+      setRefreshCookie(res, result.refreshToken);
+    }
+    return result;
   }
 
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   async logout(
     @CurrentUser() user: AuthenticatedUser,
-    @Body('sessionId') sessionId: string,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const ip = req.ip || req.socket.remoteAddress;
-    const userAgent = req.headers['user-agent'];
-    const effectiveSessionId = sessionId || req.cookies?.sessionId || 'default';
-    const result = await this.authService.logout(effectiveSessionId, user, ip, userAgent);
-
-    res.clearCookie('refreshToken', { path: '/auth/refresh' });
+    const result = await this.authService.logout(user, ...requestMeta(req));
+    res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
     return result;
   }
 }

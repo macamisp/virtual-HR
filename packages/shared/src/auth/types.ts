@@ -1,6 +1,6 @@
 /**
  * HRVO Authentication & RBAC Shared Types and Zod Schemas
- * Ref: docs/SRS.md Section 5.1 (FR-AUTH-001..011) and Section 3.4
+ * Ref: docs/SRS.md Section 5.1 (FR-AUTH-001..012) and Section 3.4
  */
 
 import { z } from 'zod';
@@ -114,6 +114,18 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   ],
 };
 
+/** Roles for which TOTP 2FA is mandatory before a full access token is issued (FR-AUTH-004). */
+export const MFA_REQUIRED_ROLES: readonly UserRole[] = [
+  UserRole.SUPER_ADMIN,
+  UserRole.ADMIN,
+  UserRole.HR_MANAGER,
+  UserRole.HR,
+];
+
+export function isMfaRequiredRole(role: string): boolean {
+  return (MFA_REQUIRED_ROLES as readonly string[]).includes(role);
+}
+
 export function hasPermission(role: string, permission: Permission): boolean {
   const perms = ROLE_PERMISSIONS[role as UserRole];
   if (!perms) return false;
@@ -125,7 +137,11 @@ export function hasPermission(role: string, permission: Permission): boolean {
 export const LoginDtoSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1, 'Password is required'),
-  totpCode: z.string().length(6, 'TOTP code must be 6 digits').optional(),
+  // 6-digit TOTP code or a 10-hex-char recovery code (FR-AUTH-004)
+  totpCode: z
+    .string()
+    .regex(/^(\d{6}|[0-9a-f]{10})$/, 'Expected a 6-digit TOTP code or a recovery code')
+    .optional(),
 });
 export type LoginDto = z.infer<typeof LoginDtoSchema>;
 
@@ -146,8 +162,24 @@ export const SignupInvitationDtoSchema = z.object({
 });
 export type SignupInvitationDto = z.infer<typeof SignupInvitationDtoSchema>;
 
+const NewPasswordSchema = z
+  .string()
+  .min(12, 'Password must be at least 12 characters long')
+  .max(128);
+
+export const PasswordForgotDtoSchema = z.object({
+  email: z.string().email(),
+});
+export type PasswordForgotDto = z.infer<typeof PasswordForgotDtoSchema>;
+
+export const PasswordResetDtoSchema = z.object({
+  token: z.string().min(32).max(128),
+  newPassword: NewPasswordSchema,
+});
+export type PasswordResetDto = z.infer<typeof PasswordResetDtoSchema>;
+
 export const Verify2faDtoSchema = z.object({
-  code: z.string().length(6, '2FA code must be 6 digits'),
+  code: z.string().regex(/^\d{6}$/, '2FA code must be 6 digits'),
 });
 export type Verify2faDto = z.infer<typeof Verify2faDtoSchema>;
 
@@ -189,7 +221,16 @@ export interface JwtPayload {
   role: UserRole;
   displayName?: string;
   teamId?: string | null;
+  sid?: string;          // auth_sessions.id; absent on MFA enrollment tokens
+  exp?: number;
 }
+
+/**
+ * 'access': full API access token (aud hrvo-api).
+ * 'mfa_enroll': short-lived token that can only call /auth/2fa/setup and /auth/2fa/verify
+ * (aud hrvo-mfa-enroll), issued to mandatory-2FA roles that have not enrolled yet.
+ */
+export type TokenType = 'access' | 'mfa_enroll';
 
 export interface AuthenticatedUser {
   id: string;
@@ -198,6 +239,8 @@ export interface AuthenticatedUser {
   role: UserRole;
   displayName?: string;
   teamId?: string | null;
+  sessionId?: string;
+  tokenType?: TokenType;
 }
 
 export interface AuthTokens {

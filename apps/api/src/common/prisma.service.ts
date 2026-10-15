@@ -17,13 +17,22 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         },
       },
     });
-    this.pool = new pg.Pool({
+    this.pool = new pg.Pool(PrismaService.connectionConfig());
+  }
+
+  private static connectionConfig(): pg.ClientConfig {
+    return {
       host: process.env.PGHOST || 'localhost',
       port: Number(process.env.PGPORT || 5433),
       database: process.env.PGDATABASE || 'hrvo_dev',
       user: process.env.PGUSER || 'hrvo_app',
       password: process.env.PGPASSWORD || 'hrvo_app_pass',
-    });
+    };
+  }
+
+  /** A dedicated (non-pooled) connection for LISTEN; the caller owns and ends it. */
+  public createListenerClient(): pg.Client {
+    return new pg.Client(PrismaService.connectionConfig());
   }
 
   async onModuleInit(): Promise<void> {

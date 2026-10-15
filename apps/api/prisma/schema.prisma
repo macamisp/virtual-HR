@@ -1,6 +1,8 @@
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Migrations run as the schema owner; the app connects as non-owner hrvo_app (RLS enforced).
+  directUrl = env("DIRECT_DATABASE_URL")
 }
 
 generator client {
@@ -29,32 +31,33 @@ model Organization {
   monitoringConsents    MonitoringConsent[]
   invitations           Invitation[]
   authSessions          AuthSession[]
+  passwordResetTokens   PasswordResetToken[]
 
   @@map("organizations")
 }
 
 model User {
-  id                    String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId                 String                 @map("org_id") @db.Uuid
-  email                 String                 @db.VarChar(255)
-  displayName           String?                @map("display_name") @db.VarChar(100)
-  role                  String                 @default("EMPLOYEE") @db.VarChar(50)
-  teamId                String?                @map("team_id") @db.Uuid
-  managerId             String?                @map("manager_id") @db.Uuid
-  passwordHash          String?                @map("password_hash") @db.VarChar(255)
-  mfaEnabled            Boolean                @default(false) @map("mfa_enabled")
-  mfaSecret             String?                @map("mfa_secret") @db.VarChar(255)
-  mfaRecoveryCodes      String[]               @default([]) @map("mfa_recovery_codes")
-  failedLoginAttempts   Int                    @default(0) @map("failed_login_attempts")
-  lockedUntil           DateTime?              @map("locked_until") @db.Timestamptz()
-  status                String                 @default("ACTIVE") @db.VarChar(20)
-  createdAt             DateTime               @default(now()) @map("created_at") @db.Timestamptz()
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId               String    @map("org_id") @db.Uuid
+  email               String    @db.VarChar(255)
+  displayName         String?   @map("display_name") @db.VarChar(100)
+  role                String    @default("EMPLOYEE") @db.VarChar(50)
+  teamId              String?   @map("team_id") @db.Uuid
+  managerId           String?   @map("manager_id") @db.Uuid
+  passwordHash        String?   @map("password_hash") @db.VarChar(255)
+  mfaEnabled          Boolean   @default(false) @map("mfa_enabled")
+  mfaSecret           String?   @map("mfa_secret") @db.VarChar(255)
+  mfaRecoveryCodes    String[]  @default([]) @map("mfa_recovery_codes")
+  failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
+  lockedUntil         DateTime? @map("locked_until") @db.Timestamptz()
+  status              String    @default("ACTIVE") @db.VarChar(20)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
-  organization          Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  team                  Team?                  @relation("TeamMembers", fields: [teamId], references: [id], onDelete: SetNull)
-  manager               User?                  @relation("UserSubordinates", fields: [managerId], references: [id], onDelete: SetNull)
-  subordinates          User[]                 @relation("UserSubordinates")
-  ledTeams              Team[]                 @relation("TeamLead")
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  team         Team?        @relation("TeamMembers", fields: [teamId], references: [id], onDelete: SetNull)
+  manager      User?        @relation("UserSubordinates", fields: [managerId], references: [id], onDelete: SetNull)
+  subordinates User[]       @relation("UserSubordinates")
+  ledTeams     Team[]       @relation("TeamLead")
 
   attendanceSessions    AttendanceSession[]
   heartbeatNonces       HeartbeatNonce[]
@@ -69,16 +72,17 @@ model User {
   invitationsSent       Invitation[]           @relation("InvitedByUser")
   authSessions          AuthSession[]
   workSchedules         WorkSchedule[]
+  passwordResetTokens   PasswordResetToken[]
 
   @@map("users")
 }
 
 model Team {
-  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId         String         @map("org_id") @db.Uuid
-  name          String         @db.VarChar(100)
-  leadId        String?        @map("lead_id") @db.Uuid
-  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz()
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId     String   @map("org_id") @db.Uuid
+  name      String   @db.VarChar(100)
+  leadId    String?  @map("lead_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
   organization  Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
   lead          User?          @relation("TeamLead", fields: [leadId], references: [id], onDelete: SetNull)
@@ -90,83 +94,83 @@ model Team {
 }
 
 model WorkSchedule {
-  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId         String       @map("org_id") @db.Uuid
-  userId        String?      @map("user_id") @db.Uuid
-  teamId        String?      @map("team_id") @db.Uuid
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId         String    @map("org_id") @db.Uuid
+  userId        String?   @map("user_id") @db.Uuid
+  teamId        String?   @map("team_id") @db.Uuid
   days          Json
-  flexible      Boolean      @default(false)
-  graceMinutes  Int          @default(10) @map("grace_minutes")
-  effectiveFrom DateTime     @map("effective_from") @db.Date
-  effectiveTo   DateTime?    @map("effective_to") @db.Date
-  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  flexible      Boolean   @default(false)
+  graceMinutes  Int       @default(10) @map("grace_minutes")
+  effectiveFrom DateTime  @map("effective_from") @db.Date
+  effectiveTo   DateTime? @map("effective_to") @db.Date
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
-  organization  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user          User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  team          Team?        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team         Team?        @relation(fields: [teamId], references: [id], onDelete: Cascade)
 
   @@map("work_schedules")
 }
 
 model AttendanceSession {
-  id                   String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId                String              @map("org_id") @db.Uuid
-  userId               String              @map("user_id") @db.Uuid
-  deviceId             String              @map("device_id") @db.VarChar(100)
-  workDate             String              @map("work_date") @db.VarChar(10)
-  clockInAt            DateTime            @map("clock_in_at") @db.Timestamptz()
-  clockOutAt           DateTime?           @map("clock_out_at") @db.Timestamptz()
-  clockInSource        String              @map("clock_in_source") @db.VarChar(40)
-  clockOutSource       String?             @map("clock_out_source") @db.VarChar(40)
-  activeSeconds        Int                 @default(0) @map("active_seconds")
-  idleSeconds          Int                 @default(0) @map("idle_seconds")
-  breakSeconds         Int                 @default(0) @map("break_seconds")
-  meetingSeconds       Int                 @default(0) @map("meeting_seconds")
-  netSeconds           Int                 @default(0) @map("net_seconds")
-  lastHeartbeatAt      DateTime            @map("last_heartbeat_at") @db.Timestamptz()
-  ipIn                 String              @map("ip_in") @db.VarChar(45)
-  ipOut                String?             @map("ip_out") @db.VarChar(45)
-  flags                String[]            @default([])
-  status               String              @default("OPEN") @db.VarChar(20)
-  currentState         String              @default("ACTIVE") @map("current_state") @db.VarChar(20)
-  previousState        String?             @map("previous_state") @db.VarChar(20)
-  graceTimerExpiresAt  DateTime?           @map("grace_timer_expires_at") @db.Timestamptz()
-  consecutiveIdleSeconds Int               @default(0) @map("consecutive_idle_seconds")
-  createdAt            DateTime            @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt            DateTime            @default(now()) @map("updated_at") @db.Timestamptz()
+  id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId                  String    @map("org_id") @db.Uuid
+  userId                 String    @map("user_id") @db.Uuid
+  deviceId               String    @map("device_id") @db.VarChar(100)
+  workDate               String    @map("work_date") @db.VarChar(10)
+  clockInAt              DateTime  @map("clock_in_at") @db.Timestamptz()
+  clockOutAt             DateTime? @map("clock_out_at") @db.Timestamptz()
+  clockInSource          String    @map("clock_in_source") @db.VarChar(40)
+  clockOutSource         String?   @map("clock_out_source") @db.VarChar(40)
+  activeSeconds          Int       @default(0) @map("active_seconds")
+  idleSeconds            Int       @default(0) @map("idle_seconds")
+  breakSeconds           Int       @default(0) @map("break_seconds")
+  meetingSeconds         Int       @default(0) @map("meeting_seconds")
+  netSeconds             Int       @default(0) @map("net_seconds")
+  lastHeartbeatAt        DateTime  @map("last_heartbeat_at") @db.Timestamptz()
+  ipIn                   String    @map("ip_in") @db.VarChar(45)
+  ipOut                  String?   @map("ip_out") @db.VarChar(45)
+  flags                  String[]  @default([])
+  status                 String    @default("OPEN") @db.VarChar(20)
+  currentState           String    @default("ACTIVE") @map("current_state") @db.VarChar(20)
+  previousState          String?   @map("previous_state") @db.VarChar(20)
+  graceTimerExpiresAt    DateTime? @map("grace_timer_expires_at") @db.Timestamptz()
+  consecutiveIdleSeconds Int       @default(0) @map("consecutive_idle_seconds")
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt              DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
 
-  organization         Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user                 User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  segments             AttendanceSegment[]
-  corrections          AttendanceCorrection[]
-  presenceEvents       PresenceEvent[]
+  organization   Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  segments       AttendanceSegment[]
+  corrections    AttendanceCorrection[]
+  presenceEvents PresenceEvent[]
 
   @@map("attendance_sessions")
 }
 
 model AttendanceSegment {
-  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId           String            @map("org_id") @db.Uuid
-  sessionId       String            @map("session_id") @db.Uuid
-  state           String            @db.VarChar(20)
-  startedAt       DateTime          @map("started_at") @db.Timestamptz()
-  endedAt         DateTime?         @map("ended_at") @db.Timestamptz()
-  durationSeconds Int               @default(0) @map("duration_seconds")
-  meetingId       String?           @map("meeting_id") @db.VarChar(100)
-  flags           String[]          @default([])
-  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz()
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  sessionId       String    @map("session_id") @db.Uuid
+  state           String    @db.VarChar(20)
+  startedAt       DateTime  @map("started_at") @db.Timestamptz()
+  endedAt         DateTime? @map("ended_at") @db.Timestamptz()
+  durationSeconds Int       @default(0) @map("duration_seconds")
+  meetingId       String?   @map("meeting_id") @db.VarChar(100)
+  flags           String[]  @default([])
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
-  organization    Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  session         AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  organization Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  session      AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@map("attendance_segments")
 }
 
 model HeartbeatNonce {
-  orgId     String       @map("org_id") @db.Uuid
-  userId    String       @map("user_id") @db.Uuid
-  nonce     String       @db.VarChar(128)
-  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  orgId     String   @map("org_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  nonce     String   @db.VarChar(128)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -176,11 +180,11 @@ model HeartbeatNonce {
 }
 
 model DeviceSequence {
-  orgId        String       @map("org_id") @db.Uuid
-  userId       String       @map("user_id") @db.Uuid
-  deviceId     String       @map("device_id") @db.VarChar(100)
-  lastSequence Int          @default(0) @map("last_sequence")
-  updatedAt    DateTime     @default(now()) @map("updated_at") @db.Timestamptz()
+  orgId        String   @map("org_id") @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  deviceId     String   @map("device_id") @db.VarChar(100)
+  lastSequence Int      @default(0) @map("last_sequence")
+  updatedAt    DateTime @default(now()) @map("updated_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -190,10 +194,10 @@ model DeviceSequence {
 }
 
 model SessionSecret {
-  sessionId String       @id @map("session_id") @db.VarChar(128)
-  orgId     String       @map("org_id") @db.Uuid
-  secret    String       @db.VarChar(256)
-  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  sessionId String   @id @map("session_id") @db.VarChar(128)
+  orgId     String   @map("org_id") @db.Uuid
+  secret    String   @db.VarChar(256)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
@@ -201,110 +205,110 @@ model SessionSecret {
 }
 
 model AttendanceCorrection {
-  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId              String             @map("org_id") @db.Uuid
-  userId             String             @map("user_id") @db.Uuid
-  sessionId          String?            @map("session_id") @db.Uuid
-  requestedIn        DateTime           @map("requested_in") @db.Timestamptz()
-  requestedOut       DateTime           @map("requested_out") @db.Timestamptz()
-  reason             String             @db.Text
-  evidenceDocumentId String?            @map("evidence_document_id") @db.Uuid
-  status             String             @default("PENDING") @db.VarChar(20)
-  reviewerId         String?            @map("reviewer_id") @db.Uuid
-  reviewedAt         DateTime?          @map("reviewed_at") @db.Timestamptz()
-  reviewNote         String?            @map("review_note") @db.Text
-  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz()
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId              String    @map("org_id") @db.Uuid
+  userId             String    @map("user_id") @db.Uuid
+  sessionId          String?   @map("session_id") @db.Uuid
+  requestedIn        DateTime  @map("requested_in") @db.Timestamptz()
+  requestedOut       DateTime  @map("requested_out") @db.Timestamptz()
+  reason             String    @db.Text
+  evidenceDocumentId String?   @map("evidence_document_id") @db.Uuid
+  status             String    @default("PENDING") @db.VarChar(20)
+  reviewerId         String?   @map("reviewer_id") @db.Uuid
+  reviewedAt         DateTime? @map("reviewed_at") @db.Timestamptz()
+  reviewNote         String?   @map("review_note") @db.Text
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
-  organization       Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user               User               @relation("UserCorrections", fields: [userId], references: [id], onDelete: Cascade)
-  reviewer           User?              @relation("ReviewerCorrections", fields: [reviewerId], references: [id], onDelete: SetNull)
-  session            AttendanceSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  organization Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User               @relation("UserCorrections", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer     User?              @relation("ReviewerCorrections", fields: [reviewerId], references: [id], onDelete: SetNull)
+  session      AttendanceSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
 
   @@map("attendance_corrections")
 }
 
 model AttendanceDaily {
-  orgId             String       @map("org_id") @db.Uuid
-  userId            String       @map("user_id") @db.Uuid
-  workDate          String       @map("work_date") @db.VarChar(10)
-  firstIn           DateTime?    @map("first_in") @db.Timestamptz()
-  lastOut           DateTime?    @map("last_out") @db.Timestamptz()
-  activeSeconds     Int          @default(0) @map("active_seconds")
-  idleSeconds       Int          @default(0) @map("idle_seconds")
-  breakSeconds      Int          @default(0) @map("break_seconds")
-  meetingSeconds    Int          @default(0) @map("meeting_seconds")
-  netSeconds        Int          @default(0) @map("net_seconds")
-  expectedSeconds   Int          @default(0) @map("expected_seconds")
-  lateMinutes       Int          @default(0) @map("late_minutes")
-  earlyLeaveMinutes Int          @default(0) @map("early_leave_minutes")
-  overtimeMinutes   Int          @default(0) @map("overtime_minutes")
-  dayStatus         String       @default("PRESENT") @map("day_status") @db.VarChar(20)
-  createdAt         DateTime     @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt         DateTime     @default(now()) @map("updated_at") @db.Timestamptz()
+  orgId             String    @map("org_id") @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  workDate          String    @map("work_date") @db.VarChar(10)
+  firstIn           DateTime? @map("first_in") @db.Timestamptz()
+  lastOut           DateTime? @map("last_out") @db.Timestamptz()
+  activeSeconds     Int       @default(0) @map("active_seconds")
+  idleSeconds       Int       @default(0) @map("idle_seconds")
+  breakSeconds      Int       @default(0) @map("break_seconds")
+  meetingSeconds    Int       @default(0) @map("meeting_seconds")
+  netSeconds        Int       @default(0) @map("net_seconds")
+  expectedSeconds   Int       @default(0) @map("expected_seconds")
+  lateMinutes       Int       @default(0) @map("late_minutes")
+  earlyLeaveMinutes Int       @default(0) @map("early_leave_minutes")
+  overtimeMinutes   Int       @default(0) @map("overtime_minutes")
+  dayStatus         String    @default("PRESENT") @map("day_status") @db.VarChar(20)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
 
-  organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@id([orgId, userId, workDate])
   @@map("attendance_daily")
 }
 
 model DraftTimesheet {
-  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId             String       @map("org_id") @db.Uuid
-  userId            String       @map("user_id") @db.Uuid
-  workDate          String       @map("work_date") @db.VarChar(10)
-  periodStart       DateTime     @map("period_start") @db.Date
-  periodEnd         DateTime     @map("period_end") @db.Date
-  status            String       @default("DRAFT") @db.VarChar(20)
-  attendanceMinutes Int          @default(0) @map("attendance_minutes")
-  loggedMinutes     Int          @default(0) @map("logged_minutes")
-  billableMinutes   Int          @default(0) @map("billable_minutes")
-  varianceMinutes   Int          @default(0) @map("variance_minutes")
-  createdAt         DateTime     @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt         DateTime     @default(now()) @map("updated_at") @db.Timestamptz()
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId             String   @map("org_id") @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  workDate          String   @map("work_date") @db.VarChar(10)
+  periodStart       DateTime @map("period_start") @db.Date
+  periodEnd         DateTime @map("period_end") @db.Date
+  status            String   @default("DRAFT") @db.VarChar(20)
+  attendanceMinutes Int      @default(0) @map("attendance_minutes")
+  loggedMinutes     Int      @default(0) @map("logged_minutes")
+  billableMinutes   Int      @default(0) @map("billable_minutes")
+  varianceMinutes   Int      @default(0) @map("variance_minutes")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz()
 
-  organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([orgId, userId, workDate])
   @@map("draft_timesheets")
 }
 
 model PresenceEvent {
-  id        BigInt            @id @default(autoincrement())
-  orgId     String            @map("org_id") @db.Uuid
-  userId    String            @map("user_id") @db.Uuid
-  sessionId String?           @map("session_id") @db.Uuid
-  serverTs  DateTime          @map("server_ts") @db.Timestamptz()
-  clientTs  DateTime?         @map("client_ts") @db.Timestamptz()
-  eventType String            @map("event_type") @db.VarChar(50)
-  state     String            @db.VarChar(20)
-  seq       BigInt            @default(0)
-  ip        String?           @db.VarChar(45)
-  meta      Json?             @default("{}")
+  id        BigInt    @id @default(autoincrement())
+  orgId     String    @map("org_id") @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  sessionId String?   @map("session_id") @db.Uuid
+  serverTs  DateTime  @map("server_ts") @db.Timestamptz()
+  clientTs  DateTime? @map("client_ts") @db.Timestamptz()
+  eventType String    @map("event_type") @db.VarChar(50)
+  state     String    @db.VarChar(20)
+  seq       BigInt    @default(0)
+  ip        String?   @db.VarChar(45)
+  meta      Json?     @default("{}")
 
-  organization Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   session      AttendanceSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@map("presence_events")
 }
 
 model AuditLog {
-  id         BigInt       @id @default(autoincrement())
-  orgId      String       @map("org_id") @db.Uuid
-  actorId    String       @map("actor_id") @db.Uuid
-  action     String       @db.VarChar(80)
-  entityType String       @map("entity_type") @db.VarChar(80)
-  entityId   String       @map("entity_id") @db.Uuid
+  id         BigInt   @id @default(autoincrement())
+  orgId      String   @map("org_id") @db.Uuid
+  actorId    String   @map("actor_id") @db.Uuid
+  action     String   @db.VarChar(80)
+  entityType String   @map("entity_type") @db.VarChar(80)
+  entityId   String   @map("entity_id") @db.Uuid
   before     Json?
   after      Json?
-  ip         String?      @db.VarChar(45)
-  userAgent  String?      @map("user_agent") @db.Text
-  prevHash   String       @map("prev_hash") @db.VarChar(64)
-  hash       String       @db.VarChar(64)
-  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  ip         String?  @db.VarChar(45)
+  userAgent  String?  @map("user_agent") @db.Text
+  prevHash   String   @map("prev_hash") @db.VarChar(64)
+  hash       String   @db.VarChar(64)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   actor        User         @relation(fields: [actorId], references: [id], onDelete: Cascade)
@@ -313,32 +317,32 @@ model AuditLog {
 }
 
 model MonitoringConsent {
-  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId         String       @map("org_id") @db.Uuid
-  userId        String       @map("user_id") @db.Uuid
-  noticeVersion String       @map("notice_version") @db.VarChar(50)
-  acceptedAt    DateTime     @map("accepted_at") @db.Timestamptz()
-  ip            String?      @db.VarChar(45)
-  userAgent     String?      @map("user_agent") @db.Text
-  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId         String   @map("org_id") @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  noticeVersion String   @map("notice_version") @db.VarChar(50)
+  acceptedAt    DateTime @map("accepted_at") @db.Timestamptz()
+  ip            String?  @db.VarChar(45)
+  userAgent     String?  @map("user_agent") @db.Text
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
-  organization  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("monitoring_consents")
 }
 
 model Invitation {
-  id         String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId      String       @map("org_id") @db.Uuid
-  email      String       @db.VarChar(255)
-  role       String       @default("EMPLOYEE") @db.VarChar(50)
-  teamId     String?      @map("team_id") @db.Uuid
-  tokenHash  String       @map("token_hash") @db.VarChar(128)
-  invitedBy  String       @map("invited_by") @db.Uuid
-  expiresAt  DateTime     @map("expires_at") @db.Timestamptz()
-  acceptedAt DateTime?    @map("accepted_at") @db.Timestamptz()
-  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId      String    @map("org_id") @db.Uuid
+  email      String    @db.VarChar(255)
+  role       String    @default("EMPLOYEE") @db.VarChar(50)
+  teamId     String?   @map("team_id") @db.Uuid
+  tokenHash  String    @map("token_hash") @db.VarChar(128)
+  invitedBy  String    @map("invited_by") @db.Uuid
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz()
+  acceptedAt DateTime? @map("accepted_at") @db.Timestamptz()
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   team         Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
@@ -348,20 +352,43 @@ model Invitation {
 }
 
 model AuthSession {
-  id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId            String       @map("org_id") @db.Uuid
-  userId           String       @map("user_id") @db.Uuid
-  familyId         String       @map("family_id") @db.Uuid
-  refreshTokenHash String       @map("refresh_token_hash") @db.VarChar(128)
-  isRevoked        Boolean      @default(false) @map("is_revoked")
-  ip               String?      @db.VarChar(45)
-  userAgent        String?      @map("user_agent") @db.Text
-  expiresAt        DateTime     @map("expires_at") @db.Timestamptz()
-  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt        DateTime     @default(now()) @map("updated_at") @db.Timestamptz()
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId            String   @map("org_id") @db.Uuid
+  userId           String   @map("user_id") @db.Uuid
+  familyId         String   @map("family_id") @db.Uuid
+  refreshTokenHash String   @map("refresh_token_hash") @db.VarChar(128)
+  isRevoked        Boolean  @default(false) @map("is_revoked")
+  // ROTATED (normal refresh), LOGOUT, FAMILY_REUSE, PASSWORD_RESET, USER_DEACTIVATED
+  revokedReason    String?  @map("revoked_reason") @db.VarChar(40)
+  ip               String?  @db.VarChar(45)
+  userAgent        String?  @map("user_agent") @db.Text
+  expiresAt        DateTime @map("expires_at") @db.Timestamptz()
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz()
 
-  organization     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([refreshTokenHash])
+  @@index([orgId, familyId])
+  @@index([orgId, userId])
   @@map("auth_sessions")
+}
+
+// FR-AUTH-008: single-use password reset link, valid 30 minutes. Only the SHA-256 of the token is stored.
+model PasswordResetToken {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId       String    @map("org_id") @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  tokenHash   String    @unique @map("token_hash") @db.VarChar(128)
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz()
+  usedAt      DateTime? @map("used_at") @db.Timestamptz()
+  requestedIp String?   @map("requested_ip") @db.VarChar(45)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, userId])
+  @@map("password_reset_tokens")
 }

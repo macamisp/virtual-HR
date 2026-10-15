@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
+      # Empty database: every run proves the migrations build the schema from scratch.
       postgres:
         image: postgres:16-alpine
         env:
@@ -35,6 +36,23 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    env:
+      NODE_ENV: test
+      DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5433/hrvo_dev?schema=public
+      DATABASE_URL: postgresql://hrvo_app:hrvo_app_ci_pass@localhost:5433/hrvo_dev?schema=public
+      PGHOST: localhost
+      PGPORT: 5433
+      PGDATABASE: hrvo_dev
+      PGUSER: hrvo_app
+      PGPASSWORD: hrvo_app_ci_pass
+      PGADMIN_USER: postgres
+      PGADMIN_PASSWORD: postgres
+      PGRETENTION_USER: hrvo_retention
+      PGRETENTION_PASSWORD: hrvo_retention_ci_pass
+      CORS_ORIGINS: http://localhost:3000
+      BREACHED_PASSWORD_CHECK: local
+      MAIL_TRANSPORT: memory
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -48,27 +66,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Initialize Database Schema & RLS
-        env:
-          PGHOST: localhost
-          PGPORT: 5433
-          PGDATABASE: hrvo_dev
-          PGUSER: postgres
-          PGPASSWORD: postgres
-        run: |
-          psql -h localhost -p 5433 -U postgres -d hrvo_dev -f apps/api/src/attendance/schema.sql
+      - name: Generate per-run JWT secret (no secrets in the repository)
+        run: echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
 
-      - name: Run Test Suite & Coverage
-        env:
-          PGHOST: localhost
-          PGPORT: 5433
-          PGDATABASE: hrvo_dev
-          PGUSER: hrvo_app
-          PGPASSWORD: hrvo_app_pass
-          PGADMIN_USER: postgres
-          PGADMIN_PASSWORD: postgres
-          PGRETENTION_USER: hrvo_retention
-          PGRETENTION_PASSWORD: hrvo_retention_dev
-          JWT_SECRET: test-jwt-secret-min-32-characters-long
-          JWT_REFRESH_SECRET: test-jwt-refresh-secret-min-32-characters-long
+      - name: Validate Prisma schema and generate client
+        run: |
+          npx prisma validate --schema apps/api/prisma/schema.prisma
+          npm run db:generate
+
+      - name: Apply migrations to empty database (Prisma Migrate)
+        run: npm run db:migrate
+
+      - name: Provision application role logins
+        run: npm run db:provision-roles
+
+      - name: Fail on drift between migrations and schema.prisma
+        run: npx prisma migrate diff --from-url "$DIRECT_DATABASE_URL" --to-schema-datamodel apps/api/prisma/schema.prisma --exit-code
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run test suite with coverage
         run: npm run test:coverage

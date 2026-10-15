@@ -1,6 +1,8 @@
 # ADR 004: Application Shell, Multi-Tenant Authentication, RBAC, and Real-Time Gateway
 
-**Status:** Accepted  
+**Status:** Accepted, partly superseded by [ADR 005](005-auth-hardening-migrations-socket-lifecycle.md)  
+> Note (15 Oct 2026): this ADR cites several AUTH requirement IDs incorrectly and describes `schema.sql`, which has been replaced by Prisma migrations. See ADR 005 and `docs/traceability/auth.md` for the authoritative mapping.
+
 **Date:** 15 October 2026  
 **Context:** [`docs/SRS.md`](file:///run/media/macami/DataDrive/Hr%20virtual%20office/docs/SRS.md) Sections 3, 4, 5.1 (`FR-AUTH-001` through `FR-AUTH-011`), 8.3, 8.4, and [`AGENTS.md`](file:///run/media/macami/DataDrive/Hr%20virtual%20office/AGENTS.md).
 

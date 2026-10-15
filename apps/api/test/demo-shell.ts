@@ -15,16 +15,17 @@
  * Run via: npm run demo:shell
  */
 
+import './support/refuse-in-production.ts'; // must stay the first import
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
-import cookieParser from 'cookie-parser';
 import pg from 'pg';
 import { io, Socket } from 'socket.io-client';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import argon2 from 'argon2';
 import { generateSecret, generateSync } from 'otplib';
 import { AppModule } from '../src/app.module.ts';
+import { configureApp } from '../src/common/configure-app.ts';
 import { HeartbeatValidator } from '../src/attendance/heartbeat-validator.ts';
 import { UserRole } from '../../../packages/shared/src/auth/types.ts';
 
@@ -47,6 +48,7 @@ async function runDemo() {
     process.env.DATABASE_URL ||
     'postgresql://hrvo_app:hrvo_app_pass@localhost:5433/hrvo_dev?schema=public';
   process.env.JWT_SECRET = process.env.JWT_SECRET || 'hrvo-demo-jwt-secret-at-least-32-chars-long';
+  process.env.MAIL_TRANSPORT = process.env.MAIL_TRANSPORT || 'memory';
 
   const adminPool = new pg.Pool({
     host: process.env.PGHOST || 'localhost',
@@ -97,8 +99,7 @@ async function runDemo() {
   // 2. Bootstrap NestJS Application
   logStep(2, 'Bootstrapping NestJS Application Shell', 'Starting Express HTTP and Socket.IO server on ephemeral port');
   const app = await NestFactory.create(AppModule, { logger: false });
-  app.use(cookieParser());
-  app.enableCors({ origin: true, credentials: true });
+  configureApp(app);
   await app.listen(0);
 
   const server = app.getHttpServer();
@@ -154,7 +155,7 @@ async function runDemo() {
       body: JSON.stringify({ email: 'admin@demo-acme.com', password: defaultPassword, totpCode: totpToken }),
     });
     console.log(`  2FA Verification Status: ${step4.status}`);
-    console.log(`  Access Token Issued: ${step4.body.accessToken?.substring(0, 35)}...`);
+    console.log(`  Access Token Issued: ${step4.body.accessToken ? 'yes' : 'no'}`);
     console.log(`  User: ${step4.body.user?.displayName} (${step4.body.user?.role})`);
 
     // Scenario 2: Employee Login & Refresh Token Rotation + Reuse Detection
@@ -169,14 +170,14 @@ async function runDemo() {
     const workerSessionSecret = step5.body.sessionSecret;
     const initialRefreshCookie = storedCookies[0];
     console.log(`  Login Status: ${step5.status}`);
-    console.log(`  Worker Access Token: ${workerAccessToken?.substring(0, 35)}...`);
-    console.log(`  Worker Session Secret (Base64): ${workerSessionSecret}`);
-    console.log(`  HttpOnly Refresh Cookie Set: ${initialRefreshCookie?.substring(0, 45)}...`);
+    console.log(`  Worker Access Token Issued: ${workerAccessToken ? 'yes' : 'no'}`);
+    console.log(`  Worker Session Secret Issued: ${workerSessionSecret ? 'yes (never printed)' : 'no'}`);
+    console.log(`  HttpOnly Refresh Cookie Set: ${initialRefreshCookie ? "yes" : "no"}`);
 
     logStep(6, 'Legitimate Refresh Rotation', 'Worker exchanges refresh token for new access and refresh tokens');
     const step6 = await apiRequest('/auth/refresh', { method: 'POST' });
     console.log(`  Refresh Status: ${step6.status}`);
-    console.log(`  Rotated Access Token: ${step6.body.accessToken?.substring(0, 35)}...`);
+    console.log(`  Rotated Access Token Issued: ${step6.body.accessToken ? 'yes' : 'no'}`);
     const newWorkerAccessToken = step6.body.accessToken;
     const newRefreshCookie = storedCookies[0];
 

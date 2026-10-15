@@ -82,9 +82,9 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
        ('${orgB}', 'Hardening Org B', 'hardening-org-b', 'Asia/Colombo')`,
     );
 
-    // Seed team
+    // Seed team (lead_id is set after users exist: teams.lead_id references users)
     await adminPool.query(
-      `INSERT INTO teams (id, org_id, name, lead_id) VALUES ('${teamId}', '${orgId}', 'Core Hardening', '${userLead}')`,
+      `INSERT INTO teams (id, org_id, name) VALUES ('${teamId}', '${orgId}', 'Core Hardening')`,
     );
 
     // Seed users
@@ -96,6 +96,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
        ('${userLead}', '${orgId}', 'lead@hard.com', 'David Lead', 'TEAM_LEAD', '${teamId}', '${userMgr}'),
        ('${userOther}', '${orgId}', 'other@hard.com', 'Eve Outsider', 'EMPLOYEE', NULL, NULL)`,
     );
+    await adminPool.query(`UPDATE teams SET lead_id = '${userLead}' WHERE id = '${teamId}'`);
 
     repo = new PostgresAttendanceRepository();
     clock = new TestClock(new Date('2026-10-14T15:00:00.000Z')); // 20:30 Colombo

@@ -109,8 +109,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         opts.appPoolConfig || {
           host: process.env.PGHOST || 'localhost',
           port: parseInt(process.env.PGPORT || '5433', 10),
-          user: process.env.PGAPP_USER || 'hrvo_app',
-          password: process.env.PGAPP_PASSWORD || 'hrvo_app_pass',
+          user: process.env.PGUSER || 'hrvo_app',
+          password: process.env.PGPASSWORD || 'hrvo_app_pass',
           database: process.env.PGDATABASE || 'hrvo_dev',
         },
       );
@@ -150,8 +150,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       this.pool = new Pool({
         host: process.env.PGHOST || 'localhost',
         port: parseInt(process.env.PGPORT || '5433', 10),
-        user: process.env.PGAPP_USER || 'hrvo_app',
-        password: process.env.PGAPP_PASSWORD || 'hrvo_app_pass',
+        user: process.env.PGUSER || 'hrvo_app',
+        password: process.env.PGPASSWORD || 'hrvo_app_pass',
         database: process.env.PGDATABASE || 'hrvo_dev',
       });
       this.adminPool = new Pool({

@@ -1,9 +1,14 @@
 export * from './attendance/types.ts';
+export * from './attendance/heartbeat-signer.ts';
 export {
   Permission,
   ROLE_PERMISSIONS,
   hasPermission,
+  MFA_REQUIRED_ROLES,
+  isMfaRequiredRole,
   LoginDtoSchema,
+  PasswordForgotDtoSchema,
+  PasswordResetDtoSchema,
   InviteUserDtoSchema,
   SignupInvitationDtoSchema,
   Verify2faDtoSchema,
@@ -14,6 +19,9 @@ export {
 } from './auth/types.ts';
 export type {
   LoginDto,
+  PasswordForgotDto,
+  PasswordResetDto,
+  TokenType,
   InviteUserDto,
   SignupInvitationDto,
   Verify2faDto,

@@ -1,16 +1,11 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
-import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module.ts';
+import { configureApp } from './common/configure-app.ts';
 
 export async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-
-  app.use(cookieParser());
-  app.enableCors({
-    origin: true,
-    credentials: true,
-  });
+  configureApp(app);
 
   const port = process.env.PORT || 3001;
   await app.listen(port);

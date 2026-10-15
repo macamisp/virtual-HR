@@ -46,18 +46,18 @@ describe('Attendance Engine PostgreSQL Persistence & Edge Cases (FR-ATT-007..010
   before(async () => {
     repository = new PostgresAttendanceRepository({
       appPoolConfig: {
-        host: 'localhost',
-        port: 5433,
-        user: 'hrvo_app',
-        password: 'hrvo_app_pass',
-        database: 'hrvo_dev',
+        host: process.env.PGHOST || 'localhost',
+        port: Number(process.env.PGPORT || 5433),
+        user: process.env.PGUSER || 'hrvo_app',
+        password: process.env.PGPASSWORD || 'hrvo_app_pass',
+        database: process.env.PGDATABASE || 'hrvo_dev',
       },
       adminPoolConfig: {
-        host: 'localhost',
-        port: 5433,
-        user: 'postgres',
-        password: 'postgres',
-        database: 'hrvo_dev',
+        host: process.env.PGHOST || 'localhost',
+        port: Number(process.env.PGPORT || 5433),
+        user: process.env.PGADMIN_USER || 'postgres',
+        password: process.env.PGADMIN_PASSWORD || 'postgres',
+        database: process.env.PGDATABASE || 'hrvo_dev',
       },
     });
   });
