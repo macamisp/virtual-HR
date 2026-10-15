@@ -21,6 +21,8 @@ export default defineConfig({
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
     baseURL: webUrl,
+    // Same calendar day as the server's org timezone (Asia/Colombo), so "today" matches.
+    timezoneId: 'Asia/Colombo',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

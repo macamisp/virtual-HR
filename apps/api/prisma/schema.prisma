@@ -41,6 +41,10 @@ model Organization {
   taskComments                  TaskComment[]
   taskAttachments               TaskAttachment[]
   taskActivity                  TaskActivity[]
+  dailyPlans                    DailyPlan[]
+  dailyPlanItems                DailyPlanItem[]
+  weeklyPlans                   WeeklyPlan[]
+  taskSavedViews                TaskSavedView[]
 
   @@map("organizations")
 }
@@ -89,6 +93,9 @@ model User {
   taskComments          TaskComment[]
   taskAttachments       TaskAttachment[]
   taskActivity          TaskActivity[]
+  dailyPlans            DailyPlan[]
+  weeklyPlans           WeeklyPlan[]
+  taskSavedViews        TaskSavedView[]
 
   @@map("users")
 }
@@ -491,6 +498,7 @@ model Task {
   comments     TaskComment[]
   attachments  TaskAttachment[]
   activity     TaskActivity[]
+  planItems    DailyPlanItem[]
 
   @@index([orgId, assigneeId, status])
   @@index([orgId, reporterId])
@@ -573,4 +581,84 @@ model TaskActivity {
 
   @@index([taskId, createdAt])
   @@map("task_activity")
+}
+
+// ==================== Planning (SRS 7.4 daily_plans, daily_plan_items, weekly_plans) ====================
+
+/// Start-of-day plan and end-of-day report per user (FR-TASK-003).
+model DailyPlan {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        String    @map("org_id") @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  planDate     DateTime  @map("plan_date") @db.Date
+  goals        String    @default("") @db.Text
+  confirmedAt  DateTime? @map("confirmed_at") @db.Timestamptz()
+  eodSummary   String?   @map("eod_summary") @db.Text
+  blockers     String?   @db.Text
+  tomorrowPlan String?   @map("tomorrow_plan") @db.Text
+  submittedAt  DateTime? @map("submitted_at") @db.Timestamptz()
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items        DailyPlanItem[]
+
+  @@unique([userId, planDate])
+  @@index([orgId, planDate])
+  @@map("daily_plans")
+}
+
+model DailyPlanItem {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId         String    @map("org_id") @db.Uuid
+  planId        String    @map("plan_id") @db.Uuid
+  taskId        String    @map("task_id") @db.Uuid
+  sortOrder     Int       @default(0) @map("sort_order")
+  status        String    @default("PLANNED") @db.VarChar(20) // PLANNED, DONE, CARRIED_OVER
+  carriedToDate DateTime? @map("carried_to_date") @db.Date
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  plan         DailyPlan    @relation(fields: [planId], references: [id], onDelete: Cascade)
+  task         Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, taskId])
+  @@index([taskId])
+  @@map("daily_plan_items")
+}
+
+/// Weekly goals and capacity (FR-TASK-004). Goals: [{ id, text, done }].
+model WeeklyPlan {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  weekStart       DateTime  @map("week_start") @db.Date
+  goals           Json      @default("[]")
+  capacityMinutes Int?      @map("capacity_minutes")
+  submittedAt     DateTime? @map("submitted_at") @db.Timestamptz()
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, weekStart])
+  @@map("weekly_plans")
+}
+
+/// Saved task list filters per user (FR-TASK-005).
+model TaskSavedView {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId     String   @map("org_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  name      String   @db.VarChar(60)
+  filters   Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@map("task_saved_views")
 }

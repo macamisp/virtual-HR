@@ -25,6 +25,8 @@ export interface TaskFilters {
   includeDone?: boolean;
   dueFrom?: string;
   dueTo?: string;
+  plannedFrom?: string;
+  plannedTo?: string;
   assigneeId?: string;
 }
 
@@ -50,6 +52,8 @@ function qs(f: TaskFilters): string {
   if (f.includeDone === false) p.set('includeDone', 'false');
   if (f.dueFrom) p.set('dueFrom', f.dueFrom);
   if (f.dueTo) p.set('dueTo', f.dueTo);
+  if (f.plannedFrom) p.set('plannedFrom', f.plannedFrom);
+  if (f.plannedTo) p.set('plannedTo', f.plannedTo);
   if (f.assigneeId) p.set('assigneeId', f.assigneeId);
   return p.toString();
 }

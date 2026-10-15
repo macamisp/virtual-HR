@@ -5,11 +5,12 @@ import { UsersModule } from './users/users.module.ts';
 import { AttendanceModule } from './attendance/attendance.module.ts';
 import { AuditModule } from './audit/audit.module.ts';
 import { TasksModule } from './tasks/tasks.module.ts';
+import { PlanningModule } from './planning/planning.module.ts';
 import { RlsInterceptor } from './common/interceptors/rls.interceptor.ts';
 import { rateLimitModule } from './common/rate-limit.ts';
 
 @Module({
-  imports: [rateLimitModule(), AuthModule, UsersModule, AttendanceModule, AuditModule, TasksModule],
+  imports: [rateLimitModule(), AuthModule, UsersModule, AttendanceModule, AuditModule, TasksModule, PlanningModule],
   providers: [
     {
       provide: APP_INTERCEPTOR,

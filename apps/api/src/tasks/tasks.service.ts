@@ -115,6 +115,8 @@ export class TasksService {
     if (q.label) add((n) => `${n} = ANY(t.labels)`, q.label);
     if (q.dueFrom) add((n) => `t.due_date >= ${n}::date`, q.dueFrom);
     if (q.dueTo) add((n) => `t.due_date <= ${n}::date`, q.dueTo);
+    if (q.plannedFrom) add((n) => `t.planned_date >= ${n}::date`, q.plannedFrom);
+    if (q.plannedTo) add((n) => `t.planned_date <= ${n}::date`, q.plannedTo);
     if (q.q) add((n) => `t.title ILIKE ${n}`, `%${q.q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
     params.push(q.limit);
 

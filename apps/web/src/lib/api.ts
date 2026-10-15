@@ -18,7 +18,7 @@ export class ApiError extends Error {
 type AuthMode = 'access' | 'enrollment' | 'none';
 
 interface ApiOptions<T> {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   schema?: ZodType<T>;
   auth?: AuthMode;

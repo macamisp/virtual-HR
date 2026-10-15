@@ -1,6 +1,6 @@
 # ADR 007: Tasks, Planning and Task Notifications
 
-**Status:** Accepted (slice 1 of 3: tasks core)
+**Status:** Accepted (slices 1–2 of 3: tasks core, planning)
 **Date:** 15 October 2026
 **Requirements:** SRS 5.7 FR-TASK-001..008, 011, 016; 7.4 projects, tasks, daily_plans, daily_plan_items, weekly_plans; FR-NOTIF-001.
 
@@ -41,3 +41,24 @@ Packages were exact-pinned to the newest release at least two weeks old (supply-
 - `tasks-policy.test.ts`: visibility, permissions, assignment scope, acceptance rule, workflow.
 - `tasks-e2e.test.ts`: projects (codes, membership audit, visibility), all FR-TASK-001 fields, the visibility matrix (assignee, reporter, lead, project members, other team, HR, other org), list scopes and filters, RLS without tenant context, append-only activity, per-route permissions (Auditor 403), assignment scope, acceptance/decline, workflow and activity log, optimistic concurrency, mentions, checklist, attachment URL validation, subtasks, deletion, input validation.
 - Playwright `06-tasks.spec.ts`: create with sanitised Markdown (a `<script>` does not execute), subcontractor acceptance, @mention autocomplete, board move by keyboard and by drag.
+
+## 4. Slice 2: planning (FR-TASK-003, 004, 005)
+
+- **Schema** (`20261016000100_task_planning`): `daily_plans` (goals, `confirmed_at`, `eod_summary`, `blockers`, `tomorrow_plan`, `submitted_at`; unique per user and date), `daily_plan_items` (PLANNED / DONE / CARRIED_OVER, `carried_to_date`), `weekly_plans` (agreed schema; `week_start` must be a Monday by CHECK), `task_saved_views`. RLS forced on all.
+- **Day boundaries** use the organisation timezone (SRS 2.5). Working days and weekly capacity come from the user's work schedule (user schedule before team schedule), else Mon–Fri and 40 h. Rules are pure and unit-tested (`planning-rules.ts`).
+- **Today:** tasks assigned to me that are planned today, due today, overdue, or planned on an earlier day and not done (carry-over), plus everything in my confirmed plan; each item says why it is there. Done-today tasks are listed separately.
+- **Start of day:** confirming the plan stores goals and ordered items and sets each chosen task's `planned_date` to today (logged in task activity). Only own tasks can be planned.
+- **End of day:** the report (done / blocked / tomorrow, prefilled from the day) marks plan items DONE or CARRIED_OVER; unfinished items move to the next working day (logged). Reports on future days are refused.
+- **Weekly planner:** seven day columns with scheduled minutes (sum of estimates), unscheduled backlog, tasks carried over from earlier weeks, capacity meter, checkable weekly goals. Moving a task is a normal `PATCH /tasks/:id {plannedDate}` (assignee or manager), so it is versioned and logged.
+- **Drag and drop:** native HTML5 DnD; keyboard: "Plan for" select on every card and Alt+←/→ on a focused card; every move is announced in a live region.
+- **Calendar:** month grid by due date or planned date, mine / team / all scopes (uses `dueFrom/dueTo` or `plannedFrom/plannedTo` filters).
+- **Team workload** (`tasks.read.team`): per person in scope, capacity vs scheduled hours, per-day hours, open / overdue / awaiting-acceptance counts and whether today's report is in.
+- **Saved views:** up to 30 named filter sets per user on My Tasks; team-scope views require the team permission.
+- **Fix found by the browser test:** CORS allowed GET/POST/PATCH/DELETE but not PUT, so the weekly-plan save failed in browsers only. PUT is now allowed and asserted in the CORS preflight test. The goals card also shows "Saving… / Goals saved" so an unsaved change is never shown as saved.
+
+### Tests (slice 2)
+
+- `planning-rules.test.ts`: week boundaries, working days, carry-over target, Today reasons, capacity.
+- `planning-e2e.test.ts`: Today composition and reasons, plan confirmation (own tasks only, logged), end-of-day report and carry-over, weekly capacity from a work schedule, goals, Monday validation, workload scope, saved views, RLS.
+- Playwright `07-planning.spec.ts`: plan + end-of-day with carry-over, weekly drag and Alt+→ keyboard move, persisted goals, workload "Report in", calendar.
+

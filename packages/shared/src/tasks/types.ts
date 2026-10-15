@@ -142,6 +142,8 @@ export const TaskListQuerySchema = z.object({
   q: z.string().trim().max(100).optional(),
   dueFrom: workDate.optional(),
   dueTo: workDate.optional(),
+  plannedFrom: workDate.optional(),
+  plannedTo: workDate.optional(),
   includeDone: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
   limit: z.coerce.number().int().min(1).max(500).default(200),
 });

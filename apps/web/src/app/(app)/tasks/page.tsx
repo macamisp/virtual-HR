@@ -15,6 +15,7 @@ import { AcceptanceBadge, PriorityBadge, StatusBadge, isOverdue, minutesLabel } 
 import { TaskViewsNav } from '@/components/tasks/task-views-nav';
 import { Permission, useCan } from '@/lib/permissions';
 import { useProjects, useTasks, type TaskFilters } from '@/lib/task-queries';
+import { useSavedViewMutation, useSavedViews } from '@/lib/planning-queries';
 import { formatWorkDate, toWorkDate } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
@@ -50,6 +51,7 @@ export default function MyTasksPage() {
           </Button>
         ))}
       </div>
+      <SavedViewsBar filters={filters} onApply={(f) => setFilters(f)} />
       <Card>
         <CardContent className="grid gap-3 pt-6 sm:grid-cols-2 lg:grid-cols-5">
           <div className="space-y-1.5 lg:col-span-2">
@@ -136,3 +138,43 @@ export default function MyTasksPage() {
     </div>
   );
 }
+
+/** FR-TASK-005 saved views: named filter sets per user. */
+function SavedViewsBar({ filters, onApply }: { filters: TaskFilters; onApply: (f: TaskFilters) => void }) {
+  const views = useSavedViews();
+  const change = useSavedViewMutation();
+  const [selected, setSelected] = useState('');
+  const [name, setName] = useState('');
+  return (
+    <div className="flex flex-wrap items-end gap-3">
+      <div className="space-y-1.5">
+        <Label htmlFor="saved-view">Saved views</Label>
+        <NativeSelect id="saved-view" className="w-56" value={selected} onChange={(e) => {
+          setSelected(e.target.value);
+          const v = views.data?.find((x) => x.id === e.target.value);
+          if (v) onApply({ ...v.filters, scope: v.filters.scope });
+        }}>
+          <option value="">{views.isPending ? 'Loading…' : views.data?.length ? 'Choose a view' : 'No saved views'}</option>
+          {(views.data ?? []).map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+        </NativeSelect>
+      </div>
+      {selected ? (
+        <Button variant="ghost" size="sm" onClick={() => change.mutate({ deleteId: selected }, { onSuccess: () => setSelected('') })}>Delete view</Button>
+      ) : null}
+      <form className="flex items-end gap-2" onSubmit={(e) => {
+        e.preventDefault();
+        if (!name.trim()) return;
+        const { scope, status, projectId, priority, q, includeDone } = filters;
+        change.mutate({ save: { name: name.trim(), filters: { scope, status, projectId, priority, q, includeDone } } }, { onSuccess: () => setName('') });
+      }}>
+        <div className="space-y-1.5">
+          <Label htmlFor="view-name">Save current filters as</Label>
+          <Input id="view-name" className="w-48" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} />
+        </div>
+        <Button type="submit" variant="secondary" size="sm" disabled={!name.trim() || change.isPending}>Save view</Button>
+      </form>
+      {change.isError ? <p className="text-sm font-medium text-destructive">{change.error.message}</p> : null}
+    </div>
+  );
+}
+

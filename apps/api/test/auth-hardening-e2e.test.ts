@@ -573,6 +573,8 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       assert.equal(ok.headers.get('access-control-allow-origin'), ALLOWED_ORIGIN);
       assert.equal(ok.headers.get('access-control-allow-credentials'), 'true');
       assert.match(ok.headers.get('access-control-allow-headers') ?? '', /x-hrvo-csrf/i);
+      // Every verb the web app uses must pass the preflight (PUT is used by the weekly planner).
+      assert.match(ok.headers.get('access-control-allow-methods') ?? '', /PUT/);
       const evil = await preflight(EVIL_ORIGIN);
       assert.equal(evil.headers.get('access-control-allow-origin'), null);
     });

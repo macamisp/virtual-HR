@@ -53,7 +53,7 @@ export function configureApp(app: INestApplication): void {
       callback(null, isOriginAllowed(origin));
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization', CSRF_HEADER],
     maxAge: 600,
   });
