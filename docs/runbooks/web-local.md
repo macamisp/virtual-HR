@@ -26,6 +26,10 @@ S3-compatible storage (`S3_*`, plus `NEXT_PUBLIC_STORAGE_URL` set to the storage
 uploads to) and clamd (`CLAMAV_HOST`/`CLAMAV_PORT`). Uploads stay "Scanning for viruses" until
 clamd has loaded its signatures (a few minutes after its first start).
 
+The confidential vault (ADR 010) also needs a separate recovery key:
+`DOCUMENT_KMS_RECOVERY_KEY=$(openssl rand -base64 32)` (different from the data key). Share links
+point at `APP_WEB_URL`.
+
 ## 2. Prepare the database (first time, or after pulling new migrations)
 
 A fresh database:

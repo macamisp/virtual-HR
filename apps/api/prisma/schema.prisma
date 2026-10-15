@@ -10,22 +10,24 @@ generator client {
 }
 
 model Organization {
-  id                            String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name                          String                 @db.VarChar(200)
-  slug                          String                 @unique @db.VarChar(80)
-  timezone                      String                 @default("Asia/Colombo") @db.VarChar(64)
+  id                            String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                          String                    @db.VarChar(200)
+  slug                          String                    @unique @db.VarChar(80)
+  timezone                      String                    @default("Asia/Colombo") @db.VarChar(64)
   /// FR-TASK-007: hours before an unaccepted task is escalated.
-  taskAcceptanceEscalationHours Int                    @default(24) @map("task_acceptance_escalation_hours")
+  taskAcceptanceEscalationHours Int                       @default(24) @map("task_acceptance_escalation_hours")
   /// FR-TS-002: WEEKLY, BIWEEKLY or MONTHLY; bi-weekly blocks count from the anchor Monday.
-  timesheetPeriod               String                 @default("WEEKLY") @map("timesheet_period") @db.VarChar(10)
-  timesheetPeriodAnchor         DateTime               @default(dbgenerated("'2026-01-05'::date")) @map("timesheet_period_anchor") @db.Date
+  timesheetPeriod               String                    @default("WEEKLY") @map("timesheet_period") @db.VarChar(10)
+  timesheetPeriodAnchor         DateTime                  @default(dbgenerated("'2026-01-05'::date")) @map("timesheet_period_anchor") @db.Date
   /// FR-TS-004 / SRS 6.4: manual time per day before entries are flagged (0..480).
-  manualTimeLimitMinutes        Int                    @default(120) @map("manual_time_limit_minutes")
+  manualTimeLimitMinutes        Int                       @default(120) @map("manual_time_limit_minutes")
   /// FR-TS-005 / SRS 6.4: variance alert threshold in percent (5..50).
-  timesheetVariancePct          Int                    @default(15) @map("timesheet_variance_pct")
+  timesheetVariancePct          Int                       @default(15) @map("timesheet_variance_pct")
   /// FR-TS-012: days after the period end by which a timesheet should be submitted.
-  timesheetSubmitDueDays        Int                    @default(1) @map("timesheet_submit_due_days")
-  createdAt                     DateTime               @default(now()) @map("created_at") @db.Timestamptz()
+  timesheetSubmitDueDays        Int                       @default(1) @map("timesheet_submit_due_days")
+  /// FR-DOC-005 / SRS 6.4: minutes a re-authentication opens the vault (1..60).
+  vaultReauthMinutes            Int                       @default(10) @map("vault_reauth_minutes")
+  createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz()
   users                         User[]
   teams                         Team[]
   workSchedules                 WorkSchedule[]
@@ -67,6 +69,10 @@ model Organization {
   documentAcl                   DocumentAcl[]
   documentAccessLogs            DocumentAccessLog[]
   contracts                     Contract[]
+  vaultReauth                   VaultReauth[]
+  documentPasswordAttempts      DocumentPasswordAttempt[]
+  documentShareLinks            DocumentShareLink[]
+  documentRetentionRules        DocumentRetentionRule[]
 
   @@map("organizations")
 }
@@ -931,7 +937,7 @@ model Document {
   id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   orgId             String    @map("org_id") @db.Uuid
   folderId          String?   @map("folder_id") @db.Uuid
-  title             String    @db.VarChar(300)
+  title             String?   @db.VarChar(300)
   category          String    @db.VarChar(20)
   confidentiality   String    @default("NORMAL") @db.VarChar(20)
   ownerId           String    @map("owner_id") @db.Uuid
@@ -943,21 +949,33 @@ model Document {
   passwordProtected Boolean   @default(false) @map("password_protected")
   currentVersionId  String?   @unique @map("current_version_id") @db.Uuid
   legalHold         Boolean   @default(false) @map("legal_hold")
+  /// FR-DOC-007: titles of CONFIDENTIAL/RESTRICTED documents, sealed with a per-document metadata key.
+  titleEnc          Bytes?    @map("title_enc")
+  metaKeyWrapped    Bytes?    @map("meta_key_wrapped")
+  metaKeyId         String?   @map("meta_key_id") @db.VarChar(100)
+  legalHoldReason   String?   @map("legal_hold_reason") @db.Text
+  legalHoldBy       String?   @map("legal_hold_by") @db.Uuid
+  legalHoldAt       DateTime? @map("legal_hold_at") @db.Timestamptz()
   deletedAt         DateTime? @map("deleted_at") @db.Timestamptz()
+  deletedBy         String?   @map("deleted_by") @db.Uuid
+  /// FR-DOC-017: keys destroyed; content unrecoverable.
+  shreddedAt        DateTime? @map("shredded_at") @db.Timestamptz()
   version           Int       @default(1)
   createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
 
-  organization   Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  folder         DocumentFolder?   @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  owner          User              @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: Restrict)
-  linkedUser     User?             @relation("DocumentLinkedUser", fields: [linkedUserId], references: [id], onDelete: SetNull)
-  linkedContract Contract?         @relation("DocumentLinkedContract", fields: [linkedContractId], references: [id], onDelete: SetNull)
-  linkedProject  Project?          @relation(fields: [linkedProjectId], references: [id], onDelete: SetNull)
-  currentVersion DocumentVersion?  @relation("DocumentCurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
-  versions       DocumentVersion[] @relation("DocumentVersions")
-  acl            DocumentAcl[]
-  contracts      Contract[]        @relation("ContractDocument")
+  organization     Organization              @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  folder           DocumentFolder?           @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  owner            User                      @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  linkedUser       User?                     @relation("DocumentLinkedUser", fields: [linkedUserId], references: [id], onDelete: SetNull)
+  linkedContract   Contract?                 @relation("DocumentLinkedContract", fields: [linkedContractId], references: [id], onDelete: SetNull)
+  linkedProject    Project?                  @relation(fields: [linkedProjectId], references: [id], onDelete: SetNull)
+  currentVersion   DocumentVersion?          @relation("DocumentCurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  versions         DocumentVersion[]         @relation("DocumentVersions")
+  acl              DocumentAcl[]
+  contracts        Contract[]                @relation("ContractDocument")
+  shareLinks       DocumentShareLink[]
+  passwordAttempts DocumentPasswordAttempt[]
 
   @@index([orgId, folderId])
   @@index([orgId, ownerId])
@@ -968,32 +986,35 @@ model Document {
 
 /// FR-DOC-004/007/013: one stored version with its own wrapped data key and scan status.
 model DocumentVersion {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId          String    @map("org_id") @db.Uuid
-  documentId     String    @map("document_id") @db.Uuid
-  versionNo      Int       @map("version_no")
-  storageKey     String?   @map("storage_key") @db.Text
-  stagingKey     String?   @map("staging_key") @db.Text
-  uploadId       String?   @map("upload_id") @db.Text
-  fileNameEnc    Bytes     @map("file_name_enc")
-  mimeType       String?   @map("mime_type") @db.VarChar(120)
-  sizeBytes      BigInt?   @map("size_bytes")
-  declaredSize   BigInt    @map("declared_size")
-  sha256         String?   @db.Char(64)
-  dekWrappedKms  Bytes     @map("dek_wrapped_kms")
-  kmsKeyId       String    @map("kms_key_id") @db.VarChar(100)
-  iv             Bytes?
-  authTag        Bytes?    @map("auth_tag")
-  dekWrappedPw   Bytes?    @map("dek_wrapped_pw")
-  pwSalt         Bytes?    @map("pw_salt")
-  pwKdfParams    Json?     @map("pw_kdf_params")
-  scanStatus     String    @default("UPLOADING") @map("scan_status") @db.VarChar(12)
-  scanDetail     String?   @map("scan_detail") @db.VarChar(300)
-  restoredFromId String?   @map("restored_from_id") @db.Uuid
-  uploadedBy     String    @map("uploaded_by") @db.Uuid
-  uploadedAt     DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz()
-  completedAt    DateTime? @map("completed_at") @db.Timestamptz()
-  scannedAt      DateTime? @map("scanned_at") @db.Timestamptz()
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId              String    @map("org_id") @db.Uuid
+  documentId         String    @map("document_id") @db.Uuid
+  versionNo          Int       @map("version_no")
+  storageKey         String?   @map("storage_key") @db.Text
+  stagingKey         String?   @map("staging_key") @db.Text
+  uploadId           String?   @map("upload_id") @db.Text
+  fileNameEnc        Bytes?    @map("file_name_enc")
+  mimeType           String?   @map("mime_type") @db.VarChar(120)
+  sizeBytes          BigInt?   @map("size_bytes")
+  declaredSize       BigInt    @map("declared_size")
+  sha256             String?   @db.Char(64)
+  dekWrappedKms      Bytes?    @map("dek_wrapped_kms")
+  kmsKeyId           String    @map("kms_key_id") @db.VarChar(100)
+  iv                 Bytes?
+  authTag            Bytes?    @map("auth_tag")
+  dekWrappedPw       Bytes?    @map("dek_wrapped_pw")
+  pwSalt             Bytes?    @map("pw_salt")
+  pwKdfParams        Json?     @map("pw_kdf_params")
+  /// SRS 10.1 step 5: escrow for password recovery, under the separate recovery key.
+  dekWrappedRecovery Bytes?    @map("dek_wrapped_recovery")
+  recoveryKeyId      String?   @map("recovery_key_id") @db.VarChar(100)
+  scanStatus         String    @default("UPLOADING") @map("scan_status") @db.VarChar(12)
+  scanDetail         String?   @map("scan_detail") @db.VarChar(300)
+  restoredFromId     String?   @map("restored_from_id") @db.Uuid
+  uploadedBy         String    @map("uploaded_by") @db.Uuid
+  uploadedAt         DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz()
+  completedAt        DateTime? @map("completed_at") @db.Timestamptz()
+  scannedAt          DateTime? @map("scanned_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   document     Document     @relation("DocumentVersions", fields: [documentId], references: [id], onDelete: Cascade)
@@ -1046,4 +1067,73 @@ model DocumentAccessLog {
   @@index([orgId, documentId, createdAt])
   @@index([orgId, userId, createdAt])
   @@map("document_access_logs")
+}
+
+/// FR-DOC-005: last re-authentication per login (session family; access tokens rotate).
+model VaultReauth {
+  familyId          String   @id @map("family_id") @db.Uuid
+  orgId             String   @map("org_id") @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  reauthenticatedAt DateTime @map("reauthenticated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, userId])
+  @@map("vault_reauth")
+}
+
+/// FR-DOC-006: wrong document passwords per user and document, with a temporary lockout.
+model DocumentPasswordAttempt {
+  orgId       String    @map("org_id") @db.Uuid
+  documentId  String    @map("document_id") @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  failures    Int       @default(0)
+  lockedUntil DateTime? @map("locked_until") @db.Timestamptz()
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  document     Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@id([documentId, userId])
+  @@map("document_password_attempts")
+}
+
+/// FR-DOC-010: time-limited external links. Only the token's SHA-256 is stored.
+model DocumentShareLink {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId          String    @map("org_id") @db.Uuid
+  documentId     String    @map("document_id") @db.Uuid
+  tokenHash      String    @unique @map("token_hash") @db.Char(64)
+  passwordHash   String?   @map("password_hash") @db.Text
+  viewOnly       Boolean   @default(false) @map("view_only")
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz()
+  maxDownloads   Int?      @map("max_downloads")
+  downloadCount  Int       @default(0) @map("download_count")
+  failedAttempts Int       @default(0) @map("failed_attempts")
+  revokedAt      DateTime? @map("revoked_at") @db.Timestamptz()
+  revokedBy      String?   @map("revoked_by") @db.Uuid
+  createdBy      String    @map("created_by") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  lastUsedAt     DateTime? @map("last_used_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  document     Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, documentId])
+  @@map("document_share_links")
+}
+
+/// FR-DOC-017: per-category retention (minimum keep, optional automatic shredding).
+model DocumentRetentionRule {
+  orgId          String   @map("org_id") @db.Uuid
+  category       String   @db.VarChar(20)
+  minYears       Int?     @map("min_years")
+  autoShredYears Int?     @map("auto_shred_years")
+  updatedBy      String?  @map("updated_by") @db.Uuid
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([orgId, category])
+  @@map("document_retention_rules")
 }

@@ -14,17 +14,18 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { deflateRawSync } from 'node:zlib';
 import {
-  LocalKms,
+  LocalKeyProvider,
   createDecryptStream,
   createEncryptStream,
   generateDek,
-  kmsFromEnv,
+  keyProviderFromEnv,
 } from '../src/documents/crypto.ts';
 import { checkExtension, parseZipEntries, sniff } from '../src/documents/sniff.ts';
 import { scanStream } from '../src/documents/clamav.ts';
 import { documentAbilities, effectiveLevel } from '../src/documents/document-policy.ts';
 
 const KEY = Buffer.alloc(32, 7).toString('base64');
+const RKEY = Buffer.alloc(32, 6).toString('base64');
 const ctx = { orgId: 'org-1', documentId: 'doc-1' };
 
 async function collect(s: NodeJS.ReadableStream): Promise<Buffer> {
@@ -35,7 +36,7 @@ async function collect(s: NodeJS.ReadableStream): Promise<Buffer> {
 
 describe('Envelope encryption (FR-DOC-007)', () => {
   it('wraps and unwraps a DEK only with the same encryption context', async () => {
-    const kms = new LocalKms(KEY, 'local-1');
+    const kms = new LocalKeyProvider({ dataKey: KEY, recoveryKey: RKEY });
     const dek = generateDek();
     assert.equal(dek.length, 32);
     const w = await kms.wrap(dek, ctx);
@@ -47,7 +48,7 @@ describe('Envelope encryption (FR-DOC-007)', () => {
     const tampered = Buffer.from(w.wrapped);
     tampered[tampered.length - 1]! ^= 1;
     await assert.rejects(kms.unwrap(tampered, w.keyId, ctx));
-    await assert.rejects(new LocalKms(Buffer.alloc(32, 8).toString('base64'), 'local-1').unwrap(w.wrapped, w.keyId, ctx));
+    await assert.rejects(new LocalKeyProvider({ dataKey: Buffer.alloc(32, 8).toString('base64'), recoveryKey: RKEY }).unwrap(w.wrapped, w.keyId, ctx));
     await assert.rejects(kms.unwrap(w.wrapped, 'other-key', ctx), /key/i);
   });
 
@@ -81,10 +82,10 @@ describe('Envelope encryption (FR-DOC-007)', () => {
   });
 
   it('refuses a missing or short key, and the local KMS in production', () => {
-    assert.throws(() => new LocalKms(Buffer.alloc(16).toString('base64'), 'k'), /32 bytes/);
-    assert.throws(() => kmsFromEnv({ DOCUMENT_KMS_PROVIDER: 'local' }), /DOCUMENT_KMS_LOCAL_KEY/);
-    assert.throws(() => kmsFromEnv({ NODE_ENV: 'production', DOCUMENT_KMS_PROVIDER: 'local', DOCUMENT_KMS_LOCAL_KEY: KEY }), /production/);
-    assert.ok(kmsFromEnv({ DOCUMENT_KMS_PROVIDER: 'local', DOCUMENT_KMS_LOCAL_KEY: KEY }) instanceof LocalKms);
+    assert.throws(() => new LocalKeyProvider({ dataKey: Buffer.alloc(16).toString('base64'), recoveryKey: RKEY }), /32 bytes/);
+    assert.throws(() => keyProviderFromEnv({ DOCUMENT_KMS_PROVIDER: 'local' }), /DOCUMENT_KMS_LOCAL_KEY/);
+    assert.throws(() => keyProviderFromEnv({ NODE_ENV: 'production', DOCUMENT_KMS_PROVIDER: 'local', DOCUMENT_KMS_LOCAL_KEY: KEY, DOCUMENT_KMS_RECOVERY_KEY: RKEY }), /production/);
+    assert.ok(keyProviderFromEnv({ DOCUMENT_KMS_PROVIDER: 'local', DOCUMENT_KMS_LOCAL_KEY: KEY, DOCUMENT_KMS_RECOVERY_KEY: RKEY }) instanceof LocalKeyProvider);
   });
 });
 
@@ -225,11 +226,13 @@ describe('Document permission (FR-DOC-009)', () => {
     assert.equal(effectiveLevel({ isHr: false, isOwner: false, isLinked: false, aclLevel: 0 }), 0);
   });
 
-  it('maps levels to abilities; nothing is downloadable until it is clean', () => {
-    assert.deepEqual(documentAbilities(1, 'CLEAN'), { canView: true, canPreview: true, canDownload: false, canEdit: false, canManage: false });
-    assert.deepEqual(documentAbilities(2, 'CLEAN'), { canView: true, canPreview: true, canDownload: true, canEdit: false, canManage: false });
-    assert.deepEqual(documentAbilities(4, 'PENDING'), { canView: true, canPreview: false, canDownload: false, canEdit: true, canManage: true });
-    assert.deepEqual(documentAbilities(4, null), { canView: true, canPreview: false, canDownload: false, canEdit: true, canManage: true });
-    assert.deepEqual(documentAbilities(0, 'CLEAN'), { canView: false, canPreview: false, canDownload: false, canEdit: false, canManage: false });
+  it('maps levels to abilities; the original file needs DOWNLOAD; nothing opens until it is clean', () => {
+    const f = { previewable: true, watermarkable: true };
+    assert.deepEqual(documentAbilities(1, 'CLEAN', f), { canView: true, canPreview: false, canViewOnly: true, canDownload: false, canEdit: false, canManage: false });
+    assert.deepEqual(documentAbilities(2, 'CLEAN', f), { canView: true, canPreview: true, canViewOnly: true, canDownload: true, canEdit: false, canManage: false });
+    assert.deepEqual(documentAbilities(4, 'PENDING', f), { canView: true, canPreview: false, canViewOnly: false, canDownload: false, canEdit: true, canManage: true });
+    assert.deepEqual(documentAbilities(4, null, f), { canView: true, canPreview: false, canViewOnly: false, canDownload: false, canEdit: true, canManage: true });
+    assert.deepEqual(documentAbilities(0, 'CLEAN', f), { canView: false, canPreview: false, canViewOnly: false, canDownload: false, canEdit: false, canManage: false });
+    assert.equal(documentAbilities(1, 'CLEAN', { previewable: false, watermarkable: false }).canViewOnly, false, 'a text file cannot be stamped');
   });
 });

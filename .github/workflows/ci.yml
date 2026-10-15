@@ -66,6 +66,9 @@ jobs:
       S3_CREATE_BUCKET: 'true'
       CLAMAV_HOST: localhost
       CLAMAV_PORT: 3310
+      # The suites sign the same people in and open documents many times per minute.
+      RATE_LIMIT_VAULT: '500'
+      RATE_LIMIT_SHARE: '500'
 
     steps:
       - name: Checkout repository
@@ -84,6 +87,7 @@ jobs:
         run: |
           echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
           echo "DOCUMENT_KMS_LOCAL_KEY=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+          echo "DOCUMENT_KMS_RECOVERY_KEY=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
 
       # Started as steps: SeaweedFS needs command arguments, which job services cannot pass.
       - name: Start S3-compatible storage (SeaweedFS) and ClamAV
@@ -116,7 +120,7 @@ jobs:
       - name: Wait for S3 and clamd
         run: |
           for i in $(seq 1 60); do curl -s -o /dev/null http://localhost:8333/ && break; sleep 2; done
-          for i in $(seq 1 90); do docker logs clamav 2>&1 | grep -q "Listening daemon" && break; sleep 5; done
+          for i in $(seq 1 90); do docker logs clamav 2>&1 | grep -qE "Listening daemon|socket found, clamd started" && break; sleep 5; done
           docker logs clamav 2>&1 | tail -3
 
       - name: Run test suite with coverage

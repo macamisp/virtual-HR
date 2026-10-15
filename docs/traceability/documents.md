@@ -15,3 +15,14 @@
 | SRS 7.4 contracts | `contracts.service.ts`, `contracts` table | documents-e2e "Contracts" |
 
 Decisions and known gaps: ADR 009.
+
+## Confidential vault (ADR 010)
+
+| Requirement | Implementation | Tests |
+| --- | --- | --- |
+| FR-DOC-005 re-authentication window | `vault.service.ts` reauthenticate / assertReauth, `vault_reauth` | vault-rules "re-authentication", vault-e2e "Re-authentication window", Playwright 11 |
+| FR-DOC-006 document password, lockout, recovery | `document-vault.ts`, `vault.service.ts` unlock / setPassword / recoverPassword | vault-rules "Per-document password", vault-e2e "Document password", Playwright 11 |
+| FR-DOC-007 envelope encryption, confidential names and titles | `crypto.ts` KeyProvider, `sealTitle`, scanner | vault-e2e "dumps reveal nothing", "Tampering" |
+| FR-DOC-010 secure share links | `share-links.service.ts`, `PublicShareController`, `fn_share_link_lookup` | vault-rules share tokens, vault-e2e "Share links", Playwright 11 |
+| FR-DOC-011 view-only watermark | `watermark.ts`, `document-content.service.ts` | vault-rules watermark, vault-e2e "VIEW gets only the watermarked rendering", Playwright 11 |
+| FR-DOC-017 trash, crypto-shredding, legal hold, retention | `document-maintenance.service.ts` shred / shredDue, `vault.service.ts` | vault-rules retention/trash, vault-e2e "Trash, crypto-shredding…" |

@@ -24,7 +24,7 @@ const CONF_LABEL: Record<Confidentiality, string> = { NORMAL: 'Normal', CONFIDEN
  * FR-DOC-001 upload: drag and drop or pick, up to 100 MB, straight to storage in parts.
  * With `documentId` it uploads a new version (FR-DOC-004) and asks no metadata.
  */
-export function UploadPanel({ documentId, defaultFolderId, onDone }: { documentId?: string; defaultFolderId?: string; onDone: (d: DocumentDetail) => void }) {
+export function UploadPanel({ documentId, defaultFolderId, needsPassword, onDone }: { documentId?: string; defaultFolderId?: string; needsPassword?: boolean; onDone: (d: DocumentDetail) => void }) {
   const qc = useQueryClient();
   const isHr = useCan(Permission.DOCUMENTS_READ_ALL);
   const folders = useFolders();
@@ -38,6 +38,7 @@ export function UploadPanel({ documentId, defaultFolderId, onDone }: { documentI
   const [linkedUserId, setLinkedUserId] = useState('');
   const [tags, setTags] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
+  const [docPassword, setDocPassword] = useState('');
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
@@ -62,7 +63,7 @@ export function UploadPanel({ documentId, defaultFolderId, onDone }: { documentI
     setProgress(0);
     try {
       const target = documentId
-        ? { documentId }
+        ? { documentId, documentPassword: needsPassword ? docPassword : undefined }
         : {
             metadata: {
               title: title.trim(), category, confidentiality,
@@ -106,6 +107,10 @@ export function UploadPanel({ documentId, defaultFolderId, onDone }: { documentI
             <input ref={input} id={ids.file} type="file" accept={ACCEPT} className="sr-only" onChange={(e) => choose(e.target.files?.[0])} />
             <Button type="button" variant="outline" size="sm" onClick={() => input.current?.click()} disabled={busy}>Choose a file</Button>
           </div>
+          {documentId && needsPassword ? (
+            <div className="space-y-1.5 sm:col-span-2"><Label htmlFor={`${ids.file}-pw`}>Document password</Label>
+              <Input id={`${ids.file}-pw`} type="password" autoComplete="off" value={docPassword} onChange={(e) => setDocPassword(e.target.value)} /></div>
+          ) : null}
           {!documentId ? (
             <>
               <div className="space-y-1.5 sm:col-span-2"><Label htmlFor={ids.title}>Title</Label><Input id={ids.title} value={title} maxLength={300} onChange={(e) => setTitle(e.target.value)} /></div>

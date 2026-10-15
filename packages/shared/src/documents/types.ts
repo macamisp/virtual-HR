@@ -36,7 +36,10 @@ export const PRINCIPAL_TYPES = ['USER', 'ROLE', 'TEAM'] as const;
 export const SCAN_STATUSES = ['UPLOADING', 'PENDING', 'CLEAN', 'INFECTED', 'REJECTED'] as const;
 export type ScanStatus = (typeof SCAN_STATUSES)[number];
 
-export const ACCESS_ACTIONS = ['VIEW', 'DOWNLOAD', 'UPLOAD', 'SHARE', 'DELETE', 'ACL_CHANGE', 'PASSWORD_FAIL', 'RECOVER', 'RESTORE', 'QUARANTINE', 'UPDATE'] as const;
+export const ACCESS_ACTIONS = [
+  'VIEW', 'DOWNLOAD', 'UPLOAD', 'SHARE', 'DELETE', 'ACL_CHANGE', 'PASSWORD_FAIL', 'RECOVER', 'RESTORE', 'QUARANTINE', 'UPDATE',
+  'SHRED', 'TRASH_RESTORE', 'LEGAL_HOLD', 'PASSWORD_SET', 'PASSWORD_REMOVED', 'REAUTH_REQUIRED',
+] as const;
 export type AccessAction = (typeof ACCESS_ACTIONS)[number];
 
 export const CONTRACT_STATUSES = ['DRAFT', 'ACTIVE', 'EXPIRED', 'TERMINATED'] as const;
@@ -71,6 +74,8 @@ export const StartUploadDtoSchema = z
     size: z.number().int().min(1, 'The file is empty').max(MAX_UPLOAD_BYTES, 'Files can be at most 100 MB'),
     documentId: z.string().uuid().optional(),
     metadata: DocumentMetaDtoSchema.optional(),
+    /** Needed to add a version to a password-protected document. */
+    documentPassword: z.string().max(200).optional(),
   })
   .refine((v) => (v.documentId ? !v.metadata : !!v.metadata), 'Send either documentId (new version) or metadata (new document)');
 export type StartUploadDto = z.infer<typeof StartUploadDtoSchema>;
@@ -163,7 +168,10 @@ export type UploadState = z.infer<typeof UploadStateSchema>;
 
 export const DocumentAbilitiesSchema = z.object({
   canView: z.boolean(),
+  /** The original file inline (needs DOWNLOAD). */
   canPreview: z.boolean(),
+  /** FR-DOC-011: the watermarked, view-only rendering (VIEW is enough; PDF, PNG, JPEG). */
+  canViewOnly: z.boolean(),
   canDownload: z.boolean(),
   canEdit: z.boolean(),
   canManage: z.boolean(),
@@ -205,6 +213,11 @@ export const DocumentSummarySchema = z.object({
   mimeType: z.string().nullable(),
   sizeBytes: z.number().nullable(),
   previewable: z.boolean(),
+  /** FR-DOC-005: opening the content needs a re-authentication in the last N minutes. */
+  requiresReauth: z.boolean(),
+  passwordProtected: z.boolean(),
+  legalHold: z.boolean(),
+  deletedAt: isoDate.nullable(),
   updatedAt: isoDate,
   version: z.number(),
   abilities: DocumentAbilitiesSchema,
@@ -275,3 +288,91 @@ export const ShareTargetsSchema = z.object({
   roles: z.array(z.string()),
 });
 export type ShareTargets = z.infer<typeof ShareTargetsSchema>;
+
+// ---- confidential vault (FR-DOC-005, 006, 010, 011, 017)
+
+const docPassword = z.string().min(10, 'Use at least 10 characters').max(200);
+
+export const ReauthDtoSchema = z
+  .object({ password: z.string().min(1).max(200).optional(), totpCode: z.string().regex(/^\d{6}$/, 'Six digits').optional() })
+  .refine((v) => !!v.password !== !!v.totpCode, 'Give either your password or a code from your authenticator app');
+export type ReauthDto = z.infer<typeof ReauthDtoSchema>;
+
+export const ReauthStatusSchema = z.object({ validUntil: isoDate.nullable(), windowMinutes: z.number(), totpAvailable: z.boolean() });
+export type ReauthStatus = z.infer<typeof ReauthStatusSchema>;
+
+export const OpenContentDtoSchema = z.object({
+  mode: z.enum(['download', 'preview', 'view']),
+  versionId: z.string().uuid().optional(),
+  password: z.string().max(200).optional(),
+});
+export type OpenContentDto = z.infer<typeof OpenContentDtoSchema>;
+
+export const SetDocumentPasswordDtoSchema = z.object({ password: docPassword, currentPassword: z.string().max(200).optional() });
+export type SetDocumentPasswordDto = z.infer<typeof SetDocumentPasswordDtoSchema>;
+
+export const RemoveDocumentPasswordDtoSchema = z.object({ currentPassword: z.string().min(1).max(200) });
+export type RemoveDocumentPasswordDto = z.infer<typeof RemoveDocumentPasswordDtoSchema>;
+
+export const RecoverDocumentPasswordDtoSchema = z.object({ newPassword: docPassword, reason: z.string().trim().min(5, 'Explain why').max(500) });
+export type RecoverDocumentPasswordDto = z.infer<typeof RecoverDocumentPasswordDtoSchema>;
+
+export const ShareLinkDtoSchema = z.object({
+  expiresAt: isoDate,
+  maxDownloads: z.number().int().min(1).max(1000).nullable().optional(),
+  password: z.string().min(8, 'Use at least 8 characters').max(200).optional(),
+  viewOnly: z.boolean().default(false),
+});
+export type ShareLinkDto = z.infer<typeof ShareLinkDtoSchema>;
+
+export const ShareLinkSchema = z.object({
+  id: z.string(),
+  viewOnly: z.boolean(),
+  passwordProtected: z.boolean(),
+  expiresAt: isoDate,
+  maxDownloads: z.number().nullable(),
+  downloadCount: z.number(),
+  revokedAt: isoDate.nullable(),
+  active: z.boolean(),
+  createdBy: UserRefSchema,
+  createdAt: isoDate,
+  lastUsedAt: isoDate.nullable(),
+});
+export type ShareLink = z.infer<typeof ShareLinkSchema>;
+export const ShareLinkListSchema = z.object({ items: z.array(ShareLinkSchema) });
+/** The token is shown once, at creation; only its hash is kept. */
+export const CreatedShareLinkSchema = z.object({ link: ShareLinkSchema, token: z.string(), url: z.string() });
+export type CreatedShareLink = z.infer<typeof CreatedShareLinkSchema>;
+
+export const PublicShareInfoSchema = z.object({
+  title: z.string(),
+  fileName: z.string(),
+  mimeType: z.string(),
+  sizeBytes: z.number(),
+  viewOnly: z.boolean(),
+  passwordRequired: z.boolean(),
+  expiresAt: isoDate,
+  remaining: z.number().nullable(),
+});
+export type PublicShareInfo = z.infer<typeof PublicShareInfoSchema>;
+
+export const PublicShareOpenDtoSchema = z.object({ mode: z.enum(['download', 'view']), password: z.string().max(200).optional() });
+export type PublicShareOpenDto = z.infer<typeof PublicShareOpenDtoSchema>;
+
+export const LegalHoldDtoSchema = z
+  .object({ hold: z.boolean(), reason: z.string().trim().max(500).optional() })
+  .refine((v) => !v.hold || (v.reason ?? '').length >= 5, 'A legal hold needs a reason');
+export type LegalHoldDto = z.infer<typeof LegalHoldDtoSchema>;
+
+export const RetentionRuleSchema = z.object({
+  category: z.enum(DOCUMENT_CATEGORIES),
+  minYears: z.number().int().min(1).max(100).nullable(),
+  autoShredYears: z.number().int().min(1).max(100).nullable(),
+});
+export type RetentionRule = z.infer<typeof RetentionRuleSchema>;
+export const RetentionRulesDtoSchema = z.object({ rules: z.array(RetentionRuleSchema).max(8) }).refine(
+  (v) => v.rules.every((r) => r.minYears === null || r.autoShredYears === null || r.autoShredYears >= r.minYears),
+  'Automatic shredding cannot come before the minimum retention',
+);
+export type RetentionRulesDto = z.infer<typeof RetentionRulesDtoSchema>;
+export const RetentionRulesSchema = z.object({ rules: z.array(RetentionRuleSchema), canManage: z.boolean() });

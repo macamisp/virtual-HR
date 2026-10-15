@@ -4,14 +4,14 @@ import { Transform } from 'node:stream';
 import { PrismaService } from '../common/prisma.service.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
 import { NotificationsService } from '../notifications/notifications.service.ts';
-import { KMS_PROVIDER, createEncryptStream, openSmall } from './crypto.ts';
-import type { KmsProvider } from './crypto.ts';
+import { KEY_PROVIDER, createEncryptStream, openSmall } from './crypto.ts';
+import type { KeyProvider } from './crypto.ts';
 import { OBJECT_STORE, keys } from './object-store.ts';
 import type { ObjectStore } from './object-store.ts';
 import { MIME, SNIFF_HEAD_BYTES, allowedKindsFromEnv, checkExtension, parseZipEntries, sniff } from './sniff.ts';
 import { clamdFromEnv, scanStream } from './clamav.ts';
 import type { ClamdOptions } from './clamav.ts';
-import { logAccess } from './documents.service.ts';
+import { logAccess } from './access-log.ts';
 
 export type ScanOutcome = 'CLEAN' | 'INFECTED' | 'REJECTED' | 'SKIPPED' | 'BUSY';
 
@@ -28,7 +28,7 @@ interface PendingRow {
   kms_key_id: string;
   scan_status: string;
   uploaded_by: string;
-  title: string;
+  title: string | null;
 }
 
 const MAX_ZIP_DIRECTORY = 4 * 1024 * 1024;
@@ -48,7 +48,7 @@ export class DocumentScannerService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     @Inject(OBJECT_STORE) private readonly store: ObjectStore,
-    @Inject(KMS_PROVIDER) private readonly kms: KmsProvider,
+    @Inject(KEY_PROVIDER) private readonly kms: KeyProvider,
     @Inject(CLAMD_OPTIONS) private readonly clamd: ClamdOptions,
   ) {}
 
@@ -119,7 +119,9 @@ export class DocumentScannerService {
       await this.prisma.runWithTenantContext(orgId, async (db) => {
         const upd = await db.query(
           `UPDATE document_versions SET scan_status = 'CLEAN', scan_detail = NULL, storage_key = $2, iv = $3, auth_tag = $4, sha256 = $5,
-             mime_type = $6, size_bytes = $7, scanned_at = now(), staging_key = NULL
+             mime_type = $6, size_bytes = $7, scanned_at = now(), staging_key = NULL,
+             -- Password mode: the KMS-only wrap existed for this scan only (both wrappings needed from now on).
+             dek_wrapped_kms = CASE WHEN dek_wrapped_pw IS NOT NULL THEN NULL ELSE dek_wrapped_kms END
            WHERE id = $1 AND scan_status = 'PENDING'`,
           [v.id, storedKey, iv, authTag, sha256, mime, size],
         );
@@ -157,10 +159,10 @@ export class DocumentScannerService {
   private async finishRejected(orgId: string, v: PendingRow, reason: string): Promise<void> {
     await this.store.remove(v.staging_key).catch(() => undefined);
     await this.prisma.runWithTenantContext(orgId, async (db) => {
-      await db.query(`UPDATE document_versions SET scan_status = 'REJECTED', scan_detail = $2, scanned_at = now(), staging_key = NULL WHERE id = $1 AND scan_status = 'PENDING'`, [v.id, reason.slice(0, 300)]);
+      await db.query(`UPDATE document_versions SET scan_status = 'REJECTED', scan_detail = $2, scanned_at = now(), staging_key = NULL, dek_wrapped_pw = NULL, dek_wrapped_recovery = NULL WHERE id = $1 AND scan_status = 'PENDING'`, [v.id, reason.slice(0, 300)]);
     });
     await this.notifications.notify(orgId, [{
-      userId: v.uploaded_by, type: 'DOCUMENT_REJECTED', title: `Upload refused: ${v.title}`,
+      userId: v.uploaded_by, type: 'DOCUMENT_REJECTED', title: `Upload refused: ${v.title ?? 'a confidential document'}`,
       body: `${reason}. Nothing was stored.`, link: `/documents/${v.document_id}`, entityType: 'DOCUMENT', entityId: v.document_id,
     }]);
   }
@@ -171,14 +173,14 @@ export class DocumentScannerService {
     await this.store.remove(v.staging_key);
     await this.prisma.runWithTenantContext(orgId, async (db) => {
       await db.query(
-        `UPDATE document_versions SET scan_status = 'INFECTED', scan_detail = $2, scanned_at = now(), storage_key = $3, staging_key = NULL WHERE id = $1 AND scan_status = 'PENDING'`,
+        `UPDATE document_versions SET scan_status = 'INFECTED', scan_detail = $2, scanned_at = now(), storage_key = $3, staging_key = NULL, dek_wrapped_pw = NULL, dek_wrapped_recovery = NULL WHERE id = $1 AND scan_status = 'PENDING'`,
         [v.id, `Malware detected: ${signature}`.slice(0, 300), quarantine],
       );
       await logAccess(db, { orgId, documentId: v.document_id, versionId: v.id, userId: null, action: 'QUARANTINE', detail: { signature, versionNo: v.version_no } });
       await appendAuditEntry(db, { orgId, actorId: v.uploaded_by, action: 'DOCUMENT_INFECTED', entityType: 'DOCUMENT', entityId: v.document_id, after: { versionId: v.id, signature } });
     });
     await this.notifications.notify(orgId, [{
-      userId: v.uploaded_by, type: 'DOCUMENT_INFECTED', title: `Malware found in your upload: ${v.title}`,
+      userId: v.uploaded_by, type: 'DOCUMENT_INFECTED', title: `Malware found in your upload: ${v.title ?? 'a confidential document'}`,
       body: `The virus scanner found ${signature}. The file is quarantined and cannot be opened. Check your computer and upload a clean copy.`,
       link: `/documents/${v.document_id}`, entityType: 'DOCUMENT', entityId: v.document_id, email: true,
     }]);

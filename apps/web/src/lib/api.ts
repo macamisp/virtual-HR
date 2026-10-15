@@ -7,11 +7,14 @@ import { refreshSession } from './session';
 
 export class ApiError extends Error {
   readonly status: number;
+  /** Machine-readable reason from the API, e.g. REAUTH_REQUIRED or WRONG_DOCUMENT_PASSWORD. */
+  readonly code: string | null;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code: string | null = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -25,24 +28,25 @@ interface ApiOptions<T> {
   headers?: Record<string, string>;
 }
 
-/** Extracts a human-readable message from NestJS / RFC 7807 error bodies. */
-async function errorMessage(res: Response): Promise<string> {
+/** Extracts a human-readable message (and a code, if any) from NestJS / RFC 7807 error bodies. */
+async function errorInfo(res: Response): Promise<{ message: string; code: string | null }> {
   try {
     const body: unknown = await res.json();
     if (body && typeof body === 'object') {
-      const b = body as { message?: unknown; detail?: unknown; errors?: Array<{ field?: string; message?: string }> };
+      const b = body as { message?: unknown; detail?: unknown; code?: unknown; errors?: Array<{ field?: string; message?: string }> };
+      const code = typeof b.code === 'string' ? b.code : null;
       if (Array.isArray(b.errors) && b.errors.length > 0) {
-        return b.errors.map((e) => (e.field ? `${e.field}: ${e.message}` : e.message)).join('; ');
+        return { message: b.errors.map((e) => (e.field ? `${e.field}: ${e.message}` : e.message)).join('; '), code };
       }
-      if (typeof b.message === 'string') return b.message;
-      if (Array.isArray(b.message)) return b.message.join('; ');
-      if (typeof b.detail === 'string') return b.detail;
+      if (typeof b.message === 'string') return { message: b.message, code };
+      if (Array.isArray(b.message)) return { message: b.message.join('; '), code };
+      if (typeof b.detail === 'string') return { message: b.detail, code };
     }
   } catch {
     // fall through
   }
-  if (res.status === 429) return 'Too many requests. Please wait a moment and try again.';
-  return `Request failed (${res.status})`;
+  if (res.status === 429) return { message: 'Too many requests. Please wait a moment and try again.', code: null };
+  return { message: `Request failed (${res.status})`, code: null };
 }
 
 function bearer(mode: AuthMode): string | null {
@@ -91,7 +95,8 @@ async function request<T>(path: string, opts: ApiOptions<T>, accept: string): Pr
   }
 
   if (!res.ok) {
-    throw new ApiError(res.status, await errorMessage(res));
+    const info = await errorInfo(res);
+    throw new ApiError(res.status, info.message, info.code);
   }
   return res;
 }
@@ -108,11 +113,15 @@ export async function apiFetch<T>(path: string, opts: ApiOptions<T> = {}): Promi
 }
 
 /** Authenticated file download (exports). Returns the file and the server's filename. */
-export async function apiDownload(path: string): Promise<{ blob: Blob; filename: string }> {
-  const res = await request(path, {}, '*/*');
+export async function apiDownload(
+  path: string,
+  opts: { method?: 'GET' | 'POST'; body?: unknown; auth?: AuthMode } = {},
+): Promise<{ blob: Blob; filename: string; viewOnly: boolean }> {
+  const res = await request(path, opts, '*/*');
   const disposition = res.headers.get('content-disposition') ?? '';
-  const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'download';
-  return { blob: await res.blob(), filename };
+  const utf8 = /filename\*=UTF-8''([^;]+)/.exec(disposition)?.[1];
+  const filename = utf8 ? decodeURIComponent(utf8) : (/filename="([^"]+)"/.exec(disposition)?.[1] ?? 'download');
+  return { blob: await res.blob(), filename, viewOnly: res.headers.get('x-view-only') === '1' };
 }
 
 /** Saves a blob through a temporary object URL. */

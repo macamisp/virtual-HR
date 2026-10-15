@@ -9,14 +9,19 @@ import { FoldersService } from './folders.service.ts';
 import { ContractsService } from './contracts.service.ts';
 import { DocumentScannerService, clamdOptionsProvider } from './document-scanner.service.ts';
 import { DocumentMaintenanceService } from './document-maintenance.service.ts';
-import { KMS_PROVIDER, kmsFromEnv } from './crypto.ts';
+import { KEY_PROVIDER, keyProviderFromEnv } from './crypto.ts';
+import { DocumentVault } from './document-vault.ts';
+import { DocumentContent } from './document-content.service.ts';
+import { VaultService } from './vault.service.ts';
+import { ShareLinksService } from './share-links.service.ts';
+import { PublicShareController, VaultController } from './vault.controller.ts';
 import { OBJECT_STORE, objectStoreFromEnv } from './object-store.ts';
 import { SCAN_DISPATCHER } from './scan-dispatcher.ts';
 
 /** FR-DOC-001..004, 007, 009, 012, 013, 015, 019 and minimal contracts (ADR 009). */
 @Module({
   imports: [NotificationsModule],
-  controllers: [DocumentsController, ContractsController],
+  controllers: [DocumentsController, ContractsController, VaultController, PublicShareController],
   providers: [
     PrismaService,
     DocumentsService,
@@ -24,8 +29,12 @@ import { SCAN_DISPATCHER } from './scan-dispatcher.ts';
     ContractsService,
     DocumentScannerService,
     DocumentMaintenanceService,
+    DocumentVault,
+    DocumentContent,
+    VaultService,
+    ShareLinksService,
     clamdOptionsProvider(),
-    { provide: KMS_PROVIDER, useFactory: () => kmsFromEnv() },
+    { provide: KEY_PROVIDER, useFactory: () => keyProviderFromEnv() },
     { provide: OBJECT_STORE, useFactory: () => objectStoreFromEnv() },
     { provide: SCAN_DISPATCHER, useExisting: JobsService },
   ],

@@ -76,5 +76,8 @@ export function getRateLimits() {
     refresh: { limit: intFromEnv('RATE_LIMIT_REFRESH', 30), ttl: ttlMs },
     passwordReset: { limit: intFromEnv('RATE_LIMIT_PASSWORD_RESET', 5), ttl: ttlMs },
     heartbeat: { limit: intFromEnv('RATE_LIMIT_HEARTBEAT', 10), ttl: ttlMs },
+    // FR-DOC-005/006/010: re-authentication, document passwords, public share links.
+    vault: { limit: intFromEnv('RATE_LIMIT_VAULT', 20), ttl: ttlMs },
+    share: { limit: intFromEnv('RATE_LIMIT_SHARE', 30), ttl: ttlMs },
   };
 }

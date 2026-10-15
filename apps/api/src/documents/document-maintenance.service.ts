@@ -8,6 +8,10 @@ import { OBJECT_STORE } from './object-store.ts';
 import type { ObjectStore } from './object-store.ts';
 import { SCAN_DISPATCHER } from './scan-dispatcher.ts';
 import type { ScanDispatcher } from './scan-dispatcher.ts';
+import { appendAuditEntry } from '../common/audit-chain.ts';
+import { logAccess } from './access-log.ts';
+import { DocumentVault } from './document-vault.ts';
+import { autoShredDue, trashExpired } from './vault-rules.ts';
 
 export const EXPIRY_STAGES = [60, 30, 7] as const;
 
@@ -36,18 +40,23 @@ export class DocumentMaintenanceService {
     private readonly notifications: NotificationsService,
     @Inject(OBJECT_STORE) private readonly store: ObjectStore,
     @Inject(SCAN_DISPATCHER) private readonly scans: ScanDispatcher,
+    private readonly vault: DocumentVault,
   ) {}
 
   private async orgs(): Promise<Array<{ id: string; timezone: string }>> {
     return (await this.prisma.getPool().query<{ id: string; timezone: string }>(`SELECT * FROM fn_list_orgs_with_documents()`)).rows;
   }
 
-  async run(now: Date = new Date()): Promise<{ reminders: number; abandoned: number; rescanned: number }> {
+  async run(now: Date = new Date()): Promise<{ reminders: number; abandoned: number; rescanned: number; shredded: number; sealed: number }> {
     let reminders = 0;
     let abandoned = 0;
     let rescanned = 0;
+    let shredded = 0;
+    let sealed = 0;
     for (const org of await this.orgs()) {
       try {
+        sealed += await this.sealLegacyTitles(org.id);
+        shredded += await this.shredDue(org.id, now);
         reminders += await this.expiryReminders(org, now);
         const h = await this.housekeeping(org.id, now);
         abandoned += h.abandoned;
@@ -56,15 +65,88 @@ export class DocumentMaintenanceService {
         console.error(`Document maintenance failed for org ${org.id}:`, err instanceof Error ? err.message : 'unknown error');
       }
     }
-    return { reminders, abandoned, rescanned };
+    return { reminders, abandoned, rescanned, shredded, sealed };
+  }
+
+  // ---------------------------------------------------------------- FR-DOC-017 crypto-shredding
+
+  /**
+   * Shreds what is due: trash older than 30 days, and documents past their category's
+   * auto-shred age. A legal hold stops both.
+   */
+  async shredDue(orgId: string, now: Date): Promise<number> {
+    const due = await this.prisma.runWithTenantContext(orgId, async (db) => {
+      const res = await db.query<{ id: string; deleted_at: Date | null; created_at: Date; auto_shred_years: number | null; legal_hold: boolean }>(
+        `SELECT d.id, d.deleted_at, d.created_at, r.auto_shred_years, d.legal_hold
+         FROM documents d LEFT JOIN document_retention_rules r ON r.org_id = d.org_id AND r.category = d.category
+         WHERE d.shredded_at IS NULL AND NOT d.legal_hold AND (d.deleted_at IS NOT NULL OR r.auto_shred_years IS NOT NULL)`,
+      );
+      return res.rows.filter((d) => trashExpired(d.deleted_at, now) || autoShredDue(d.created_at, d.auto_shred_years, now, d.legal_hold));
+    });
+    for (const d of due) await this.shred(orgId, d.id, d.deleted_at ? 'TRASH_EXPIRED' : 'RETENTION');
+    return due.length;
+  }
+
+  /**
+   * Crypto-shredding (SRS 10.1 step 6): every wrapped data key, escrow, sealed name and title
+   * key is destroyed, so every copy of the ciphertext (bucket, replicas, backups) is unreadable;
+   * the objects are deleted as well. The row stays as a tombstone for the audit trail.
+   */
+  async shred(orgId: string, documentId: string, reason: 'TRASH_EXPIRED' | 'RETENTION'): Promise<void> {
+    const objects = await this.prisma.runWithTenantContext(orgId, async (db) => {
+      const d = await db.query<{ legal_hold: boolean; shredded_at: Date | null }>(`SELECT legal_hold, shredded_at FROM documents WHERE id = $1 FOR UPDATE`, [documentId]);
+      if (!d.rows[0] || d.rows[0].legal_hold || d.rows[0].shredded_at) return [];
+      const keys = await db.query<{ k: string }>(
+        `SELECT DISTINCT k FROM document_versions v, unnest(ARRAY[v.storage_key, v.staging_key]) k WHERE v.document_id = $1 AND k IS NOT NULL`,
+        [documentId],
+      );
+      await db.query(
+        `UPDATE document_versions SET dek_wrapped_kms = NULL, dek_wrapped_pw = NULL, pw_salt = NULL, pw_kdf_params = NULL, dek_wrapped_recovery = NULL,
+           recovery_key_id = NULL, file_name_enc = NULL, upload_id = NULL WHERE document_id = $1`,
+        [documentId],
+      );
+      await db.query(
+        `UPDATE documents SET shredded_at = now(), deleted_at = COALESCE(deleted_at, now()), title = NULL, title_enc = NULL, meta_key_wrapped = NULL,
+           meta_key_id = NULL, tags = '{}', current_version_id = NULL, version = version + 1, updated_at = now() WHERE id = $1`,
+        [documentId],
+      );
+      await db.query(`UPDATE document_share_links SET revoked_at = COALESCE(revoked_at, now()) WHERE document_id = $1`, [documentId]);
+      await db.query(`DELETE FROM document_acl WHERE document_id = $1`, [documentId]);
+      await db.query(`UPDATE contracts SET document_id = NULL, updated_at = now() WHERE document_id = $1`, [documentId]);
+      await logAccess(db, { orgId, documentId, userId: null, action: 'SHRED', detail: { reason } });
+      const owner = await db.query<{ owner_id: string }>(`SELECT owner_id FROM documents WHERE id = $1`, [documentId]);
+      await appendAuditEntry(db, { orgId, actorId: owner.rows[0]!.owner_id, action: 'DOCUMENT_SHREDDED', entityType: 'DOCUMENT', entityId: documentId, after: { reason } });
+      return keys.rows.map((r) => r.k);
+    });
+    // The keys are gone already; deleting the ciphertext is housekeeping (a failure is retried
+    // by nobody and harms nobody: the bytes cannot be decrypted).
+    for (const k of objects) await this.store.remove(k).catch(() => undefined);
+  }
+
+  /**
+   * Confidential titles written before the vault (or by a direct database change) are sealed;
+   * after this, documents_confidential_title_check can be validated.
+   */
+  async sealLegacyTitles(orgId: string): Promise<number> {
+    return await this.prisma.runWithTenantContext(orgId, async (db) => {
+      const rows = await db.query<{ id: string; title: string }>(
+        `SELECT id, title FROM documents WHERE confidentiality <> 'NORMAL' AND title IS NOT NULL AND shredded_at IS NULL FOR UPDATE`,
+      );
+      for (const r of rows.rows) {
+        const sealed = await this.vault.sealTitle(orgId, r.id, r.title);
+        await db.query(`UPDATE documents SET title = NULL, title_enc = $2, meta_key_wrapped = $3, meta_key_id = $4 WHERE id = $1`, [r.id, sealed.titleEnc, sealed.metaKeyWrapped, sealed.metaKeyId]);
+      }
+      return rows.rows.length;
+    });
   }
 
   /** FR-DOC-015: 60, 30 and 7 days before expiry, to the owner and HR. */
   async expiryReminders(org: { id: string; timezone: string }, now: Date): Promise<number> {
     const today = localDate(now, org.timezone);
     const created = await this.prisma.runWithTenantContext(org.id, async (db) => {
+      // Confidential titles stay out of notifications (they are stored and emailed in clear).
       const docs = await db.query<{ id: string; title: string; owner_id: string; expires: string; category: string }>(
-        `SELECT id, title, owner_id, to_char(expires_at, 'YYYY-MM-DD') AS expires, category FROM documents
+        `SELECT id, COALESCE(title, 'a confidential document') AS title, owner_id, to_char(expires_at, 'YYYY-MM-DD') AS expires, category FROM documents
          WHERE deleted_at IS NULL AND expires_at BETWEEN $1::date AND $2::date`,
         [today, addDaysIso(today, 60)],
       );

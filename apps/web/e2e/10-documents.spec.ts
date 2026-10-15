@@ -4,7 +4,10 @@ import { passNoticeGate, signIn } from './helpers';
 
 const stamp = Date.now();
 const TITLE = `Remote work policy ${stamp}`;
-const pdf = (text: string) => Buffer.from(`%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n% ${text}\ntrailer << /Root 1 0 R >>\n%%EOF\n`);
+const pdf = (text: string) => Buffer.from(
+  `%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n` +
+    `3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj\n% ${text}\ntrailer << /Root 1 0 R >>\n%%EOF\n`,
+);
 const EICAR = 'X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*';
 
 test.describe.serial('Documents: upload, scan, preview, versions, sharing, quarantine (FR-DOC-001..004, 009, 013, 019)', () => {

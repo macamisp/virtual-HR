@@ -53,7 +53,11 @@ type Who = keyof typeof U;
 const email = (w: Who) => `${w}@docs.test`;
 
 const EICAR = 'X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*';
-const pdf = (text: string) => Buffer.from(`%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n% ${text}\ntrailer << /Root 1 0 R >>\n%%EOF\n`);
+// A minimal but real one-page PDF (the view-only renderer refuses anything it cannot stamp).
+const pdf = (text: string) => Buffer.from(
+  `%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n` +
+    `3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj\n% ${text}\ntrailer << /Root 1 0 R >>\n%%EOF\n`,
+);
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4c10000000049454e44ae426082', 'hex');
 
 const enabled = !!process.env.S3_ENDPOINT && !!process.env.CLAMAV_HOST;
@@ -167,7 +171,7 @@ describe('Documents API (FR-DOC-001..004, 007, 009, 012, 013, 015, 019)', { conc
       assert.deepEqual(d.tags, ['remote', 'Remote', 'hr']);
       assert.equal(d.versions[0]!.fileName, 'policy.pdf');
       assert.equal(d.versions[0]!.sha256, createHash('sha256').update(bytes.policy).digest('hex'));
-      assert.deepEqual(d.abilities, { canView: true, canPreview: true, canDownload: true, canEdit: true, canManage: true });
+      assert.deepEqual(d.abilities, { canView: true, canPreview: true, canViewOnly: true, canDownload: true, canEdit: true, canManage: true });
 
       const res = await api('emp', `/documents/${d.id}/download`);
       assert.equal(res.status, 200);
@@ -291,7 +295,7 @@ describe('Documents API (FR-DOC-001..004, 007, 009, 012, 013, 015, 019)', { conc
       bytes.contract = pdf('Sub contract');
       docs.contract = await upload('hr', 'contract-sam.pdf', bytes.contract, meta('Contract — sub', { category: 'CONTRACT', linkedUserId: U.sub.id, confidentiality: 'CONFIDENTIAL' }));
       const asSub = await ok(await api('sub', `/documents/${docs.contract.id}`), 200, DocumentDetailSchema);
-      assert.deepEqual(asSub.abilities, { canView: true, canPreview: true, canDownload: true, canEdit: false, canManage: false });
+      assert.deepEqual(asSub.abilities, { canView: true, canPreview: true, canViewOnly: true, canDownload: true, canEdit: false, canManage: false });
       assert.equal((await api('sub', `/documents/${docs.contract.id}`, { method: 'PATCH', body: { version: asSub.version, title: 'Mine now' } })).status, 403);
     });
 
@@ -301,11 +305,14 @@ describe('Documents API (FR-DOC-001..004, 007, 009, 012, 013, 015, 019)', { conc
       assert.equal(grant.items.length, 1);
       assert.equal(grant.items[0]!.principalLabel, 'Team: Alpha');
       const lead = await ok(await api('lead', `/documents/${id}`), 200, DocumentDetailSchema);
-      assert.deepEqual(lead.abilities, { canView: true, canPreview: true, canDownload: false, canEdit: false, canManage: false });
+      // FR-DOC-011: VIEW gets the watermarked rendering, not the original.
+      assert.deepEqual(lead.abilities, { canView: true, canPreview: false, canViewOnly: true, canDownload: false, canEdit: false, canManage: false });
       assert.equal((await api('lead', `/documents/${id}/download`)).status, 403);
       const preview = await api('lead', `/documents/${id}/preview`);
       assert.equal(preview.status, 200);
       assert.match(preview.headers.get('content-disposition') ?? '', /^inline;/);
+      assert.equal(preview.headers.get('x-view-only'), '1');
+      assert.equal(preview.headers.get('content-type'), 'application/pdf');
       assert.match(preview.headers.get('content-security-policy') ?? '', /sandbox/);
       assert.equal((await api('sub', `/documents/${id}`)).status, 404, 'the subcontractor in team Alpha is not included');
       assert.equal((await api('emp', `/documents/${id}/acl`, { method: 'POST', body: { principalType: 'TEAM', principalId: TEAM, permission: 'VIEW' } })).status, 409, 'duplicate grant');
@@ -346,7 +353,8 @@ describe('Documents API (FR-DOC-001..004, 007, 009, 012, 013, 015, 019)', { conc
       assert.equal(asEmp2.folderName, 'IT');
       assert.equal(asEmp2.abilities.canDownload, false);
       const img = await api('emp2', `/documents/${docs.itPolicy.id}/preview`);
-      assert.equal(img.headers.get('content-type'), 'image/png');
+      assert.equal(img.headers.get('content-type'), 'application/pdf', 'a VIEW-only user gets the image stamped into a PDF');
+      assert.equal(img.headers.get('x-view-only'), '1');
       const emp2Folders = await ok(await api('emp2', '/documents/folders'), 200, FolderListSchema);
       assert.deepEqual(emp2Folders.items.map((f) => f.name).sort(), ['IT', 'Policies']);
       assert.equal((await api('sub', '/documents/folders').then((r) => r.json()) as { items: unknown[] }).items.length, 0);

@@ -12,52 +12,85 @@ import { UploadPanel } from '@/components/documents/upload-panel';
 import { SharingCard } from '@/components/documents/sharing-card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { NativeSelect } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { apiDownload, saveBlob } from '@/lib/api';
+import { saveBlob } from '@/lib/api';
+import { useVaultOpen } from '@/components/documents/vault-gate';
+import type { ContentMode, OpenedContent } from '@/components/documents/vault-gate';
+import { LegalHoldCard, PasswordCard, ShareLinksCard } from '@/components/documents/vault-cards';
 import { useAccessLog, useDeleteDocument, useDocument, useRestoreVersion, useUpdateDocument } from '@/lib/document-queries';
 import { formatDateTime, formatWorkDate } from '@/lib/format';
 
-async function download(docId: string, versionId?: string, setError?: (m: string) => void) {
+type Opener = (mode: ContentMode, versionId?: string) => Promise<OpenedContent>;
+
+async function download(open: Opener, versionId: string | undefined, setError: (m: string | null) => void, isCancel: (e: unknown) => boolean) {
   try {
-    const f = await apiDownload(`/documents/${docId}/download${versionId ? `?versionId=${versionId}` : ''}`);
+    setError(null);
+    const f = await open('download', versionId);
     saveBlob(f.blob, f.filename);
   } catch (err) {
-    setError?.((err as Error).message);
+    if (!isCancel(err)) setError((err as Error).message);
   }
 }
 
-/** FR-DOC-019: PDFs and images only, fetched with the access token and shown from a blob URL. */
-function Preview({ doc }: { doc: DocumentDetail }) {
+/**
+ * FR-DOC-019 / 011: the original for DOWNLOAD-level viewers, otherwise the watermarked view-only
+ * rendering. Confidential or password-protected documents load on request (they ask for a
+ * re-authentication or the password first).
+ */
+function Preview({ doc, open, isCancel }: { doc: DocumentDetail; open: Opener; isCancel: (e: unknown) => boolean }) {
   const [url, setUrl] = useState<string | null>(null);
+  const [viewOnly, setViewOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [requested, setRequested] = useState(!doc.requiresReauth && !doc.passwordProtected);
   const current = doc.versions.find((v) => v.isCurrent);
+  const mode: ContentMode | null = doc.abilities.canPreview ? 'preview' : doc.abilities.canViewOnly ? 'view' : null;
   useEffect(() => {
-    if (!doc.abilities.canPreview || !current) return;
+    if (!mode || !current || !requested) return;
     let revoke: string | null = null;
-    apiDownload(`/documents/${doc.id}/preview`)
+    open(mode)
       .then((f) => {
         revoke = URL.createObjectURL(f.blob);
+        setViewOnly(f.viewOnly);
         setUrl(revoke);
       })
-      .catch((err: Error) => setError(err.message));
+      .catch((err: Error) => {
+        if (isCancel(err)) setRequested(false);
+        else setError(err.message);
+      });
     return () => {
       if (revoke) URL.revokeObjectURL(revoke);
     };
-  }, [doc.id, doc.abilities.canPreview, current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [doc.id, mode, current?.id, requested]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!doc.abilities.canPreview) {
-    return <p className="text-sm text-muted-foreground">{doc.previewable || doc.latestStatus !== 'CLEAN' ? 'No preview until the file has passed the virus scan.' : 'Preview is available for PDFs and images. Download the file to open it.'}</p>;
+  if (!mode) {
+    return <p className="text-sm text-muted-foreground">{doc.latestStatus !== 'CLEAN' ? 'No preview until the file has passed the virus scan.' : 'Preview is available for PDFs and images. Download the file to open it.'}</p>;
+  }
+  if (!requested) {
+    return (
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">{doc.passwordProtected ? 'This document is protected by a password.' : 'Confidential: confirm it is you to open it.'}</p>
+        <Button variant="outline" onClick={() => setRequested(true)} data-testid="open-preview">Open preview</Button>
+      </div>
+    );
   }
   if (error) return <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>;
   if (!url) return <LoadingState label="Loading preview" rows={3} />;
-  return doc.mimeType === 'application/pdf'
-    ? <iframe src={url} title={`Preview of ${doc.title}`} className="h-[32rem] w-full rounded border" data-testid="preview" />
-    : // eslint-disable-next-line @next/next/no-img-element -- a private blob: URL; next/image cannot optimise it
-      <img src={url} alt={`Preview of ${doc.title}`} className="max-h-[32rem] rounded border" data-testid="preview" />;
+  // The view-only rendering is always a PDF (images are stamped into one).
+  const asPdf = viewOnly || doc.mimeType === 'application/pdf';
+  return (
+    <div className="space-y-2">
+      {viewOnly ? <p className="text-xs text-muted-foreground" data-testid="view-only-note">View only: watermarked with your name, the time and your IP address. Downloading is not available to you.</p> : null}
+      {asPdf
+        ? <iframe src={url} title={`Preview of ${doc.title}`} className="h-[32rem] w-full rounded border" data-testid="preview" />
+        : // eslint-disable-next-line @next/next/no-img-element -- a private blob: URL; next/image cannot optimise it
+          <img src={url} alt={`Preview of ${doc.title}`} className="max-h-[32rem] rounded border" data-testid="preview" />}
+    </div>
+  );
 }
 
 function DetailsCard({ doc }: { doc: DocumentDetail }) {
@@ -114,7 +147,7 @@ function DetailsCard({ doc }: { doc: DocumentDetail }) {
   );
 }
 
-function VersionsCard({ doc }: { doc: DocumentDetail }) {
+function VersionsCard({ doc, open, isCancel }: { doc: DocumentDetail; open: Opener; isCancel: (e: unknown) => boolean }) {
   const restore = useRestoreVersion(doc.id);
   const [error, setError] = useState<string | null>(null);
   return (
@@ -135,7 +168,7 @@ function VersionsCard({ doc }: { doc: DocumentDetail }) {
                 <TableCell className="text-sm">{v.uploadedBy.displayName ?? v.uploadedBy.email}<span className="block text-xs text-muted-foreground">{formatDateTime(v.uploadedAt)}</span></TableCell>
                 <TableCell className="whitespace-nowrap">
                   {v.scanStatus === 'CLEAN' && doc.abilities.canDownload ? (
-                    <Button variant="ghost" size="sm" aria-label={`Download v${v.versionNo}`} onClick={() => void download(doc.id, v.id, setError)}><Download aria-hidden="true" /></Button>
+                    <Button variant="ghost" size="sm" aria-label={`Download v${v.versionNo}`} onClick={() => void download(open, v.id, setError, isCancel)}><Download aria-hidden="true" /></Button>
                   ) : null}
                   {doc.abilities.canEdit && v.scanStatus === 'CLEAN' && !v.isCurrent ? (
                     <Button variant="ghost" size="sm" onClick={() => restore.mutate(v.id)} disabled={restore.isPending}><RotateCcw aria-hidden="true" /> Restore</Button>
@@ -173,6 +206,7 @@ export default function DocumentPage({ params }: { params: Promise<{ id: string 
   const router = useRouter();
   const doc = useDocument(id);
   const del = useDeleteDocument();
+  const vault = useVaultOpen(id);
   const [showVersion, setShowVersion] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -186,13 +220,13 @@ export default function DocumentPage({ params }: { params: Promise<{ id: string 
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold" data-testid="document-title">{d.title}</h1>
-          <div className="flex flex-wrap items-center gap-2 text-sm"><ScanBadge status={d.latestStatus} /><ConfidentialityBadge level={d.confidentiality} /><span className="text-muted-foreground">{CATEGORY_LABEL[d.category]}{d.folderName ? ` · ${d.folderName}` : ''}</span></div>
+          <div className="flex flex-wrap items-center gap-2 text-sm"><ScanBadge status={d.latestStatus} /><ConfidentialityBadge level={d.confidentiality} />{d.passwordProtected ? <Badge variant="secondary">Password</Badge> : null}{d.legalHold ? <Badge variant="warning">Legal hold</Badge> : null}<span className="text-muted-foreground">{CATEGORY_LABEL[d.category]}{d.folderName ? ` · ${d.folderName}` : ''}</span></div>
         </div>
         <div className="flex flex-wrap gap-2">
-          {d.abilities.canDownload ? <Button onClick={() => void download(d.id, undefined, setError)}><Download aria-hidden="true" /> Download</Button> : null}
+          {d.abilities.canDownload ? <Button onClick={() => void download(vault.open, undefined, setError, vault.isCancel)}><Download aria-hidden="true" /> Download</Button> : null}
           {d.abilities.canEdit ? <Button variant="outline" onClick={() => setShowVersion((s) => !s)}>New version</Button> : null}
           {d.abilities.canManage ? (
-            <Button variant="outline" onClick={() => { if (window.confirm(`Delete “${d.title}”? It disappears for everyone.`)) del.mutate(d.id, { onSuccess: () => router.push('/documents') }); }}>
+            <Button variant="outline" onClick={() => { if (window.confirm(`Move “${d.title}” to the trash? It can be restored for 30 days, then it is destroyed for good.`)) del.mutate(d.id, { onSuccess: () => router.push('/documents/trash') }); }}>
               <Trash2 aria-hidden="true" /> Delete
             </Button>
           ) : null}
@@ -202,15 +236,19 @@ export default function DocumentPage({ params }: { params: Promise<{ id: string 
       {latest?.scanStatus === 'INFECTED' ? <Alert variant="destructive" data-testid="quarantined"><AlertTitle>Quarantined</AlertTitle><AlertDescription>{latest.scanDetail}. The file cannot be opened.</AlertDescription></Alert> : null}
       {latest?.scanStatus === 'REJECTED' ? <Alert variant="destructive" data-testid="refused"><AlertTitle>Upload refused</AlertTitle><AlertDescription>{latest.scanDetail}</AlertDescription></Alert> : null}
       {error || del.isError ? <Alert variant="destructive"><AlertDescription>{error ?? del.error?.message}</AlertDescription></Alert> : null}
-      {showVersion ? <UploadPanel documentId={d.id} onDone={() => { setShowVersion(false); void doc.refetch(); }} /> : null}
+      {vault.dialog}
+      {showVersion ? <UploadPanel documentId={d.id} needsPassword={d.passwordProtected} onDone={() => { setShowVersion(false); void doc.refetch(); }} /> : null}
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
-          <Card><CardHeader><CardTitle className="text-base">Preview</CardTitle></CardHeader><CardContent><Preview doc={d} /></CardContent></Card>
-          <VersionsCard doc={d} />
+          <Card><CardHeader><CardTitle className="text-base">Preview</CardTitle></CardHeader><CardContent><Preview doc={d} open={vault.open} isCancel={vault.isCancel} /></CardContent></Card>
+          <VersionsCard doc={d} open={vault.open} isCancel={vault.isCancel} />
         </div>
         <div className="space-y-4">
           <DetailsCard doc={d} />
+          <LegalHoldCard doc={d} />
+          <PasswordCard doc={d} />
           {d.abilities.canManage ? <SharingCard target={{ documentId: d.id }} title="Sharing" /> : null}
+          {d.abilities.canManage ? <ShareLinksCard doc={d} /> : null}
           {d.abilities.canManage ? <AccessLogCard docId={d.id} /> : null}
         </div>
       </div>

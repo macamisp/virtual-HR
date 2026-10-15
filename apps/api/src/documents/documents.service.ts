@@ -7,7 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type pg from 'pg';
-import type { Readable } from 'node:stream';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../common/prisma.service.ts';
 import type { RequestContext } from '../common/decorators/request-context.decorator.ts';
 import { hasPermission, Permission, UserRole } from '../../../../packages/shared/src/auth/types.ts';
@@ -17,7 +17,6 @@ import {
   UPLOAD_PART_BYTES,
 } from '../../../../packages/shared/src/documents/types.ts';
 import type {
-  AccessAction,
   AclEntry,
   AclGrantDto,
   CompleteUploadDto,
@@ -26,69 +25,28 @@ import type {
   DocumentMetaDto,
   DocumentSummary,
   DocumentVersion,
-  ScanStatus,
   StartUploadDto,
   UpdateDocumentDto,
   UploadState,
   UploadTicket,
 } from '../../../../packages/shared/src/documents/types.ts';
 import { toIso, userRef } from '../tasks/tasks.sql.ts';
-import { KMS_PROVIDER, createDecryptStream, generateDek, openSmall, sealSmall } from './crypto.ts';
-import type { KmsProvider } from './crypto.ts';
+import { generateDek, openSmall, sealSmall } from './crypto.ts';
 import { OBJECT_STORE, PRESIGN_SECONDS, keys } from './object-store.ts';
 import type { ObjectStore } from './object-store.ts';
 import { allowedKindsFromEnv, extensionAllowed } from './sniff.ts';
 import { LEVEL } from './document-policy.ts';
-import { SUMMARY_COLUMNS, SUMMARY_FROM, docActor, folderLevelSql, isPreviewableMime, levelSql, mapSummary } from './documents.sql.ts';
-import type { DocActor, SummaryRow } from './documents.sql.ts';
+import { docActor, folderLevelSql, isPreviewableMime, isWatermarkableMime, levelSql, loadDocument, mapSummary, SUMMARY_COLUMNS, SUMMARY_FROM } from './documents.sql.ts';
+import type { DocActor, LoadedDocument, SummaryRow, VersionRow } from './documents.sql.ts';
 import { SCAN_DISPATCHER } from './scan-dispatcher.ts';
 import type { ScanDispatcher } from './scan-dispatcher.ts';
+import { logAccess } from './access-log.ts';
+import { DocumentVault } from './document-vault.ts';
+import { DocumentContent, watermarkText } from './document-content.service.ts';
+import type { FileStream } from './document-content.service.ts';
+import { VaultService } from './vault.service.ts';
 
 type Db = pg.PoolClient;
-
-export interface FileStream {
-  stream: Readable;
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  sha256: string;
-}
-
-/** Writes one immutable access-log row (FR-DOC-012). The app role can only INSERT/SELECT. */
-export async function logAccess(
-  db: Db,
-  e: { orgId: string; documentId: string | null; versionId?: string | null; userId: string | null; action: AccessAction; ctx?: RequestContext; detail?: Record<string, unknown> },
-): Promise<void> {
-  await db.query(
-    `INSERT INTO document_access_logs (org_id, document_id, version_id, user_id, action, ip, user_agent, detail)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
-    [e.orgId, e.documentId, e.versionId ?? null, e.userId, e.action, e.ctx?.ip ?? null, e.ctx?.userAgent ?? null, e.detail ? JSON.stringify(e.detail) : null],
-  );
-}
-
-interface VersionRow {
-  id: string;
-  document_id: string;
-  version_no: number;
-  storage_key: string | null;
-  staging_key: string | null;
-  upload_id: string | null;
-  file_name_enc: Buffer;
-  mime_type: string | null;
-  size_bytes: string | null;
-  declared_size: string;
-  sha256: string | null;
-  dek_wrapped_kms: Buffer;
-  kms_key_id: string;
-  iv: Buffer | null;
-  auth_tag: Buffer | null;
-  scan_status: ScanStatus;
-  scan_detail: string | null;
-  restored_from_id: string | null;
-  uploaded_by: string;
-  uploaded_at: Date;
-  scanned_at: Date | null;
-}
 
 /**
  * FR-DOC-001..004, 009, 012, 019. Uploads: start (presigned multipart URLs) → the browser PUTs
@@ -102,8 +60,10 @@ export class DocumentsService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(OBJECT_STORE) private readonly store: ObjectStore,
-    @Inject(KMS_PROVIDER) private readonly kms: KmsProvider,
     @Inject(SCAN_DISPATCHER) private readonly scans: ScanDispatcher,
+    private readonly vault: DocumentVault,
+    private readonly vaultService: VaultService,
+    private readonly content: DocumentContent,
   ) {}
 
   // ---------------------------------------------------------------- queries
@@ -139,7 +99,7 @@ export class DocumentsService {
          WHERE x.level > 0 ORDER BY x.updated_at DESC LIMIT $${params.length}`,
         params,
       );
-      return { items: res.rows.map(mapSummary) };
+      return { items: await Promise.all(res.rows.map(async (r) => mapSummary(r, await this.vault.titleOf(user.orgId, { ...r, id: r.id })))) };
     });
   }
 
@@ -153,36 +113,56 @@ export class DocumentsService {
 
   // ---------------------------------------------------------------- uploads (FR-DOC-001, 004)
 
-  async startUpload(user: AuthenticatedUser, dto: StartUploadDto): Promise<UploadTicket> {
+  async startUpload(user: AuthenticatedUser, dto: StartUploadDto, ctx: RequestContext = { ip: null, userAgent: null }): Promise<UploadTicket> {
     if (!extensionAllowed(dto.fileName, this.allowed)) throw new BadRequestException('This file type is not allowed');
     if (dto.size > MAX_UPLOAD_BYTES) throw new BadRequestException('Files can be at most 100 MB');
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       let documentId: string;
+      let protectedDoc: LoadedDocument | null = null;
       if (dto.documentId) {
         const row = await this.load(db, user, dto.documentId, LEVEL.EDIT, true);
         const busy = await db.query(`SELECT 1 FROM document_versions WHERE document_id = $1 AND scan_status IN ('UPLOADING', 'PENDING')`, [row.id]);
         if ((busy.rowCount ?? 0) > 0) throw new ConflictException('A version of this document is still being uploaded or scanned');
         documentId = row.id;
+        if (row.password_protected) protectedDoc = row;
       } else {
         const meta = await this.checkMeta(db, user, dto.metadata!, null);
-        const res = await db.query<{ id: string }>(
-          `INSERT INTO documents (org_id, folder_id, title, category, confidentiality, owner_id, linked_user_id, linked_contract_id, linked_project_id, tags, expires_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::text[], $11::date) RETURNING id`,
-          [user.orgId, meta.folderId ?? null, meta.title, meta.category, meta.confidentiality, user.id, meta.linkedUserId ?? null, meta.linkedContractId ?? null, meta.linkedProjectId ?? null, meta.tags, meta.expiresAt ?? null],
+        documentId = randomUUID();
+        // FR-DOC-007: titles of CONFIDENTIAL/RESTRICTED documents are stored only sealed.
+        const sealed = meta.confidentiality === 'NORMAL' ? null : await this.vault.sealTitle(user.orgId, documentId, meta.title);
+        await db.query(
+          `INSERT INTO documents (id, org_id, folder_id, title, title_enc, meta_key_wrapped, meta_key_id, category, confidentiality, owner_id,
+             linked_user_id, linked_contract_id, linked_project_id, tags, expires_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::text[], $15::date)`,
+          [documentId, user.orgId, meta.folderId ?? null, sealed ? null : meta.title, sealed?.titleEnc ?? null, sealed?.metaKeyWrapped ?? null, sealed?.metaKeyId ?? null,
+            meta.category, meta.confidentiality, user.id, meta.linkedUserId ?? null, meta.linkedContractId ?? null, meta.linkedProjectId ?? null, meta.tags, meta.expiresAt ?? null],
         );
-        documentId = res.rows[0]!.id;
         if (meta.linkedContractId) await this.attachToContract(db, meta.linkedContractId, documentId);
       }
       const next = await db.query<{ n: number }>(`SELECT COALESCE(MAX(version_no), 0) + 1 AS n FROM document_versions WHERE document_id = $1`, [documentId]);
       const versionNo = next.rows[0]!.n;
       // FR-DOC-007: a fresh data key per version; only its KMS-wrapped form is stored.
+      // FR-DOC-006: a new version of a password-protected document needs the password; it is
+      // checked by opening an existing version, then the new key is wrapped with it as well.
+      if (protectedDoc) {
+        const prev = await db.query<VersionRow>(
+          `SELECT * FROM document_versions WHERE document_id = $1 AND dek_wrapped_pw IS NOT NULL ORDER BY version_no DESC LIMIT 1`,
+          [documentId],
+        );
+        if (prev.rows[0]) (await this.vaultService.unlock(db, user, protectedDoc, prev.rows[0], dto.documentPassword, ctx)).fill(0);
+      }
       const dek = generateDek();
       try {
-        const wrapped = await this.kms.wrap(dek, { orgId: user.orgId, documentId });
+        // The scanner needs a KMS-only wrap to encrypt; for protected documents it is destroyed
+        // once the scan has finished (document-scanner.service).
+        const wrapped = await this.vault.wrapPlain(user.orgId, documentId, dek);
+        const pw = protectedDoc ? await this.vault.wrapWithPassword(user.orgId, documentId, dek, dto.documentPassword!) : null;
         const ver = await db.query<{ id: string }>(
-          `INSERT INTO document_versions (org_id, document_id, version_no, file_name_enc, declared_size, dek_wrapped_kms, kms_key_id, uploaded_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-          [user.orgId, documentId, versionNo, sealSmall(dek, dto.fileName), dto.size, wrapped.wrapped, wrapped.keyId, user.id],
+          `INSERT INTO document_versions (org_id, document_id, version_no, file_name_enc, declared_size, dek_wrapped_kms, kms_key_id, uploaded_by,
+             dek_wrapped_pw, pw_salt, pw_kdf_params, dek_wrapped_recovery, recovery_key_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13) RETURNING id`,
+          [user.orgId, documentId, versionNo, sealSmall(dek, dto.fileName), dto.size, wrapped.wrapped, wrapped.keyId, user.id,
+            pw?.dekWrappedPw ?? null, pw?.pwSalt ?? null, pw ? JSON.stringify(pw.pwKdfParams) : null, pw?.dekWrappedRecovery ?? null, pw?.recoveryKeyId ?? null],
         );
         const versionId = ver.rows[0]!.id;
         const staging = keys.staging(user.orgId, documentId, versionId);
@@ -264,15 +244,30 @@ export class DocumentsService {
 
   // ---------------------------------------------------------------- content (FR-DOC-019, 012)
 
-  /** Decrypting stream of a CLEAN version; DOWNLOAD needs that level, preview needs VIEW + PDF/image. */
-  async open(user: AuthenticatedUser, documentId: string, versionId: string | undefined, mode: 'download' | 'preview', ctx: RequestContext): Promise<FileStream> {
-    const { v, orgId } = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      await this.load(db, user, documentId, mode === 'download' ? LEVEL.DOWNLOAD : LEVEL.VIEW);
+  /**
+   * The content of a CLEAN version (FR-DOC-005, 006, 011, 019):
+   *  - download / preview: the original file; needs DOWNLOAD (a VIEW-only user asking for a
+   *    preview gets the watermarked view-only rendering instead);
+   *  - view: the watermarked rendering (viewer, time, IP); VIEW is enough.
+   * CONFIDENTIAL/RESTRICTED need a re-authentication within the window; protected documents
+   * need their password (3 wrong attempts: 15-minute lockout, HR notified).
+   */
+  async open(
+    user: AuthenticatedUser,
+    documentId: string,
+    req: { mode: 'download' | 'preview' | 'view'; versionId?: string; password?: string },
+    ctx: RequestContext,
+  ): Promise<FileStream> {
+    const { v, dek, mode } = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      const doc = await this.load(db, user, documentId, LEVEL.VIEW);
+      let mode = req.mode;
+      if (mode === 'download' && doc.level < LEVEL.DOWNLOAD) throw new ForbiddenException('You may view this document but not download it');
+      if (mode === 'preview' && doc.level < LEVEL.DOWNLOAD) mode = 'view';
       const res = await db.query<VersionRow>(
         // Without a current (clean) version, the newest one explains why nothing can be opened.
-        `SELECT * FROM document_versions WHERE document_id = $1 AND ${versionId ? 'id = $2' : `id = COALESCE((SELECT current_version_id FROM documents WHERE id = $1),
+        `SELECT * FROM document_versions WHERE document_id = $1 AND ${req.versionId ? 'id = $2' : `id = COALESCE((SELECT current_version_id FROM documents WHERE id = $1),
            (SELECT id FROM document_versions WHERE document_id = $1 ORDER BY version_no DESC LIMIT 1))`}`,
-        versionId ? [documentId, versionId] : [documentId],
+        req.versionId ? [documentId, req.versionId] : [documentId],
       );
       const ver = res.rows[0];
       if (!ver) throw new NotFoundException('Version not found');
@@ -280,16 +275,14 @@ export class DocumentsService {
         throw new ConflictException(ver.scan_status === 'INFECTED' ? 'This file is quarantined' : ver.scan_status === 'REJECTED' ? 'This file was rejected' : 'This file is still being checked for viruses');
       }
       if (mode === 'preview' && !isPreviewableMime(ver.mime_type)) throw new BadRequestException('Only PDFs and images can be previewed');
+      if (mode === 'view' && !isWatermarkableMime(ver.mime_type)) throw new BadRequestException('View-only mode is available for PDFs, PNG and JPEG images');
+      await this.vaultService.assertReauth(db, user, doc, ctx);
+      const key = await this.vaultService.unlock(db, user, doc, ver, req.password, ctx);
       await logAccess(db, { orgId: user.orgId, documentId, versionId: ver.id, userId: user.id, action: mode === 'download' ? 'DOWNLOAD' : 'VIEW', ctx, detail: { versionNo: ver.version_no, mode } });
-      return { v: ver, orgId: user.orgId };
+      return { v: ver, dek: key, mode };
     });
-    const dek = await this.kms.unwrap(v.dek_wrapped_kms, v.kms_key_id, { orgId, documentId });
-    const fileName = openSmall(dek, v.file_name_enc);
-    const source = await this.store.stream(v.storage_key!);
-    const plain = source.pipe(createDecryptStream(dek, v.iv!, v.auth_tag!));
-    source.on('error', (err) => plain.destroy(err));
-    plain.on('close', () => dek.fill(0));
-    return { stream: plain, fileName, mimeType: v.mime_type!, sizeBytes: Number(v.size_bytes), sha256: v.sha256! };
+    if (mode === 'view') return await this.content.viewOnly(v, dek, watermarkText(user.displayName ?? user.email, ctx.ip));
+    return await this.content.original(v, dek);
   }
 
   // ---------------------------------------------------------------- metadata, versions, deletion
@@ -299,7 +292,7 @@ export class DocumentsService {
       const row = await this.load(db, user, id, LEVEL.EDIT, true);
       if (row.version !== dto.version) throw new ConflictException('This document changed since you opened it; reload and try again');
       const merged: DocumentMetaDto = {
-        title: dto.title ?? row.title,
+        title: dto.title ?? (await this.vault.titleOf(user.orgId, row)),
         category: dto.category ?? row.category,
         confidentiality: dto.confidentiality ?? row.confidentiality,
         folderId: dto.folderId !== undefined ? dto.folderId : row.folder_id,
@@ -309,11 +302,20 @@ export class DocumentsService {
         tags: dto.tags ?? row.tags,
         expiresAt: dto.expiresAt !== undefined ? dto.expiresAt : row.expires_at,
       };
+      if (dto.confidentiality && dto.confidentiality !== row.confidentiality && row.level < LEVEL.MANAGE) {
+        throw new ForbiddenException('Changing the confidentiality level needs MANAGE');
+      }
       const meta = await this.checkMeta(db, user, merged, row);
+      // FR-DOC-007: confidential titles are sealed (re-using the document's metadata key).
+      const sealed = meta.confidentiality === 'NORMAL'
+        ? null
+        : await this.vault.sealTitle(user.orgId, id, meta.title, row.meta_key_wrapped && row.meta_key_id ? { wrapped: row.meta_key_wrapped, keyId: row.meta_key_id } : null);
       await db.query(
-        `UPDATE documents SET title = $2, category = $3, confidentiality = $4, folder_id = $5, linked_user_id = $6, linked_contract_id = $7,
-           linked_project_id = $8, tags = $9::text[], expires_at = $10::date, version = version + 1, updated_at = now() WHERE id = $1`,
-        [id, meta.title, meta.category, meta.confidentiality, meta.folderId ?? null, meta.linkedUserId ?? null, meta.linkedContractId ?? null, meta.linkedProjectId ?? null, meta.tags, meta.expiresAt ?? null],
+        `UPDATE documents SET title = $2, title_enc = $11, meta_key_wrapped = $12, meta_key_id = $13, category = $3, confidentiality = $4, folder_id = $5,
+           linked_user_id = $6, linked_contract_id = $7, linked_project_id = $8, tags = $9::text[], expires_at = $10::date, version = version + 1, updated_at = now()
+         WHERE id = $1`,
+        [id, sealed ? null : meta.title, meta.category, meta.confidentiality, meta.folderId ?? null, meta.linkedUserId ?? null, meta.linkedContractId ?? null,
+          meta.linkedProjectId ?? null, meta.tags, meta.expiresAt ?? null, sealed?.titleEnc ?? null, sealed?.metaKeyWrapped ?? null, sealed?.metaKeyId ?? null],
       );
       if (meta.linkedContractId !== row.linked_contract_id) {
         await db.query(`UPDATE contracts SET document_id = NULL, updated_at = now() WHERE document_id = $1`, [id]);
@@ -338,9 +340,11 @@ export class DocumentsService {
       const next = await db.query<{ n: number }>(`SELECT COALESCE(MAX(version_no), 0) + 1 AS n FROM document_versions WHERE document_id = $1`, [id]);
       const created = await db.query<{ id: string }>(
         `INSERT INTO document_versions (org_id, document_id, version_no, storage_key, file_name_enc, mime_type, size_bytes, declared_size, sha256,
-           dek_wrapped_kms, kms_key_id, iv, auth_tag, scan_status, scan_detail, restored_from_id, uploaded_by, completed_at, scanned_at)
+           dek_wrapped_kms, kms_key_id, iv, auth_tag, dek_wrapped_pw, pw_salt, pw_kdf_params, dek_wrapped_recovery, recovery_key_id,
+           scan_status, scan_detail, restored_from_id, uploaded_by, completed_at, scanned_at)
          SELECT org_id, document_id, $3, storage_key, file_name_enc, mime_type, size_bytes, declared_size, sha256,
-           dek_wrapped_kms, kms_key_id, iv, auth_tag, 'CLEAN', scan_detail, id, $4, now(), scanned_at
+           dek_wrapped_kms, kms_key_id, iv, auth_tag, dek_wrapped_pw, pw_salt, pw_kdf_params, dek_wrapped_recovery, recovery_key_id,
+           'CLEAN', scan_detail, id, $4, now(), scanned_at
          FROM document_versions WHERE id = $1 AND document_id = $2 RETURNING id`,
         [versionId, id, next.rows[0]!.n, user.id],
       );
@@ -350,14 +354,16 @@ export class DocumentsService {
     });
   }
 
-  async remove(user: AuthenticatedUser, id: string, ctx: RequestContext): Promise<{ deleted: true }> {
+  /** FR-DOC-017: to the trash (restorable for 30 days, then crypto-shredded); hold and retention apply. */
+  async remove(user: AuthenticatedUser, id: string, ctx: RequestContext): Promise<{ deleted: true; shredAfter: string }> {
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const row = await this.load(db, user, id, LEVEL.MANAGE, true);
-      if (row.legal_hold) throw new ConflictException('This document is under legal hold');
-      await db.query(`UPDATE documents SET deleted_at = now(), version = version + 1, updated_at = now() WHERE id = $1`, [id]);
+      await this.vaultService.assertDeletable(db, user.orgId, row);
+      await db.query(`UPDATE documents SET deleted_at = now(), deleted_by = $2, version = version + 1, updated_at = now() WHERE id = $1`, [id, user.id]);
       await db.query(`UPDATE contracts SET document_id = NULL, updated_at = now() WHERE document_id = $1`, [id]);
-      await logAccess(db, { orgId: user.orgId, documentId: id, userId: user.id, action: 'DELETE', ctx, detail: { title: row.title } });
-      return { deleted: true as const };
+      // A confidential title never goes into the log in clear.
+      await logAccess(db, { orgId: user.orgId, documentId: id, userId: user.id, action: 'DELETE', ctx, detail: { title: row.title ?? '(confidential)', trash: true } });
+      return { deleted: true as const, shredAfter: new Date(Date.now() + 30 * 86_400_000).toISOString() };
     });
   }
 
@@ -421,18 +427,8 @@ export class DocumentsService {
 
   // ---------------------------------------------------------------- helpers
 
-  private async load(db: Db, user: AuthenticatedUser, id: string, need: number, forUpdate = false): Promise<SummaryRow & { legal_hold: boolean }> {
-    const params: unknown[] = [id];
-    const level = levelSql(docActor(user), params);
-    const res = await db.query<SummaryRow & { legal_hold: boolean }>(
-      `SELECT ${SUMMARY_COLUMNS}, d.legal_hold, ${level} AS level ${SUMMARY_FROM} WHERE d.id = $1 AND d.deleted_at IS NULL ${forUpdate ? 'FOR UPDATE OF d' : ''}`,
-      params,
-    );
-    const row = res.rows[0];
-    // Invisible and missing look the same.
-    if (!row || row.level < LEVEL.VIEW) throw new NotFoundException('Document not found');
-    if (row.level < need) throw new ForbiddenException('You do not have permission for this');
-    return row;
+  private async load(db: Db, user: AuthenticatedUser, id: string, need: number, forUpdate = false): Promise<LoadedDocument> {
+    return await loadDocument(db, user, id, need, { forUpdate });
   }
 
   private async ownUpload(db: Db, user: AuthenticatedUser, versionId: string): Promise<VersionRow> {
@@ -529,7 +525,7 @@ export class DocumentsService {
     }));
   }
 
-  private async buildDetail(db: Db, row: SummaryRow): Promise<DocumentDetail> {
+  private async buildDetail(db: Db, row: LoadedDocument): Promise<DocumentDetail> {
     const vres = await db.query<VersionRow & { u_name: string | null; u_email: string; u_role: string; restored_no: number | null; is_current: boolean }>(
       `SELECT v.*, u.display_name AS u_name, u.email AS u_email, u.role AS u_role, r.version_no AS restored_no,
               COALESCE(v.id = d.current_version_id, false) AS is_current
@@ -540,16 +536,19 @@ export class DocumentsService {
       [row.id],
     );
     const versions: DocumentVersion[] = [];
-    const orgRes = await db.query<{ org_id: string }>(`SELECT org_id FROM documents WHERE id = $1`, [row.id]);
-    const orgId = orgRes.rows[0]!.org_id;
+    const orgId = row.org_id;
     for (const v of vres.rows) {
-      let fileName = '(name unavailable)';
-      try {
-        const dek = await this.kms.unwrap(v.dek_wrapped_kms, v.kms_key_id, { orgId, documentId: row.id });
-        fileName = openSmall(dek, v.file_name_enc);
-        dek.fill(0);
-      } catch {
-        // A key problem must not hide the rest of the document.
+      // File names are sealed with the version key: unreadable without the password in
+      // password mode (FR-DOC-006), gone after shredding.
+      let fileName = v.dek_wrapped_kms ? '(name unavailable)' : v.dek_wrapped_pw ? '(protected by a password)' : '(destroyed)';
+      if (v.dek_wrapped_kms && v.file_name_enc) {
+        try {
+          const dek = await this.vault.versionDek(orgId, row.id, { ...v, dek_wrapped_pw: null, pw_salt: null });
+          fileName = openSmall(dek, v.file_name_enc);
+          dek.fill(0);
+        } catch {
+          // A key problem must not hide the rest of the document.
+        }
       }
       versions.push({
         id: v.id,
@@ -567,6 +566,6 @@ export class DocumentsService {
         isCurrent: v.is_current,
       });
     }
-    return { ...mapSummary(row), versions, createdAt: toIso(row.created_at)! };
+    return { ...mapSummary(row, await this.vault.titleOf(orgId, row)), versions, createdAt: toIso(row.created_at)! };
   }
 }

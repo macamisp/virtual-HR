@@ -30,7 +30,7 @@ function putPart(url: string, body: Blob, onProgress: (loaded: number) => void, 
  */
 export async function uploadDocument(
   file: File,
-  target: { metadata: DocumentMetaDto } | { documentId: string },
+  target: { metadata: DocumentMetaDto } | { documentId: string; documentPassword?: string },
   onProgress: (p: UploadProgress) => void,
   signal?: AbortSignal,
 ): Promise<DocumentDetail> {

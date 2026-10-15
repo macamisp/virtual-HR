@@ -12,7 +12,7 @@ type Db = pg.PoolClient;
 const SELECT = `
   SELECT c.id, c.user_id, u.display_name, u.email, u.role, c.title, c.scope,
          to_char(c.start_date, 'YYYY-MM-DD') AS start_date, to_char(c.end_date, 'YYYY-MM-DD') AS end_date,
-         c.status, c.renewal_notice_days, c.document_id, d.title AS doc_title, c.version,
+         c.status, c.renewal_notice_days, c.document_id, COALESCE(d.title, CASE WHEN d.id IS NOT NULL THEN 'Confidential document' END) AS doc_title, c.version,
          (SELECT v.scan_status FROM document_versions v WHERE v.document_id = d.id ORDER BY v.version_no DESC LIMIT 1) AS doc_status
   FROM contracts c JOIN users u ON u.id = c.user_id
   LEFT JOIN documents d ON d.id = c.document_id AND d.deleted_at IS NULL`;

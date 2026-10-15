@@ -121,7 +121,7 @@ export class FoldersService {
       }
       params.push(q.limit);
       const res = await db.query<{ id: string; document_id: string | null; title: string | null; version_no: number | null; user_id: string | null; display_name: string | null; email: string | null; role: string | null; action: AccessLogEntry['action']; ip: string | null; user_agent: string | null; detail: Record<string, unknown> | null; created_at: Date }>(
-        `SELECT l.id::text AS id, l.document_id, d.title, v.version_no, l.user_id, u.display_name, u.email, u.role, l.action, l.ip, l.user_agent, l.detail, l.created_at
+        `SELECT l.id::text AS id, l.document_id, CASE WHEN d.id IS NULL THEN NULL WHEN d.shredded_at IS NOT NULL THEN '(destroyed)' ELSE COALESCE(d.title, '(confidential)') END AS title, v.version_no, l.user_id, u.display_name, u.email, u.role, l.action, l.ip, l.user_agent, l.detail, l.created_at
          FROM document_access_logs l
          LEFT JOIN documents d ON d.id = l.document_id
          LEFT JOIN document_versions v ON v.id = l.version_id

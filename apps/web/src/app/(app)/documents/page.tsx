@@ -58,6 +58,8 @@ export default function DocumentsPage() {
         <h1 className="text-2xl font-semibold">Documents</h1>
         <div className="flex gap-2">
           <Button variant="outline" asChild><Link href="/documents/contracts">Contracts</Link></Button>
+          <Button variant="outline" asChild><Link href="/documents/trash">Trash</Link></Button>
+          <Button variant="outline" asChild><Link href="/documents/retention">Retention</Link></Button>
           <Button onClick={() => setShowUpload((s) => !s)} aria-expanded={showUpload}><Plus aria-hidden="true" /> Upload</Button>
         </div>
       </div>

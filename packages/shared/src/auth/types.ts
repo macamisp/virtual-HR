@@ -52,6 +52,11 @@ export const Permission = {
   DOCUMENTS_READ_ALL: 'documents.read.all',
   /** SRS 7.4 contracts (minimal until the People & Org slice). */
   CONTRACTS_MANAGE: 'contracts.manage',
+  /** FR-DOC-006 / SRS 10.1 step 5: reset a lost document password through the KMS escrow. */
+  VAULT_RECOVER: 'vault.recover',
+  /** FR-DOC-017: place and lift legal holds; manage retention rules. */
+  DOCUMENTS_LEGAL_HOLD: 'documents.legal_hold',
+  DOCUMENTS_RETENTION: 'documents.retention',
 } as const;
 export type Permission = (typeof Permission)[keyof typeof Permission];
 
@@ -81,6 +86,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.DOCUMENTS_USE,
     Permission.DOCUMENTS_READ_ALL,
     Permission.CONTRACTS_MANAGE,
+    Permission.VAULT_RECOVER,
+    Permission.DOCUMENTS_LEGAL_HOLD,
+    Permission.DOCUMENTS_RETENTION,
   ],
   ADMIN: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -107,6 +115,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.DOCUMENTS_USE,
     Permission.DOCUMENTS_READ_ALL,
     Permission.CONTRACTS_MANAGE,
+    Permission.DOCUMENTS_LEGAL_HOLD,
+    Permission.DOCUMENTS_RETENTION,
   ],
   HR_MANAGER: [
     Permission.NOTIFICATIONS_READ_OWN,
@@ -133,6 +143,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.DOCUMENTS_USE,
     Permission.DOCUMENTS_READ_ALL,
     Permission.CONTRACTS_MANAGE,
+    Permission.VAULT_RECOVER,
+    Permission.DOCUMENTS_LEGAL_HOLD,
+    Permission.DOCUMENTS_RETENTION,
   ],
   HR: [
     Permission.NOTIFICATIONS_READ_OWN,

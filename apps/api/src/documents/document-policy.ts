@@ -27,17 +27,23 @@ export function effectiveLevel(f: LevelFacts): number {
 export interface DocumentAbilities {
   canView: boolean;
   canPreview: boolean;
+  canViewOnly: boolean;
   canDownload: boolean;
   canEdit: boolean;
   canManage: boolean;
 }
 
-/** `currentStatus` is the scan status of the current version (null: nothing uploaded yet). */
-export function documentAbilities(level: number, currentStatus: string | null): DocumentAbilities {
+/**
+ * `currentStatus` is the scan status of the current version (null: nothing uploaded yet).
+ * FR-DOC-011: the original file (download or inline preview) needs DOWNLOAD; VIEW gets only
+ * the watermarked view-only rendering, for the types that can be stamped.
+ */
+export function documentAbilities(level: number, currentStatus: string | null, kind: { previewable: boolean; watermarkable: boolean } = { previewable: true, watermarkable: true }): DocumentAbilities {
   const clean = currentStatus === 'CLEAN';
   return {
     canView: level >= LEVEL.VIEW,
-    canPreview: level >= LEVEL.VIEW && clean,
+    canPreview: level >= LEVEL.DOWNLOAD && clean && kind.previewable,
+    canViewOnly: level >= LEVEL.VIEW && clean && kind.watermarkable,
     canDownload: level >= LEVEL.DOWNLOAD && clean,
     canEdit: level >= LEVEL.EDIT,
     canManage: level >= LEVEL.MANAGE,
