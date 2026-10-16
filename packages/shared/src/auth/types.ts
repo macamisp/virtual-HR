@@ -64,12 +64,14 @@ export const Permission = {
   REPORTS_ALL: 'reports.all',
   /** FR-AUD-002/003: data-subject export and anonymisation. */
   PRIVACY_MANAGE: 'privacy.manage',
+  OFFICE_USE: 'office.use',
 } as const;
 export type Permission = (typeof Permission)[keyof typeof Permission];
 
 export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   SUPER_ADMIN: [
     Permission.NOTIFICATIONS_READ_OWN,
+    Permission.OFFICE_USE,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_TEAM,
@@ -103,6 +105,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   ],
   ADMIN: [
     Permission.NOTIFICATIONS_READ_OWN,
+    Permission.OFFICE_USE,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_TEAM,
@@ -135,6 +138,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   ],
   HR_MANAGER: [
     Permission.NOTIFICATIONS_READ_OWN,
+    Permission.OFFICE_USE,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_TEAM,
@@ -167,6 +171,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   ],
   HR: [
     Permission.NOTIFICATIONS_READ_OWN,
+    Permission.OFFICE_USE,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_TEAM,
@@ -194,6 +199,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   ],
   MANAGER: [
     Permission.NOTIFICATIONS_READ_OWN,
+    Permission.OFFICE_USE,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_TEAM,
@@ -209,6 +215,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   ],
   TEAM_LEAD: [
     Permission.NOTIFICATIONS_READ_OWN,
+    Permission.OFFICE_USE,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_TEAM,
@@ -223,6 +230,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   ],
   EMPLOYEE: [
     Permission.NOTIFICATIONS_READ_OWN,
+    Permission.OFFICE_USE,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_CORRECTIONS_CREATE,
@@ -231,6 +239,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   ],
   SUBCONTRACTOR: [
     Permission.NOTIFICATIONS_READ_OWN,
+    Permission.OFFICE_USE,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_CORRECTIONS_CREATE,
@@ -239,6 +248,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   ],
   INTERN: [
     Permission.NOTIFICATIONS_READ_OWN,
+    Permission.OFFICE_USE,
     Permission.TASKS_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_CORRECTIONS_CREATE,
@@ -247,6 +257,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   ],
   AUDITOR: [
     Permission.NOTIFICATIONS_READ_OWN,
+    Permission.OFFICE_USE,
     Permission.ATTENDANCE_READ_OWN,
     Permission.ATTENDANCE_READ_ALL,
     Permission.ATTENDANCE_EXPORT,
@@ -347,6 +358,7 @@ export const PERMISSION_GROUPS: ReadonlyArray<{ group: string; items: ReadonlyAr
     { permission: Permission.REPORTS_ALL, label: 'Organisation-wide reports' },
     { permission: Permission.AUDIT_READ, label: 'Read the audit log' },
     { permission: Permission.PRIVACY_MANAGE, label: 'Data-subject export and anonymisation' },
+    { permission: Permission.OFFICE_USE, label: 'Use the virtual office' },
   ] },
   { group: 'Administration', items: [
     { permission: Permission.USERS_MANAGE, label: 'Manage users' },

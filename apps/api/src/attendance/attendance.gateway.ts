@@ -55,6 +55,19 @@ export class AttendanceGateway
   private expiryTimers = new Map<string, NodeJS.Timeout>();
   private shuttingDown = false;
   private readonly heartbeatLimit = getRateLimits().heartbeat;
+  private readonly presenceListeners: Array<(orgId: string, userId: string, state: string) => void> = [];
+
+  /** FR-VO-003: the virtual office shows the attendance state on avatars. */
+  onPresence(listener: (orgId: string, userId: string, state: string) => void): void {
+    this.presenceListeners.push(listener);
+  }
+
+  private publishPresence(orgId: string, payload: { userId: string; state: string; [k: string]: unknown }): void {
+    this.server?.to(`org:${orgId}`).emit('presence:update', payload);
+    for (const l of this.presenceListeners) {
+      try { l(orgId, payload.userId, payload.state); } catch { /* a listener never breaks attendance */ }
+    }
+  }
 
   constructor(
     private readonly attendanceService: AttendanceService,
@@ -99,6 +112,9 @@ export class AttendanceGateway
             return;
           }
           client.data.auth = auth;
+          // ADR 015: the virtual office opens its own socket; it must not count as the
+          // attendance connection that keeps a session open.
+          client.data.purpose = client.handshake.auth?.purpose === 'office' ? 'office' : 'attendance';
           next();
         })
         .catch(() => next(new Error('Unauthorized')));
@@ -125,10 +141,10 @@ export class AttendanceGateway
         // Other tabs/devices of the same user may still be connected; only the last socket
         // leaving starts the grace window.
         const remaining = this.server ? await this.server.in(`user:${auth.user.sub}`).fetchSockets() : [];
-        if (remaining.length > 0) return;
+        if (remaining.some((sock) => sock.data?.purpose !== 'office')) return;
         await this.attendanceService.onSocketDisconnect(auth.user.sub, undefined, auth.user.orgId);
         if (this.server) {
-          this.server.to(`org:${auth.user.orgId}`).emit('presence:update', {
+          this.publishPresence(auth.user.orgId, {
             userId: auth.user.sub,
             state: 'DISCONNECTED',
             statusMessage: 'Socket disconnected (grace window started)',
@@ -194,7 +210,7 @@ export class AttendanceGateway
     try {
       const result = await this.attendanceService.ingestHeartbeat(payload, undefined, client.handshake.address || undefined);
 
-      this.server.to(`org:${user.orgId}`).emit('presence:update', {
+      this.publishPresence(user.orgId, {
         userId: user.sub,
         state: result.currentState,
         actionTaken: result.actionTaken,
@@ -280,7 +296,7 @@ export class AttendanceGateway
   /** Push a REST-initiated transition (e.g. break start/end) to the org board and the user's own sockets. */
   broadcastTransition(orgId: string, userId: string, result: StateMachineTransitionResult): void {
     if (!this.server) return;
-    this.server.to(`org:${orgId}`).emit('presence:update', {
+    this.publishPresence(orgId, {
       userId,
       state: result.currentState,
       actionTaken: result.actionTaken,

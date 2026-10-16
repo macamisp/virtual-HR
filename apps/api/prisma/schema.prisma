@@ -85,6 +85,10 @@ model Organization {
   orgRoles                      OrgRole[]
   requiredDocumentCategories    RequiredDocumentCategory[]
   privacyRequests               PrivacyRequest[]
+  offices                       Office[]
+  rooms                         Room[]
+  roomInvites                   RoomInvite[]
+  desks                         Desk[]
 
   @@map("organizations")
 }
@@ -112,6 +116,9 @@ model User {
   quietHoursEnd       Int?      @map("quiet_hours_end") @db.SmallInt
   /// FR-AUD-003: set when the person's data was anonymised; the row stays as a pseudonymous key.
   anonymisedAt        DateTime? @map("anonymised_at") @db.Timestamptz()
+  /// FR-VO-003: AUTO (attendance decides), AWAY or DND, and an optional message.
+  voStatus            String    @default("AUTO") @map("vo_status") @db.VarChar(8)
+  voStatusMessage     String    @default("") @map("vo_status_message") @db.VarChar(100)
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -158,6 +165,8 @@ model User {
   linkedDocuments         Document[]               @relation("DocumentLinkedUser")
   uploadedVersions        DocumentVersion[]        @relation("DocumentVersionUploader")
   contracts               Contract[]               @relation("UserContracts")
+  roomInvites             RoomInvite[]
+  desk                    Desk?
 
   @@map("users")
 }
@@ -1240,4 +1249,86 @@ model OrgRole {
 
   @@unique([orgId, name])
   @@map("org_roles")
+}
+
+/// FR-VO-001 / SRS 7.4: one office per organisation (for now), floors in map_json.
+model Office {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String   @unique @map("org_id") @db.Uuid
+  name            String   @db.VarChar(100)
+  mapJson         Json     @map("map_json")
+  /// FR-VO-005: px within which people form a proximity group.
+  proximityRadius Int      @default(96) @map("proximity_radius")
+  version         Int      @default(1)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  rooms        Room[]
+  desks        Desk[]
+
+  @@map("offices")
+}
+
+/// FR-VO-004 / SRS 7.4. Synchronised from the map's "rooms" layer; access settings are kept.
+model Room {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String   @map("org_id") @db.Uuid
+  officeId        String   @map("office_id") @db.Uuid
+  floorId         String   @map("floor_id") @db.VarChar(32)
+  mapObjectId     Int      @map("map_object_id")
+  name            String   @db.VarChar(80)
+  type            String   @db.VarChar(12)
+  capacity        Int
+  bounds          Json
+  accessMode      String   @default("OPEN") @map("access_mode") @db.VarChar(10)
+  passwordHash    String?  @map("password_hash") @db.Text
+  livekitRoomName String   @map("livekit_room_name") @db.VarChar(100)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  office       Office       @relation(fields: [officeId], references: [id], onDelete: Cascade)
+  invites      RoomInvite[]
+
+  @@unique([officeId, floorId, mapObjectId])
+  @@index([orgId])
+  @@map("rooms")
+}
+
+model RoomInvite {
+  orgId     String   @map("org_id") @db.Uuid
+  roomId    String   @map("room_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  invitedBy String?  @map("invited_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  room         Room         @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, userId])
+  @@index([orgId])
+  @@map("room_invites")
+}
+
+/// FR-VO-007: personal desks, synchronised from the map's "desks" layer.
+model Desk {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId          String   @map("org_id") @db.Uuid
+  officeId       String   @map("office_id") @db.Uuid
+  floorId        String   @map("floor_id") @db.VarChar(32)
+  mapObjectId    Int      @map("map_object_id")
+  label          String   @db.VarChar(80)
+  bounds         Json
+  assignedUserId String?  @unique @map("assigned_user_id") @db.Uuid
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  office       Office       @relation(fields: [officeId], references: [id], onDelete: Cascade)
+  assignee     User?        @relation(fields: [assignedUserId], references: [id], onDelete: SetNull)
+
+  @@unique([officeId, floorId, mapObjectId])
+  @@index([orgId])
+  @@map("desks")
 }

@@ -26,7 +26,14 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [{
+    name: 'chromium',
+    use: {
+      ...devices['Desktop Chrome'],
+      // OFFICE_BENCH_GPU=1 with --headed: let Chromium use the real GPU for the office render bench.
+      ...(process.env.OFFICE_BENCH_GPU ? { launchOptions: { args: ['--ignore-gpu-blocklist', '--enable-gpu-rasterization', '--disable-frame-rate-limit'] } } : {}),
+    },
+  }],
   webServer: [
     {
       command: 'node ../../dist/apps/api/src/main.js',

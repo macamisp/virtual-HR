@@ -52,3 +52,14 @@ It prints PASS/FAIL for NFR-ACC-001 (from the k6 summary), ACC-002 (every sessio
 ## 4. Clean up
 
 Stop the API instance and `DROP DATABASE hrvo_load`. Redis db 2 only holds the BullMQ queue state.
+
+## Virtual office (FR-VO-013, NFR-PERF-003)
+
+Same database and API instance as above (the 200 seeded users), then:
+
+```sh
+podman run --rm --network host --user 0 -v ./load:/scripts:Z docker.io/grafana/k6:latest run \
+  -e API=http://localhost:3102 -e USERS=200 -e DURATION=5m /scripts/office.js
+```
+
+Each virtual user joins the office over its own socket (`purpose: 'office'`), walks along the reception–lounge corridor at 10 Hz in bursts, and records `position_latency` (mover's send time echoed by the server → observer receipt; one machine clock). Results: `load/out/office-summary.json`; numbers in ADR 015 §10. The render bench: `OFFICE_BENCH_GPU=1 npx playwright test e2e/16-office.spec.ts -g bench --headed` in `apps/web`.

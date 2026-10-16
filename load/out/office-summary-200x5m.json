@@ -1,0 +1,26 @@
+{
+  "users": 200,
+  "duration": "5m",
+  "positionLatencyMs": {
+    "p50": 70,
+    "p95": 127,
+    "p99": 151,
+    "max": 724
+  },
+  "moveAckMs": {
+    "p50": 11,
+    "p95": 66
+  },
+  "moveRejectedRate": 0,
+  "positionMessages": 594139,
+  "positionEntries": 47961387,
+  "positionMB": 5570.85,
+  "visibleAvatars": {
+    "avg": 132.87,
+    "max": 191
+  },
+  "thresholds": {
+    "move_rejected": true,
+    "position_latency": true
+  }
+}
