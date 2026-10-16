@@ -20,6 +20,7 @@ interface Hooks {
   state(): { screen: string; status: { link: string; buffered: number; message: string | null } };
   tray(): { exists: boolean; tooltip: string };
   setIdle(s: number | null): void;
+  setLocked(v: boolean | null): void;
   advance(ms: number): void;
   tick(): Promise<void>;
   setOffline(v: boolean): Promise<void>;
@@ -63,6 +64,10 @@ test.describe.serial('Desktop agent', () => {
     app = await electron.launch({ executablePath: ELECTRON, args: [...(process.env.CI ? ['--no-sandbox'] : []), AGENT_DIR], cwd: AGENT_DIR, env });
     agentWin = await app.firstWindow();
     expect(await hook(app, 'tray')).toMatchObject({ exists: true });
+    // Before it connects: the agent ticks on its own when it comes online, so fix the idle time and
+    // the lock state first (a locked screen counts as idle; the test machine's screen may be locked).
+    await hook(app, 'setIdle', 0);
+    await hook(app, 'setLocked', false);
 
     // Server, then the explicit consent screen: nothing happens until the user agrees.
     await expect(agentWin.getByLabel('Server address')).toHaveValue('http://localhost:3101');
@@ -80,7 +85,6 @@ test.describe.serial('Desktop agent', () => {
     await expect(agentWin.getByTestId('link-state')).toHaveText('Connected');
 
     // A heartbeat from the agent: the user's open session is now led by this device.
-    await hook(app, 'setIdle', 0);
     await hook(app, 'tick');
     const deviceId = await hook(app, 'deviceId');
     expect(deviceId).toMatch(/^[0-9a-f-]{36}$/);

@@ -132,7 +132,9 @@ export function saveBlob(blob: Blob, filename: string): void {
   a.download = filename;
   document.body.appendChild(a);
   a.click();
-  a.remove();
-  // Long enough for a slow download start: revoking early makes Chrome drop the filename.
+  // Removing the link in the same tick can make Chromium start the download without its
+  // `download` name (it then uses the blob's UUID); remove it on the next tick instead.
+  setTimeout(() => a.remove(), 0);
+  // Long enough for a slow download start.
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

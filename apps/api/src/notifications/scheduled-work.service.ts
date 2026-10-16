@@ -9,6 +9,29 @@ import { NotificationsService } from './notifications.service.ts';
 import type { NewNotification } from './notifications.service.ts';
 import { dueInstant, escalationDue, localDate, reminderStage, weeklySummaryDue } from './reminder-rules.ts';
 import { approversFor } from '../timesheets/timesheets.service.ts';
+import { AttendanceFlagsService } from '../attendance/attendance-flags.service.ts';
+import { mechanicalPatterns } from '../attendance/anti-spoofing.ts';
+import type { IntervalSample } from '../attendance/anti-spoofing.ts';
+import { readAttendanceGuards } from '../admin/policy-store.ts';
+import { NotificationType } from '../../../../packages/shared/src/notifications/types.ts';
+
+/** FR-ATT-021: why the server closed a session, in plain words. */
+const AUTO_CLOSE_REASON: Partial<Record<string, string>> = {
+  TIMEOUT: 'the app stopped sending activity',
+  DISCONNECT: 'the connection was lost and did not come back',
+  MAX_LENGTH: 'the session reached the maximum length',
+};
+const AUTO_CLOCK_OUT_BODY = (why: string) => `We clocked you out at your last activity because ${why}.`;
+
+/** ISO week like 2026-W42 (one "items to review" alert per person and week). */
+function isoWeek(d: Date): string {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const year = t.getUTCFullYear();
+  const week = Math.ceil(((t.getTime() - Date.UTC(year, 0, 1)) / 86_400_000 + 1) / 7);
+  return `${year}-W${String(week).padStart(2, '0')}`;
+}
 
 interface OrgRow {
   id: string;
@@ -43,6 +66,7 @@ export class ScheduledWorkService {
     private readonly planning: PlanningService,
     private readonly attendance: AttendanceService,
     private readonly attendanceRepo: PostgresAttendanceRepository,
+    private readonly flags: AttendanceFlagsService,
   ) {}
 
   private async orgs(): Promise<OrgRow[]> {
@@ -349,8 +373,96 @@ export class ScheduledWorkService {
   async attendanceReconcile(now: Date = new Date()): Promise<number> {
     return await this.perOrg('attendance-reconcile', async (org) => {
       const r = await this.attendance.runReconciliation(now, org.id);
+      // FR-ATT-021: tell people when the server clocked them out, with a way to correct it.
+      const told = r.closed.filter((c) => AUTO_CLOSE_REASON[c.source]).map((c) => ({
+        userId: c.userId, type: NotificationType.ATTENDANCE_AUTO_CLOCK_OUT,
+        title: `Clocked out automatically at ${new Intl.DateTimeFormat('en-GB', { timeZone: org.timezone, hour: '2-digit', minute: '2-digit' }).format(c.clockOutAt)}`,
+        body: `${AUTO_CLOCK_OUT_BODY(AUTO_CLOSE_REASON[c.source]!)} If this is wrong, request a correction.`,
+        link: '/attendance', entityType: 'ATTENDANCE_SESSION', entityId: c.sessionId, dedupeKey: `autoclose:${c.sessionId}`,
+      }));
+      if (told.length) await this.notifications.notify(org.id, told);
       return r.closedCount + r.splitCount;
     });
+  }
+
+  /**
+   * FR-ATT-017 and FR-ATT-021 (ADR 019), every 5 minutes: no-clock-in reminders, long-idle alerts
+   * to managers (if configured), "items to review" alerts, and the mechanical-input scan. Alerts
+   * describe; they never penalise.
+   */
+  async attendanceAlerts(now: Date = new Date()): Promise<number> {
+    return await this.perOrg('attendance-alerts', async (org) => {
+      const guards = await this.prisma.runWithTenantContext(org.id, (db) => readAttendanceGuards(db, org.id));
+      const items: NewNotification[] = [];
+      const people = await this.prisma.runWithTenantContext(org.id, async (db) =>
+        (await db.query<{ id: string; name: string }>(`SELECT id, COALESCE(display_name, email) AS name FROM users WHERE status = 'ACTIVE'`)).rows);
+      const byId = new Map(people.map((p) => [p.id, p]));
+
+      if (guards.noClockInReminder) {
+        for (const p of people) {
+          const r = await this.attendance.clockInReminderDue(org.id, p.id, now);
+          if (!r.due) continue;
+          items.push({ userId: p.id, type: NotificationType.ATTENDANCE_NO_CLOCK_IN, title: 'You have not clocked in yet',
+            body: 'Your schedule started a while ago. Open the app to start your day, or ignore this if you are off today.', link: '/attendance', dedupeKey: `noclockin:${p.id}:${r.workDate}` });
+        }
+      }
+
+      const sessions = await this.prisma.runWithTenantContext(org.id, async (db) => (await db.query<{ id: string; user_id: string; current_state: string; paused_since: Date | null; work_date: string }>(
+        `SELECT s.id, s.user_id, s.current_state, s.work_date,
+           (SELECT g.started_at FROM attendance_segments g WHERE g.session_id = s.id AND g.state = 'PAUSED' AND g.ended_at IS NULL ORDER BY g.started_at DESC LIMIT 1) AS paused_since
+         FROM attendance_sessions s WHERE s.status = 'OPEN'`)).rows);
+
+      if (guards.longIdleAlertMinutes > 0) {
+        for (const s of sessions) {
+          if (s.current_state !== 'PAUSED' || !s.paused_since) continue;
+          const minutes = Math.floor((now.getTime() - new Date(s.paused_since).getTime()) / 60_000);
+          if (minutes < guards.longIdleAlertMinutes) continue;
+          const person = byId.get(s.user_id);
+          if (!person) continue;
+          for (const m of await this.reviewersOf(org.id, person.id)) {
+            items.push({ userId: m, type: NotificationType.ATTENDANCE_LONG_IDLE, title: `${person.name} has been idle for ${minutes} minutes`,
+              body: 'Their session is paused, so this time is not counted. This is information, not a warning.', link: '/live', dedupeKey: `longidle:${s.id}:${m}` });
+          }
+        }
+      }
+
+      // FR-ATT-017: mechanical-input heuristics over each open session's last 3.5 hours.
+      for (const s of sessions) {
+        const samples = await this.prisma.runWithTenantContext(org.id, async (db) => (await db.query<{ meta: Record<string, unknown> }>(
+          `SELECT meta FROM presence_events WHERE session_id = $1 AND event_type = 'HEARTBEAT' AND server_ts > $2 ORDER BY server_ts`,
+          [s.id, new Date(now.getTime() - 3.5 * 3600_000)])).rows);
+        const parsed: IntervalSample[] = samples.map(({ meta: m }) => ({
+          activeSeconds: Number(m.activeSeconds) || 0, idleSeconds: Number(m.idleSeconds) || 0,
+          tabVisible: m.tabVisible !== false, windowFocused: m.windowFocused !== false, source: m.source === 'AGENT' ? 'AGENT' : 'WEB',
+        }));
+        for (const reason of mechanicalPatterns(parsed)) {
+          await this.flags.raise({ orgId: org.id, userId: s.user_id, sessionId: s.id, workDate: s.work_date, kind: reason, details: { samples: parsed.length }, dedupeKey: `pattern:${s.id}:${reason}` });
+        }
+      }
+
+      if (guards.flagAlertThreshold > 0) {
+        const counts = await this.prisma.runWithTenantContext(org.id, async (db) => (await db.query<{ user_id: string; n: number }>(
+          `SELECT user_id, count(*)::int AS n FROM attendance_flags WHERE status = 'OPEN' AND created_at > $1 GROUP BY user_id HAVING count(*) >= $2`,
+          [new Date(now.getTime() - 7 * 86_400_000), guards.flagAlertThreshold])).rows);
+        const week = isoWeek(now);
+        for (const c of counts) {
+          const person = byId.get(c.user_id);
+          if (!person) continue;
+          for (const m of await this.reviewersOf(org.id, person.id)) {
+            items.push({ userId: m, type: NotificationType.ATTENDANCE_FLAGS_TO_REVIEW, title: `${c.n} attendance items to review for ${person.name}`,
+              body: 'Automatic checks raised these for a human look. Nothing has been changed or deducted.', link: '/attendance/review', dedupeKey: `flags:${c.user_id}:${week}:${m}` });
+          }
+        }
+      }
+
+      if (items.length) await this.notifications.notify(org.id, items);
+      return items.length;
+    });
+  }
+
+  /** The person's manager, else the team's leads, else HR (same rule as timesheet approval). */
+  private async reviewersOf(orgId: string, userId: string): Promise<string[]> {
+    return await this.prisma.runWithTenantContext(orgId, (db) => approversFor(db, userId));
   }
 
   /** Once per org-local day, after 00:30: close yesterday (daily records + schedule compliance). */

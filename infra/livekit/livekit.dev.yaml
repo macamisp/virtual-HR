@@ -6,7 +6,10 @@ rtc:
   tcp_port: 7881
   udp_port: 7882
   use_external_ip: false
-  node_ip: 127.0.0.1
+  # No fixed node_ip: LiveKit offers its real interfaces (so a browser on the LAN address connects)
+  # plus a loopback candidate for working offline. A fixed 127.0.0.1 failed once the machine had a
+  # LAN address, because a loopback socket cannot reach it.
+  enable_loopback_candidate: true
 # Dev key pair; the API reads the same values from LIVEKIT_API_KEY / LIVEKIT_API_SECRET.
 keys:
   hrvo-dev: hrvo-dev-secret-change-me-0123456789abcdef  # gitleaks:allow (local dev key)

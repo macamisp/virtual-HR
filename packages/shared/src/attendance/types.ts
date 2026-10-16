@@ -114,6 +114,12 @@ export interface AttendanceSession {
   agentLastSeenAt?: Date | null;
   /** ADR 018: last browser heartbeat that was in a call (keeps agent-reported idle time active). */
   webInCallAt?: Date | null;
+  /** FR-ATT-018: coarse location (ISO country) at clock-in and at the last heartbeat. */
+  countryIn?: string | null;
+  countryOut?: string | null;
+  /** FR-ATT-023: an open "Are you still working?" question, issued at the pause threshold. */
+  challengeId?: string | null;
+  challengeIssuedAt?: Date | null;
 }
 
 /** Where a heartbeat came from, decided by the server from the auth session (never the client). */
@@ -131,6 +137,18 @@ export interface AttendanceConfig {
   maxCorrectionAgeDays?: number;         // default 7 days
   currentNoticeVersion?: string;         // default 'v1.0.0'
   presenceRetentionDays?: number;        // default 90 (FR-ADM-004, per organisation)
+  /** FR-ATT-023 (ADR 019): ask "Are you still working?" before pausing. Off by default. */
+  presenceChallengeEnabled?: boolean;
+  presenceChallengeSeconds?: number;     // default 60
+  /** FR-ATT-018: allow-lists; empty = policy off. Violations are flagged, never blocked. */
+  allowedCidrs?: string[];
+  allowedCountries?: string[];
+  /** FR-ATT-021: manager alert after this many minutes paused (0 = off). */
+  longIdleAlertMinutes?: number;
+  /** FR-ATT-021: manager alert when a person has this many open review flags in 7 days (0 = off). */
+  flagAlertThreshold?: number;
+  /** FR-ATT-021: remind people who have not clocked in by schedule start + grace. */
+  noClockInReminder?: boolean;
 }
 
 export const DEFAULT_ATTENDANCE_CONFIG: AttendanceConfig = {
@@ -152,6 +170,8 @@ export interface StateMachineTransitionResult {
   currentState: AttendanceState;
   actionTaken: string;
   splitSession?: AttendanceSession; // Used on midnight split
+  /** FR-ATT-023: set when this transition asked the user "Are you still working?". */
+  challenge?: { id: string; expiresAt: Date };
 }
 
 export const UserRole = {

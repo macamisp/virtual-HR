@@ -5,6 +5,7 @@ interface UiState {
   apiUrl: string;
   defaultDeviceName: string;
   status: { link: LinkState; activity: 'active' | 'idle'; email: string | null; buffered: number; lastSync: { at: number; accepted: number } | null; message: string | null; storage: string | null };
+  challenge: { id: string; expiresAt: string } | null;
 }
 interface Notice { version: string; title: string; summary: string; monitoringSummary: string }
 interface Bridge {
@@ -12,6 +13,7 @@ interface Bridge {
   notice(apiUrl: string): Promise<Notice>;
   pair(input: { apiUrl: string; code: string; deviceName: string; consentNoticeVersion: string }): Promise<UiState>;
   disconnect(): Promise<UiState>;
+  answerChallenge(id: string): Promise<UiState>;
   quit(): Promise<void>;
   onState(cb: (s: UiState) => void): void;
 }
@@ -113,6 +115,18 @@ function renderStatus(s: UiState): void {
   const quit = el('button', { type: 'button', class: 'secondary' }, 'Quit (stops tracking)');
   disconnect.addEventListener('click', () => { if (window.confirm('Disconnect this computer? You will have to pair it again.')) void agent.disconnect().then(render); });
   quit.addEventListener('click', () => void agent.quit());
+  if (s.challenge) {
+    const yes = el('button', { type: 'button', 'data-testid': 'challenge-yes' }, 'Yes, I am still working');
+    const left = el('span', { role: 'timer' });
+    const tickLeft = () => { const sLeft = Math.max(0, Math.round((Date.parse(s.challenge!.expiresAt) - Date.now()) / 1000)); left.textContent = `${sLeft} s left`; };
+    tickLeft();
+    const timer = setInterval(tickLeft, 1000);
+    yes.addEventListener('click', () => { clearInterval(timer); void agent.answerChallenge(s.challenge!.id).then(render); });
+    root.append(el('div', { class: 'card', role: 'alertdialog', 'aria-labelledby': 'challenge-title' },
+      el('h2', { id: 'challenge-title' }, 'Are you still working?'),
+      el('p', {}, 'There has been no input for a while. Answer within a minute, or tracking pauses until you are back.'), left, el('div', { class: 'row' }, yes)));
+    yes.focus();
+  }
   root.append(
     el('h1', {}, 'HRVO Agent'),
     el('div', { class: 'card' }, el('dl', {},

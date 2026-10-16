@@ -136,6 +136,8 @@ export class AgentService {
   private async revokeRow(db: pg.PoolClient, user: AuthenticatedUser, d: DeviceRow, ctx: RequestContext): Promise<DeviceRow> {
     const r = (await db.query<DeviceRow>(`UPDATE agent_devices SET revoked_at = now(), revoked_by = $2 WHERE id = $1 RETURNING *`, [d.id, user.id])).rows[0]!;
     await this.auth.revokeFamily(db, user.orgId, d.family_id);
+    // A revoked agent stops leading the counters at once (not only after the 90 s liveness window).
+    await db.query(`UPDATE attendance_sessions SET agent_last_seen_at = NULL WHERE agent_device_id = $1 AND status = 'OPEN'`, [d.id]);
     await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'AGENT_REVOKED', entityType: 'AGENT_DEVICE', entityId: d.id, after: { owner: d.user_id }, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
     return r;
   }

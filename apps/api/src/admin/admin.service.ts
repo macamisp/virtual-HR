@@ -14,6 +14,7 @@ import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts
 import type {
   AdminUserRow,
   AssignRoleDto,
+  AttendanceGuards,
   CustomRole,
   CustomRoleDto,
   MyAccess,
@@ -22,7 +23,8 @@ import type {
   RetentionSettings,
   RolesOverview,
 } from '../../../../packages/shared/src/admin/types.ts';
-import { readOrgPolicy, writeOrgPolicy } from './policy-store.ts';
+import { readAttendanceGuards, readOrgPolicy, writeAttendanceGuards, writeOrgPolicy } from './policy-store.ts';
+import { parseCidr } from '../attendance/anti-spoofing.ts';
 import { validateAttendancePolicy } from './policy-rules.ts';
 import { checkRoleDefinition, covers, mayAssign } from './role-rules.ts';
 
@@ -97,6 +99,25 @@ export class AdminService {
     });
     this.attendance.invalidatePolicy(user.orgId);
     return await this.policy(user);
+  }
+
+  // ---------------------------------------------------------------- ADR 019 attendance safeguards
+
+  async guards(user: AuthenticatedUser): Promise<AttendanceGuards> {
+    return await this.prisma.runWithTenantContext(user.orgId, (db) => readAttendanceGuards(db, user.orgId));
+  }
+
+  async updateGuards(user: AuthenticatedUser, dto: AttendanceGuards): Promise<AttendanceGuards> {
+    const bad = dto.allowedCidrs.filter((c) => !parseCidr(c));
+    if (bad.length) throw new BadRequestException(`Not a valid IP range: ${bad.join(', ')}`);
+    await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      await db.query(`SELECT 1 FROM organizations WHERE id = $1 FOR UPDATE`, [user.orgId]);
+      const before = await readAttendanceGuards(db, user.orgId);
+      await writeAttendanceGuards(db, user.orgId, dto);
+      await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'ATTENDANCE_GUARDS_UPDATED', entityType: 'ORGANIZATION', entityId: user.orgId, before, after: dto });
+    });
+    this.attendance.invalidatePolicy(user.orgId);
+    return await this.guards(user);
   }
 
   // ---------------------------------------------------------------- FR-ADM-004

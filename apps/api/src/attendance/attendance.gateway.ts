@@ -16,6 +16,8 @@ import { AttendanceService } from './attendance.service.ts';
 import { PrismaService } from '../common/prisma.service.ts';
 import { getJwtSecret, getRateLimits } from '../common/config.ts';
 import { anchorKey, signAnchor } from '../agent/offline-sync.ts';
+import { AttendanceFlagsService } from './attendance-flags.service.ts';
+import { isIP } from 'node:net';
 import { verifyToken } from '../auth/tokens.ts';
 import type { JwtPayload, HeartbeatPayload, StateMachineTransitionResult } from '../../../../packages/shared/src/index.ts';
 
@@ -86,7 +88,23 @@ export class AttendanceGateway
     private readonly attendanceService: AttendanceService,
     private readonly prisma: PrismaService,
     @InjectThrottlerStorage() private readonly throttlerStorage: ThrottlerStorage,
+    private readonly flags: AttendanceFlagsService,
   ) {}
+
+  /**
+   * FR-ATT-018: the client's IP and coarse location. Cloudflare's CF-Connecting-IP and CF-IPCountry
+   * are only trusted with TRUST_PROXY_HEADERS=cloudflare (the API must then be reachable only
+   * through Cloudflare); otherwise anyone could forge them, so the socket address is used.
+   */
+  private network(client: Socket): { ip: string | undefined; country: string | null } {
+    const address = client.handshake.address || undefined;
+    if (process.env.TRUST_PROXY_HEADERS !== 'cloudflare') return { ip: address, country: null };
+    const h = client.handshake.headers;
+    const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v)?.trim();
+    const cfIp = one(h['cf-connecting-ip']);
+    const cfCountry = one(h['cf-ipcountry'])?.toUpperCase();
+    return { ip: cfIp && isIP(cfIp) ? cfIp : address, country: cfCountry && /^[A-Z0-9]{2}$/.test(cfCountry) && cfCountry !== 'XX' ? cfCountry : null };
+  }
 
   async onModuleInit(): Promise<void> {
     await this.startListener();
@@ -213,6 +231,8 @@ export class AttendanceGateway
     const { limit, ttl } = this.heartbeatLimit;
     const record = await this.throttlerStorage.increment(`heartbeat:${user.orgId}:${user.sub}`, ttl, limit, ttl, 'heartbeat');
     if (record.isBlocked) {
+      // FR-ATT-017: repeated flooding is flagged for review (the heartbeat is simply refused).
+      void this.flags.rejected(user.orgId, user.sub, 'FLOOD', new Date(), await this.attendanceService.timeZoneOf(user.orgId)).catch(() => undefined);
       return { success: false, error: 'Rate limit exceeded' };
     }
 
@@ -224,7 +244,12 @@ export class AttendanceGateway
     if (agentDeviceId) payload.deviceId = agentDeviceId;
 
     try {
-      const result = await this.attendanceService.ingestHeartbeat(payload, undefined, client.handshake.address || undefined, agentDeviceId ? 'AGENT' : 'WEB');
+      const where = this.network(client);
+      const result = await this.attendanceService.ingestHeartbeat(payload, undefined, where.ip, agentDeviceId ? 'AGENT' : 'WEB', where.country);
+      if (result.challenge) {
+        // FR-ATT-023: every tab and the agent of this person show the question.
+        this.server?.to(`user:${user.sub}`).emit('attendance:challenge', { id: result.challenge.id, expiresAt: result.challenge.expiresAt.toISOString() });
+      }
 
       this.publishPresence(user.orgId, {
         userId: user.sub,
@@ -255,10 +280,26 @@ export class AttendanceGateway
         currentState: result.currentState,
       };
     } catch (err: unknown) {
-      return {
-        success: false,
-        error: err instanceof Error ? err.message : 'Heartbeat rejected',
-      };
+      const message = err instanceof Error ? err.message : 'Heartbeat rejected';
+      // FR-ATT-017: forged, replayed or out-of-order signals are flagged once they repeat.
+      if (/^(Heartbeat rejected|Unauthorized: No active session secret)/.test(message)) {
+        void this.flags.rejected(user.orgId, user.sub, 'INVALID', new Date(), await this.attendanceService.timeZoneOf(user.orgId)).catch(() => undefined);
+      }
+      return { success: false, error: message };
+    }
+  }
+
+  /** FR-ATT-023: the desktop agent answers the presence challenge over its socket. */
+  @SubscribeMessage('attendance:challenge-response')
+  async handleChallengeResponse(@ConnectedSocket() client: Socket, @MessageBody() body: { challengeId?: unknown }) {
+    const auth = client.data?.auth as SocketAuth | undefined;
+    if (!auth || typeof body?.challengeId !== 'string' || !/^[0-9a-f-]{36}$/.test(body.challengeId)) return { success: false, error: 'Invalid request' };
+    try {
+      const result = await this.attendanceService.answerChallenge(auth.user.orgId, auth.user.sub, body.challengeId);
+      this.broadcastTransition(auth.user.orgId, auth.user.sub, result);
+      return { success: true, currentState: result.currentState };
+    } catch {
+      return { success: false, error: 'The question has expired. Any input resumes tracking.' };
     }
   }
 

@@ -12,10 +12,11 @@ import {
   AssignRoleDtoSchema,
   ConsentDtoSchema,
   CustomRoleDtoSchema,
+  AttendanceGuardsSchema,
   OrgPolicySchema,
   RetentionSettingsSchema,
 } from '../../../../packages/shared/src/admin/types.ts';
-import type { AssignRoleDto, ConsentDto, CustomRoleDto, OrgPolicy, RetentionSettings } from '../../../../packages/shared/src/admin/types.ts';
+import type { AssignRoleDto, AttendanceGuards, ConsentDto, CustomRoleDto, OrgPolicy, RetentionSettings } from '../../../../packages/shared/src/admin/types.ts';
 import { AdminService } from './admin.service.ts';
 import { ConsentsService } from './consents.service.ts';
 
@@ -40,6 +41,18 @@ export class AdminController {
   @RequirePermissions(Permission.ORG_MANAGE)
   updatePolicy(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(OrgPolicySchema)) dto: OrgPolicy) {
     return this.admin.updatePolicy(user, dto);
+  }
+
+  @Get('admin/attendance-guards')
+  @RequirePermissions(Permission.ORG_MANAGE)
+  guards(@CurrentUser() user: AuthenticatedUser) {
+    return this.admin.guards(user);
+  }
+
+  @Put('admin/attendance-guards')
+  @RequirePermissions(Permission.ORG_MANAGE)
+  updateGuards(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(AttendanceGuardsSchema)) dto: AttendanceGuards) {
+    return this.admin.updateGuards(user, dto);
   }
 
   @Get('admin/retention')

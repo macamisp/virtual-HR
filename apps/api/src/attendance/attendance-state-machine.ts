@@ -174,6 +174,21 @@ export class AttendanceStateMachine {
     updatedSession.activeSeconds += heartbeat.activeSeconds;
     updatedSession.idleSeconds += heartbeat.idleSeconds;
 
+    // FR-ATT-023: an open challenge. Input clears it; silence past the window pauses from the
+    // moment it was asked; silence inside the window keeps the session IDLE.
+    if (updatedSession.challengeId && updatedSession.challengeIssuedAt) {
+      if (isActivity) {
+        updatedSession.challengeId = null;
+        updatedSession.challengeIssuedAt = null;
+      } else if (serverTime.getTime() >= this.challengeDeadline(updatedSession)) {
+        return this.pauseFromChallenge(updatedSession, prev);
+      } else {
+        updatedSession.consecutiveIdleSeconds += heartbeat.idleSeconds;
+        this.recomputeNetSeconds(updatedSession, serverTime);
+        return { session: updatedSession, previousState: prev, currentState: updatedSession.currentState, actionTaken: 'Waiting for the presence challenge reply' };
+      }
+    }
+
     if (isActivity) {
       // Activity detected
       updatedSession.consecutiveIdleSeconds = 0;
@@ -234,6 +249,21 @@ export class AttendanceStateMachine {
         (prev === AttendanceState.IDLE || prev === AttendanceState.ACTIVE) &&
         updatedSession.consecutiveIdleSeconds >= this.config.pauseThresholdSeconds
       ) {
+        if (this.config.presenceChallengeEnabled) {
+          // FR-ATT-023: ask first; the reply window is measured on the server clock.
+          if (prev === AttendanceState.ACTIVE) {
+            this.closeLastSegment(updatedSession, serverTime);
+            this.openSegment(updatedSession, AttendanceState.IDLE, serverTime);
+            updatedSession.currentState = AttendanceState.IDLE;
+            updatedSession.previousState = prev;
+          }
+          updatedSession.challengeId = randomUUID();
+          updatedSession.challengeIssuedAt = serverTime;
+          return {
+            session: updatedSession, previousState: prev, currentState: updatedSession.currentState,
+            actionTaken: 'Presence challenge issued', challenge: { id: updatedSession.challengeId, expiresAt: new Date(this.challengeDeadline(updatedSession)) },
+          };
+        }
         // Row 4: IDLE -> Idle exceeds 15 min (pause threshold) -> PAUSED
         this.closeLastSegment(updatedSession, serverTime);
         this.openSegment(updatedSession, AttendanceState.PAUSED, serverTime);
@@ -508,6 +538,8 @@ export class AttendanceStateMachine {
     closedSession.status = SessionStatus.CLOSED;
     closedSession.clockOutAt = endOfDay;
     closedSession.clockOutSource = ClockOutSource.MIDNIGHT;
+    closedSession.challengeId = null;
+    closedSession.challengeIssuedAt = null;
 
     // 2. Open new session starting at 00:00:00.000 for next day
     const splitSession: AttendanceSession = {
@@ -544,6 +576,15 @@ export class AttendanceStateMachine {
       ],
       graceTimerExpiresAt: null,
       consecutiveIdleSeconds: 0,
+      // Carried into the new day: who leads the counters (ADR 018), where the person is
+      // (FR-ATT-018) and an open presence question (FR-ATT-023), so it still expires.
+      agentDeviceId: session.agentDeviceId ?? null,
+      agentLastSeenAt: session.agentLastSeenAt ?? null,
+      webInCallAt: session.webInCallAt ?? null,
+      countryIn: session.countryOut ?? session.countryIn ?? null,
+      countryOut: session.countryOut ?? null,
+      challengeId: session.challengeId ?? null,
+      challengeIssuedAt: session.challengeIssuedAt ?? null,
     };
 
     return {
@@ -589,6 +630,47 @@ export class AttendanceStateMachine {
       currentState: AttendanceState.OFFLINE,
       actionTaken: 'Close at last heartbeat; flag MAX_LENGTH for review',
     };
+  }
+
+  /** FR-ATT-023: the user answered "Are you still working?" within the window. */
+  public handleChallengeResponse(session: AttendanceSession, challengeId: string, serverTime: Date): StateMachineTransitionResult {
+    if (session.status !== SessionStatus.OPEN || !session.challengeId || session.challengeId !== challengeId || !session.challengeIssuedAt ||
+      serverTime.getTime() > this.challengeDeadline(session)) {
+      throw new InvalidTransitionError(session.currentState, 'answer the presence challenge');
+    }
+    const updated: AttendanceSession = { ...session, challengeId: null, challengeIssuedAt: null, consecutiveIdleSeconds: 0 };
+    const prev = updated.currentState;
+    this.closeLastSegment(updated, serverTime);
+    this.openSegment(updated, AttendanceState.ACTIVE, serverTime);
+    updated.currentState = AttendanceState.ACTIVE;
+    updated.previousState = prev;
+    updated.lastHeartbeatAt = serverTime;
+    this.recomputeNetSeconds(updated, serverTime);
+    return { session: updated, previousState: prev, currentState: AttendanceState.ACTIVE, actionTaken: 'Presence confirmed' };
+  }
+
+  /** FR-ATT-023: the reconciler pauses an unanswered challenge even when no heartbeat arrives. */
+  public handleChallengeExpiry(session: AttendanceSession, serverTime: Date): StateMachineTransitionResult | null {
+    if (session.status !== SessionStatus.OPEN || !session.challengeId || !session.challengeIssuedAt) return null;
+    if (serverTime.getTime() <= this.challengeDeadline(session)) return null;
+    return this.pauseFromChallenge({ ...session }, session.currentState);
+  }
+
+  private challengeDeadline(session: AttendanceSession): number {
+    return session.challengeIssuedAt!.getTime() + (this.config.presenceChallengeSeconds ?? 60) * 1000;
+  }
+
+  /** Pause from the moment the question was asked, as if there had been no question. */
+  private pauseFromChallenge(session: AttendanceSession, prev: AttendanceState): StateMachineTransitionResult {
+    const askedAt = session.challengeIssuedAt!;
+    session.challengeId = null;
+    session.challengeIssuedAt = null;
+    this.closeLastSegment(session, askedAt);
+    this.openSegment(session, AttendanceState.PAUSED, askedAt);
+    session.currentState = AttendanceState.PAUSED;
+    session.previousState = prev;
+    this.recomputeNetSeconds(session, askedAt);
+    return { session, previousState: prev, currentState: AttendanceState.PAUSED, actionTaken: 'No reply to the presence challenge: paused from when it was asked' };
   }
 
   // --- Helper Methods ---

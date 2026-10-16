@@ -2,7 +2,10 @@
 
 import { useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Coffee, Play } from 'lucide-react';
+import { FLAG_META } from '@hrvo/shared';
 import type { MyDay, MyToday } from '@hrvo/shared';
+import { FlagCard } from '@/components/flags/flag-card';
+import { useFlags } from '@/lib/flag-queries';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -194,7 +197,7 @@ function WeekList() {
                   <TableCell className="text-right font-medium tabular-nums">{formatDuration(d.netSeconds)}</TableCell>
                   <TableCell className="space-x-1">
                     {d.flags.map((f) => (
-                      <Badge key={f} variant="outline">{f}</Badge>
+                      <Badge key={f} variant="outline">{f in FLAG_META ? FLAG_META[f as keyof typeof FLAG_META].label : f}</Badge>
                     ))}
                     {d.lateMinutes ? <Badge variant="warning">Late {d.lateMinutes}m</Badge> : null}
                   </TableCell>
@@ -327,11 +330,29 @@ function MyCorrections() {
   );
 }
 
+/** ADR 019: what automatic checks raised about me, in plain words, with room to explain. */
+function MyFlags() {
+  const flags = useFlags('mine');
+  if (flags.isPending) return null;
+  if (flags.isError) return <ErrorState error={flags.error} onRetry={() => void flags.refetch()} />;
+  if (!flags.data.items.length) return null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Items under review</CardTitle>
+        <CardDescription>Automatic checks asked your manager or HR to look at these. Nothing was changed or deducted. You can add an explanation.</CardDescription>
+      </CardHeader>
+      <CardContent><ul className="space-y-2" data-testid="my-flags">{flags.data.items.map((f) => <FlagCard key={f.id} flag={f} mine />)}</ul></CardContent>
+    </Card>
+  );
+}
+
 export default function MyAttendancePage() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold">My attendance</h1>
       <TodayCard />
+      <MyFlags />
       <WeekList />
       <div className="grid gap-6 lg:grid-cols-2">
         <CorrectionForm />

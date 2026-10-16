@@ -59,6 +59,8 @@ interface Handlers {
   /** Rotated refresh token or sequence: must be persisted before anything else is sent. */
   onCredentials: (c: StoredCredentials) => void;
   onAnchor: (a: Anchor) => void;
+  /** FR-ATT-023: the server asks "Are you still working?". */
+  onChallenge: (c: { id: string; expiresAt: string }) => void;
 }
 
 const REFRESH_EVERY_MS = 12 * 60_000; // access tokens live 15 minutes
@@ -132,6 +134,9 @@ export class AgentLink {
     s.on('connect_error', () => { if (this.state !== 'revoked') this.set('offline', 'Cannot reach the server'); });
     s.on('auth:expired', () => void this.refresh());
     s.on('auth:revoked', () => { this.stop(); this.set('revoked', 'This device was disconnected'); });
+    s.on('attendance:challenge', (c: { id?: unknown; expiresAt?: unknown }) => {
+      if (typeof c?.id === 'string' && typeof c.expiresAt === 'string') this.h.onChallenge({ id: c.id, expiresAt: c.expiresAt });
+    });
   }
 
   /** Monotonic across restarts (the server rejects a sequence it has seen) and within int4. */
@@ -165,6 +170,18 @@ export class AgentLink {
   async upload(batch: PendingBatch): Promise<OfflineSyncResult> {
     if (this.forcedOffline || !this.session) throw new Error('offline');
     return await post(`${this.creds.apiUrl}/agent/offline-sync`, { batchId: batch.batchId, anchor: batch.anchor, intervals: batch.intervals }, (v) => OfflineSyncResultSchema.parse(v), this.session.accessToken);
+  }
+
+  /** FR-ATT-023: "Yes, I am still working". The server decides whether it is in time. */
+  async answerChallenge(id: string): Promise<boolean> {
+    const sock = this.socket;
+    if (!sock?.connected) return false;
+    try {
+      const r = (await sock.timeout(10_000).emitWithAck('attendance:challenge-response', { challengeId: id })) as { success: boolean };
+      return r.success;
+    } catch {
+      return false;
+    }
   }
 
   /** "Disconnect this device": revoke it on the server (its session family ends). */

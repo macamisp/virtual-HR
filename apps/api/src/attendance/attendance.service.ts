@@ -1,3 +1,6 @@
+/** FR-ATT-021: a session the server closed itself (timeout, lost connection, maximum length). */
+export interface AutoClosed { userId: string; sessionId: string; source: string; clockOutAt: Date; workDate: string }
+
 /**
  * HRVO Attendance Engine Service
  * Implements FR-ATT-001 through FR-ATT-010, Section 6.2, 6.3, and 6.6
@@ -5,7 +8,7 @@
 
 import { randomBytes, randomUUID } from 'node:crypto';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
-import { AttendanceStateMachine } from './attendance-state-machine.ts';
+import { AttendanceStateMachine, InvalidTransitionError } from './attendance-state-machine.ts';
 import { HeartbeatValidator } from './heartbeat-validator.ts';
 import type { IAttendanceRepository } from './attendance-repository.ts';
 import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
@@ -17,6 +20,7 @@ import type {
   TimeTotals,
 } from '../../../../packages/shared/src/attendance/api.ts';
 import { planOfflineSync } from '../agent/offline-sync.ts';
+import type { FlagSink, NewFlag } from './attendance-flags.service.ts';
 import type { OfflineInterval, OfflinePlan } from '../agent/offline-sync.ts';
 import {
   AttendanceState,
@@ -117,6 +121,23 @@ export class AttendanceService {
   }
 
   /** FR-ADM-001: where each organisation's thresholds come from (the org settings table). */
+  private flagSink: FlagSink | null = null;
+
+  /** ADR 019: where review flags go (AttendanceFlagsService). Flags never change recorded time. */
+  public setFlagSink(sink: FlagSink): void {
+    this.flagSink = sink;
+  }
+
+  /** The organisation's time zone (work dates of flags). */
+  public async timeZoneOf(orgId: string): Promise<string> {
+    return (await this.policy(orgId)).config.orgTimezone;
+  }
+
+  /** A failing flag store must never break attendance itself. */
+  private async raiseFlag(f: NewFlag): Promise<void> {
+    try { await this.flagSink?.raise(f); } catch (err) { console.error('raising a review flag failed', err instanceof Error ? err.message : 'unknown error'); }
+  }
+
   public setPolicyProvider(provider: (orgId: string) => Promise<Partial<AttendanceConfig> | null>): void {
     this.policyProvider = provider;
     this.policyCache.clear();
@@ -262,6 +283,8 @@ export class AttendanceService {
     serverTime: Date = this.clock.now(),
     ip: string = '127.0.0.1',
     source: HeartbeatSource = 'WEB',
+    /** FR-ATT-018: ISO country from a trusted proxy header (Cloudflare), or null. */
+    country: string | null = null,
   ): Promise<StateMachineTransitionResult> {
     // Secret must be strictly bound to payload.sessionId & payload.orgId (per-session secret)
     const secret = await this.getSessionSecret(payload.sessionId, payload.orgId);
@@ -310,6 +333,8 @@ export class AttendanceService {
         existingSession = (await this.policy(payload.orgId)).machine.handleSocketReconnect(existingSession, serverTime).session;
       }
 
+      // The machine copies the session shallowly (flags are shared), so note this before it runs.
+      const hadMultiDevice = !!existingSession?.flags.includes('MULTI_DEVICE');
       const result = (await this.policy(payload.orgId)).machine.handleHeartbeat(
         existingSession,
         payload,
@@ -317,6 +342,8 @@ export class AttendanceService {
         ip,
         source,
       );
+      if (!existingSession || existingSession.id !== result.session.id) result.session.countryIn = country;
+      if (country) result.session.countryOut = country;
 
       if (this.repository) {
         await this.repository.saveSession(result.session);
@@ -342,6 +369,34 @@ export class AttendanceService {
       }
       this.sessions.set(payload.userId, result.session);
 
+      // FR-ATT-017/018: review flags. Never affect the heartbeat or the recorded time.
+      const r = result.session;
+      if (r.flags.includes('MULTI_DEVICE') && !hadMultiDevice) {
+        await this.raiseFlag({ orgId: r.orgId, userId: r.userId, sessionId: r.id, workDate: r.workDate, kind: 'MULTI_DEVICE', details: { devices: [existingSession?.deviceId, payload.deviceId].filter(Boolean) }, dedupeKey: `dev:${r.id}` });
+      }
+      try {
+        const cfg = (await this.policy(payload.orgId)).config;
+        await this.flagSink?.observe({ orgId: r.orgId, userId: r.userId, sessionId: r.id, workDate: r.workDate, ip, country, at: serverTime,
+          policy: { allowedCidrs: cfg.allowedCidrs ?? [], allowedCountries: cfg.allowedCountries ?? [] } });
+      } catch (err) {
+        console.error('network checks failed', err instanceof Error ? err.message : 'unknown error');
+      }
+
+      return result;
+    });
+  }
+
+  /** FR-ATT-023: "Yes, I am still working" within the window (server clock). */
+  public async answerChallenge(orgId: string, userId: string, challengeId: string, serverTime: Date = this.clock.now()): Promise<StateMachineTransitionResult> {
+    return await this.withSessionLock(orgId, userId, async () => {
+      const session = await this.getSession(userId, orgId);
+      if (!session || session.status !== SessionStatus.OPEN) throw new InvalidTransitionError(AttendanceState.OFFLINE, 'answer the presence challenge');
+      const result = (await this.policy(orgId)).machine.handleChallengeResponse(session, challengeId, serverTime);
+      if (this.repository) {
+        await this.repository.saveSession(result.session);
+        await this.repository.recordPresenceEvent({ orgId, userId, sessionId: result.session.id, serverTs: serverTime, eventType: 'PRESENCE_CONFIRMED', state: result.currentState, seq: 0 });
+      }
+      this.sessions.set(userId, result.session);
       return result;
     });
   }
@@ -394,6 +449,8 @@ export class AttendanceService {
         });
         sessionIds.push(session.id);
         dates.add(planned.workDate);
+        await this.raiseFlag({ orgId: p.orgId, userId: p.userId, sessionId: session.id, workDate: planned.workDate, kind: 'OFFLINE_SYNCED',
+          details: { from: planned.start.toISOString(), to: planned.end.toISOString(), activeSeconds: planned.activeSeconds }, dedupeKey: `offline:${session.id}` });
       }
       for (const d of dates) await this.recomputeDailySummaryForUser(p.orgId, p.userId, d);
       return { plan, sessionIds };
@@ -570,8 +627,13 @@ export class AttendanceService {
   public async runReconciliation(
     serverTime: Date = this.clock.now(),
     orgId?: string,
-  ): Promise<{ closedCount: number; splitCount: number; cleanedNoncesCount: number }> {
+  ): Promise<{ closedCount: number; splitCount: number; cleanedNoncesCount: number; closed: AutoClosed[] }> {
     const targetOrgId = orgId || this.defaultOrgId;
+    /** FR-ATT-021: sessions the server closed on its own, so the person can be told. */
+    const closed: AutoClosed[] = [];
+    const noteClosed = (x: AttendanceSession) => {
+      if (x.clockOutAt && x.clockOutSource) closed.push({ userId: x.userId, sessionId: x.id, source: x.clockOutSource, clockOutAt: x.clockOutAt, workDate: x.workDate });
+    };
     let closedCount = 0;
     let splitCount = 0;
     let cleanedNoncesCount = 0;
@@ -616,6 +678,9 @@ export class AttendanceService {
           if (this.repository) {
             await this.repository.saveSession(maxRes.session);
           }
+          noteClosed(maxRes.session);
+          // FR-ATT-009: closed at the last heartbeat and flagged for review.
+          await this.raiseFlag({ orgId: maxRes.session.orgId, userId: maxRes.session.userId, sessionId: maxRes.session.id, workDate: maxRes.session.workDate, kind: 'MAX_LENGTH', dedupeKey: `maxlen:${maxRes.session.id}` });
           this.sessions.delete(session.userId);
           this.closedSessions.set(maxRes.session.id, maxRes.session);
           closedCount++;
@@ -632,6 +697,7 @@ export class AttendanceService {
           if (this.repository) {
             await this.repository.saveSession(res.session);
           }
+          noteClosed(res.session);
           this.sessions.delete(session.userId);
           this.closedSessions.set(res.session.id, res.session);
           closedCount++;
@@ -649,15 +715,23 @@ export class AttendanceService {
           if (this.repository) {
             await this.repository.saveSession(res.session);
           }
+          noteClosed(res.session);
           this.sessions.delete(session.userId);
           this.closedSessions.set(res.session.id, res.session);
           closedCount++;
           return;
         }
+
+        // 6. FR-ATT-023: an unanswered presence challenge pauses even without heartbeats.
+        const challengeRes = machine.handleChallengeExpiry(currentSession, serverTime);
+        if (challengeRes) {
+          if (this.repository) await this.repository.saveSession(challengeRes.session);
+          this.sessions.set(session.userId, challengeRes.session);
+        }
           });
     }
 
-    return { closedCount, splitCount, cleanedNoncesCount };
+    return { closedCount, splitCount, cleanedNoncesCount, closed };
   }
 
   /**
@@ -936,6 +1010,28 @@ export class AttendanceService {
   // -------------------------------------------------------------
   // FR-ATT-014: Schedule Compliance Engine
   // -------------------------------------------------------------
+
+  /**
+   * FR-ATT-021: whether to remind someone who has not clocked in. Due from schedule start + grace
+   * for two hours, on working days only (not on holidays, approved leave or flexible schedules).
+   */
+  public async clockInReminderDue(orgId: string, userId: string, now: Date = this.clock.now()): Promise<{ due: boolean; startAt?: Date; workDate: string }> {
+    const tz = (await this.policy(orgId)).config.orgTimezone;
+    const workDate = formatInTimeZone(now, tz, 'yyyy-MM-dd');
+    const no = { due: false, workDate };
+    if (!this.repository) return no;
+    if (this.holidayProvider && await this.holidayProvider.isHoliday(orgId, workDate)) return no;
+    if (this.leaveProvider && await this.leaveProvider.isUserOnApprovedLeave(orgId, userId, workDate)) return no;
+    const schedule = await this.repository.findWorkScheduleForUser(orgId, userId);
+    if (!schedule || schedule.flexible) return no;
+    const day = schedule.days[formatInTimeZone(now, tz, 'i')];
+    if (!day) return no;
+    const startAt = fromZonedTime(`${workDate} ${day.start}:00`, tz);
+    const dueAt = startAt.getTime() + (schedule.graceMinutes ?? 10) * 60_000;
+    if (now.getTime() < dueAt || now.getTime() > dueAt + 2 * 3600_000) return no;
+    const sessions = (await this.repository.findSessionsByDate(orgId, workDate)).filter((x) => x.userId === userId && x.status !== SessionStatus.CANCELLED);
+    return sessions.length ? no : { due: true, startAt, workDate };
+  }
 
   public async computeScheduleCompliance(params: {
     orgId: string;

@@ -290,9 +290,9 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         clock_in_source, clock_out_source, active_seconds, idle_seconds, break_seconds,
         meeting_seconds, net_seconds, last_heartbeat_at, ip_in, ip_out, flags,
         status, current_state, previous_state, grace_timer_expires_at, consecutive_idle_seconds,
-        agent_device_id, agent_last_seen_at, web_in_call_at, updated_at
+        agent_device_id, agent_last_seen_at, web_in_call_at, country_in, country_out, challenge_id, challenge_issued_at, updated_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, CURRENT_TIMESTAMP
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, CURRENT_TIMESTAMP
       )
       ON CONFLICT (id) DO UPDATE SET
         clock_out_at = EXCLUDED.clock_out_at,
@@ -313,6 +313,9 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         agent_device_id = EXCLUDED.agent_device_id,
         agent_last_seen_at = EXCLUDED.agent_last_seen_at,
         web_in_call_at = EXCLUDED.web_in_call_at,
+        country_out = EXCLUDED.country_out,
+        challenge_id = EXCLUDED.challenge_id,
+        challenge_issued_at = EXCLUDED.challenge_issued_at,
         updated_at = CURRENT_TIMESTAMP`,
       [
         session.id,
@@ -341,6 +344,10 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         session.agentDeviceId ?? null,
         session.agentLastSeenAt ?? null,
         session.webInCallAt ?? null,
+        session.countryIn ?? null,
+        session.countryOut ?? null,
+        session.challengeId ?? null,
+        session.challengeIssuedAt ?? null,
       ],
     );
 
@@ -1238,6 +1245,10 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       agentDeviceId: row.agent_device_id ?? null,
       agentLastSeenAt: row.agent_last_seen_at ? new Date(row.agent_last_seen_at) : null,
       webInCallAt: row.web_in_call_at ? new Date(row.web_in_call_at) : null,
+      countryIn: row.country_in ?? null,
+      countryOut: row.country_out ?? null,
+      challengeId: row.challenge_id ?? null,
+      challengeIssuedAt: row.challenge_issued_at ? new Date(row.challenge_issued_at) : null,
     };
   }
 }

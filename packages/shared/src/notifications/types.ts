@@ -33,6 +33,11 @@ export const NotificationType = {
   CONTRACT_EXPIRING: 'CONTRACT_EXPIRING',
   // FR-MEET-012
   CHAT_MENTION: 'CHAT_MENTION',
+  // FR-ATT-021 (ADR 019)
+  ATTENDANCE_NO_CLOCK_IN: 'ATTENDANCE_NO_CLOCK_IN',
+  ATTENDANCE_AUTO_CLOCK_OUT: 'ATTENDANCE_AUTO_CLOCK_OUT',
+  ATTENDANCE_LONG_IDLE: 'ATTENDANCE_LONG_IDLE',
+  ATTENDANCE_FLAGS_TO_REVIEW: 'ATTENDANCE_FLAGS_TO_REVIEW',
   // FR-DOC-006 / FR-DOC-010
   DOCUMENT_PASSWORD_LOCKOUT: 'DOCUMENT_PASSWORD_LOCKOUT',
   DOCUMENT_PASSWORD_RECOVERED: 'DOCUMENT_PASSWORD_RECOVERED',
@@ -65,7 +70,7 @@ export type NotificationListQuery = z.infer<typeof NotificationListQuerySchema>;
 
 // ---------------------------------------------------------------- FR-NOTIF-002 / 004 preferences
 
-export type NotificationGroup = 'Tasks' | 'Timesheets' | 'Documents' | 'Security';
+export type NotificationGroup = 'Tasks' | 'Timesheets' | 'Documents' | 'Attendance' | 'Security';
 
 /**
  * Labels, groups and criticality. Critical types (security and data-safety events) are always
@@ -95,6 +100,10 @@ export const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; g
   DOCUMENT_EXPIRING: { label: 'A document is expiring', group: 'Documents' },
   CONTRACT_EXPIRING: { label: 'A contract is ending soon', group: 'Documents' },
   CHAT_MENTION: { label: 'Mentioned in chat', group: 'Tasks' },
+  ATTENDANCE_NO_CLOCK_IN: { label: 'Not clocked in by your start time', group: 'Attendance' },
+  ATTENDANCE_AUTO_CLOCK_OUT: { label: 'Clocked out automatically', group: 'Attendance' },
+  ATTENDANCE_LONG_IDLE: { label: 'Someone in your team is idle for long', group: 'Attendance' },
+  ATTENDANCE_FLAGS_TO_REVIEW: { label: 'Attendance items to review', group: 'Attendance' },
   DOCUMENT_INFECTED: { label: 'Malware found in an upload', group: 'Security', critical: true },
   DOCUMENT_PASSWORD_LOCKOUT: { label: 'Document password lockout', group: 'Security', critical: true },
   DOCUMENT_PASSWORD_RECOVERED: { label: 'Document password recovered by HR', group: 'Security', critical: true },
@@ -114,7 +123,7 @@ export type QuietHours = z.infer<typeof QuietHoursSchema>;
 export const NotificationPreferenceItemSchema = z.object({
   type: z.enum(NOTIFICATION_TYPES),
   label: z.string(),
-  group: z.enum(['Tasks', 'Timesheets', 'Documents', 'Security']),
+  group: z.enum(['Tasks', 'Timesheets', 'Documents', 'Attendance', 'Security']),
   critical: z.boolean(),
   inApp: z.boolean(),
   email: z.boolean(),

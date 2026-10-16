@@ -12,7 +12,7 @@ import { NativeSelect } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useNotificationPreferences, useSaveNotificationPreferences } from '@/lib/notification-queries';
 
-const GROUPS: NotificationGroup[] = ['Tasks', 'Timesheets', 'Documents', 'Security'];
+const GROUPS: NotificationGroup[] = ['Tasks', 'Timesheets', 'Documents', 'Attendance', 'Security'];
 type Item = NotificationPreferences['items'][number];
 
 /** FR-NOTIF-004: channels per event type, quiet hours and timezone. Security notices are always on. */

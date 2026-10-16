@@ -37,6 +37,22 @@ export const OrgPolicySchema = z
   .refine((p) => p.pauseThresholdSeconds > p.idleThresholdSeconds, { message: 'The pause threshold must be longer than the idle threshold', path: ['pauseThresholdSeconds'] });
 export type OrgPolicy = z.infer<typeof OrgPolicySchema>;
 
+/**
+ * FR-ATT-017/018/021/023 (ADR 019): attendance safeguards. Network lists only ever FLAG for review;
+ * empty lists switch the network policy off. The server re-validates every range.
+ */
+export const AttendanceGuardsSchema = z
+  .object({
+    allowedCidrs: z.array(z.string().trim().regex(/^[0-9a-fA-F:.]+(\/\d{1,3})?$/, 'Use ranges such as 203.0.113.0/24 or 2001:db8::/32')).max(100),
+    allowedCountries: z.array(z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, 'Use two-letter country codes such as LK')).max(250),
+    presenceChallenge: z.boolean(),
+    longIdleAlertMinutes: z.number().int().min(0).max(1440),
+    flagAlertThreshold: z.number().int().min(0).max(100),
+    noClockInReminder: z.boolean(),
+  })
+  .strict();
+export type AttendanceGuards = z.infer<typeof AttendanceGuardsSchema>;
+
 // ---------------------------------------------------------------- FR-ADM-004 retention
 
 export const RETENTION_LIMITS = {

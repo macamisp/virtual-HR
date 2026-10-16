@@ -9,7 +9,7 @@
  * - Offline: intervals are buffered (encrypted) as monotonic offsets from the last server anchor
  *   and uploaded on reconnect, where they are flagged OFFLINE_SYNCED.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, safeStorage, Tray } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, Tray } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -72,6 +72,8 @@ let trayTooltip = '';
 let win: BrowserWindow | null = null;
 let quitting = false;
 let idleOverride: number | null = null;
+let lockOverride: boolean | null = null;
+let challenge: { id: string; expiresAt: string } | null = null;
 let monoOffset = 0;
 const mono = () => performance.now() + monoOffset;
 
@@ -82,6 +84,8 @@ export interface UiState {
   apiUrl: string;
   defaultDeviceName: string;
   status: { link: ShownState; activity: 'active' | 'idle'; email: string | null; buffered: number; lastSync: { at: number; accepted: number } | null; message: string | null; storage: string | null };
+  /** FR-ATT-023: an open "Are you still working?" question. */
+  challenge: { id: string; expiresAt: string } | null;
 }
 function uiState(): UiState {
   return {
@@ -89,6 +93,7 @@ function uiState(): UiState {
     apiUrl: creds?.apiUrl ?? process.env.HRVO_API_URL ?? '',
     defaultDeviceName: hostname().slice(0, 100) || 'My computer',
     status: { link: linkState, activity: lastActivity, email: creds?.email ?? null, buffered: buffer.size, lastSync, message, storage: storageNote() },
+    challenge: challenge && Date.parse(challenge.expiresAt) > Date.now() ? challenge : null,
   };
 }
 function changed(): void {
@@ -181,7 +186,7 @@ async function syncPending(): Promise<void> {
 }
 
 async function tick(): Promise<void> {
-  const locked = powerMonitor.getSystemIdleState(60) === 'locked';
+  const locked = lockOverride ?? powerMonitor.getSystemIdleState(60) === 'locked';
   const c = measureInterval(idleOverride ?? powerMonitor.getSystemIdleTime(), locked);
   lastActivity = c.activeSeconds > 0 ? 'active' : 'idle';
   if (!link) { changed(); return; }
@@ -216,6 +221,13 @@ function startLink(c: StoredCredentials): void {
     },
     onCredentials: (next) => { creds = next; save('credentials.bin', next); },
     onAnchor: (a: Anchor) => buffer.setAnchor(a, mono()),
+    onChallenge: (c) => {
+      challenge = c;
+      showWindow();
+      if (Notification.isSupported()) new Notification({ title: 'HRVO: are you still working?', body: 'Answer within a minute, or tracking pauses.' }).show();
+      setTimeout(() => { if (challenge?.id === c.id) { challenge = null; changed(); } }, Math.max(0, Date.parse(c.expiresAt) - Date.now()) + 500);
+      changed();
+    },
   });
   void link.start();
 }
@@ -259,6 +271,14 @@ ipcMain.handle('disconnect', async () => {
   changed();
   return uiState();
 });
+ipcMain.handle('challenge-answer', async (_e, id: unknown) => {
+  if (typeof id !== 'string' || !challenge || challenge.id !== id || !link) return uiState();
+  const ok = await link.answerChallenge(id);
+  challenge = null;
+  message = ok ? 'Thanks. Tracking continues.' : 'The question had expired. Any input resumes tracking.';
+  changed();
+  return uiState();
+});
 ipcMain.handle('quit', () => { quitting = true; app.quit(); });
 
 // ------------------------------------------------------------------ lifecycle
@@ -292,6 +312,7 @@ if (!app.requestSingleInstanceLock()) {
         state: () => uiState(),
         tray: () => ({ exists: !!tray && !tray.isDestroyed(), tooltip: trayTooltip }),
         setIdle: (s: number | null) => { idleOverride = s; },
+        setLocked: (v: boolean | null) => { lockOverride = v; },
         advance: (ms: number) => { monoOffset += ms; },
         tick: () => tick(),
         setOffline: (v: boolean) => link?.setForcedOffline(v),

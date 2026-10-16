@@ -97,10 +97,18 @@ model Organization {
   channels                      Channel[]
   channelMembers                ChannelMember[]
   messages                      Message[]
+  attAllowedCidrs               String[]                   @default([]) @map("att_allowed_cidrs")
+  attAllowedCountries           String[]                   @default([]) @map("att_allowed_countries")
+  attPresenceChallenge          Boolean                    @default(false) @map("att_presence_challenge")
+  attLongIdleAlertMinutes       Int                        @default(0) @map("att_long_idle_alert_minutes")
+  attFlagAlertThreshold         Int                        @default(3) @map("att_flag_alert_threshold")
+  attNoClockInReminder          Boolean                    @default(true) @map("att_no_clockin_reminder")
 
   agentDevices       AgentDevice[]
   agentPairingCodes  AgentPairingCode[]
   offlineSyncBatches OfflineSyncBatch[]
+
+  attendanceFlags AttendanceFlag[]
 
   @@map("organizations")
 }
@@ -132,6 +140,8 @@ model User {
   voStatus            String    @default("AUTO") @map("vo_status") @db.VarChar(8)
   voStatusMessage     String    @default("") @map("vo_status_message") @db.VarChar(100)
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  lastCountry         String?   @map("last_country") @db.VarChar(2)
+  lastCountryAt       DateTime? @map("last_country_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   team         Team?        @relation("TeamMembers", fields: [teamId], references: [id], onDelete: SetNull)
@@ -189,6 +199,9 @@ model User {
   agentDevices       AgentDevice[]
   agentPairingCodes  AgentPairingCode[]
   offlineSyncBatches OfflineSyncBatch[]
+
+  attendanceFlags AttendanceFlag[] @relation("FlagSubject")
+  resolvedFlags   AttendanceFlag[] @relation("FlagResolver")
 
   @@map("users")
 }
@@ -256,6 +269,12 @@ model AttendanceSession {
   agentDeviceId          String?   @map("agent_device_id") @db.VarChar(100)
   agentLastSeenAt        DateTime? @map("agent_last_seen_at") @db.Timestamptz()
   webInCallAt            DateTime? @map("web_in_call_at") @db.Timestamptz()
+  /// FR-ATT-018: coarse location (country) where the session started and last reported.
+  countryIn              String?   @map("country_in") @db.VarChar(2)
+  countryOut             String?   @map("country_out") @db.VarChar(2)
+  /// FR-ATT-023: an open "Are you still working?" question.
+  challengeId            String?   @map("challenge_id") @db.Uuid
+  challengeIssuedAt      DateTime? @map("challenge_issued_at") @db.Timestamptz()
   createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt              DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
 
@@ -263,6 +282,7 @@ model AttendanceSession {
   user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
   segments       AttendanceSegment[]
   corrections    AttendanceCorrection[]
+  reviewFlags    AttendanceFlag[]
   presenceEvents PresenceEvent[]
 
   @@map("attendance_sessions")
@@ -1593,4 +1613,35 @@ model OfflineSyncBatch {
   @@id([orgId, id])
   @@index([orgId, userId])
   @@map("offline_sync_batches")
+}
+
+/// FR-ATT-017/018 (ADR 019): items for human review. Never changes recorded time.
+model AttendanceFlag {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId          String    @map("org_id") @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  sessionId      String?   @map("session_id") @db.Uuid
+  workDate       String    @map("work_date") @db.VarChar(10)
+  kind           String    @db.VarChar(40)
+  category       String    @db.VarChar(20)
+  details        Json      @default("{}")
+  dedupeKey      String    @map("dedupe_key") @db.VarChar(200)
+  status         String    @default("OPEN") @db.VarChar(20)
+  resolution     String?   @db.VarChar(20)
+  resolutionNote String?   @map("resolution_note") @db.Text
+  resolvedBy     String?   @map("resolved_by") @db.Uuid
+  resolvedAt     DateTime? @map("resolved_at") @db.Timestamptz()
+  userComment    String?   @map("user_comment") @db.Text
+  userCommentAt  DateTime? @map("user_comment_at") @db.Timestamptz()
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User               @relation("FlagSubject", fields: [userId], references: [id], onDelete: Cascade)
+  resolver     User?              @relation("FlagResolver", fields: [resolvedBy], references: [id], onDelete: SetNull)
+  session      AttendanceSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@unique([orgId, dedupeKey])
+  @@index([orgId, status, createdAt])
+  @@index([orgId, userId, createdAt])
+  @@map("attendance_flags")
 }

@@ -201,6 +201,7 @@ describe('Desktop agent (FR-ATT-011, FR-ATT-012)', { concurrency: false }, () =>
     const intervals = (n: number, from = 30) => Array.from({ length: n }, (_, i) => ({ offsetMs: (from + i * 30) * 1000, activeSeconds: 30, idleSeconds: 0 }));
     let anchor2h: Anchor;
     let firstBatch = '';
+    let firstSessions = 0;
 
     it('only the agent may upload; a browser token gets 403 and a tampered anchor 400', async () => {
       anchor2h = pastAnchor(2);
@@ -216,19 +217,23 @@ describe('Desktop agent (FR-ATT-011, FR-ATT-012)', { concurrency: false }, () =>
       const r = await ok(await call('/agent/offline-sync', { method: 'POST', body: { batchId: firstBatch, anchor: anchor2h, intervals: intervals(120) }, token: agent.accessToken }), 200, OfflineSyncResultSchema);
       assert.equal(r.accepted, 120);
       assert.equal(r.duplicate, false);
-      assert.equal(r.sessionIds.length, 1);
-      const s = (await adminPool.query(`SELECT * FROM attendance_sessions WHERE id = $1`, [r.sessionIds[0]])).rows[0];
-      assert.equal(s.clock_in_source, 'OFFLINE_SYNC');
-      assert.equal(s.status, 'CLOSED');
-      assert.deepEqual(s.flags, ['OFFLINE_SYNCED']);
-      assert.equal(new Date(s.clock_in_at).getTime(), anchor2h.serverTimeMs + 30_000, 'time = server anchor + offset, never the device clock');
-      assert.equal(s.active_seconds, 3600);
-      const segs = (await adminPool.query(`SELECT flags FROM attendance_segments WHERE session_id = $1`, [s.id])).rows;
-      assert.ok(segs.length >= 1 && segs.every((g) => g.flags.includes('OFFLINE_SYNCED')));
-      const daily = (await adminPool.query(`SELECT net_seconds FROM attendance_daily WHERE user_id = $1 AND work_date = $2`, [U.a.id, s.work_date])).rows[0];
-      assert.ok(daily.net_seconds >= 3600, `daily ${daily.net_seconds}`);
-      const ev = (await adminPool.query(`SELECT event_type FROM presence_events WHERE session_id = $1`, [s.id])).rows;
-      assert.deepEqual(ev, [{ event_type: 'OFFLINE_SYNC' }]);
+      // One session per day touched: run near midnight (org time) the hour is split (FR-ATT-008).
+      firstSessions = r.sessionIds.length;
+      assert.ok(firstSessions === 1 || firstSessions === 2, `sessions ${firstSessions}`);
+      const rows = (await adminPool.query(`SELECT * FROM attendance_sessions WHERE id = ANY($1::uuid[]) ORDER BY clock_in_at`, [r.sessionIds])).rows;
+      for (const s of rows) {
+        assert.equal(s.clock_in_source, 'OFFLINE_SYNC');
+        assert.equal(s.status, 'CLOSED');
+        assert.deepEqual(s.flags, ['OFFLINE_SYNCED']);
+        const segs = (await adminPool.query(`SELECT flags FROM attendance_segments WHERE session_id = $1`, [s.id])).rows;
+        assert.ok(segs.length >= 1 && segs.every((g) => g.flags.includes('OFFLINE_SYNCED')));
+        const ev = (await adminPool.query(`SELECT event_type FROM presence_events WHERE session_id = $1`, [s.id])).rows;
+        assert.deepEqual(ev, [{ event_type: 'OFFLINE_SYNC' }]);
+        const daily = (await adminPool.query(`SELECT net_seconds FROM attendance_daily WHERE user_id = $1 AND work_date = $2`, [U.a.id, s.work_date])).rows[0];
+        assert.ok(daily.net_seconds >= s.active_seconds, `daily ${daily.net_seconds}`);
+      }
+      assert.equal(new Date(rows[0].clock_in_at).getTime(), anchor2h.serverTimeMs + 30_000, 'time = server anchor + offset, never the device clock');
+      assert.equal(rows.reduce((n, s) => n + s.active_seconds, 0), 3600);
     });
 
     it('the same batch again is a no-op; a different batch over the same time is rejected as overlap', async () => {
@@ -238,7 +243,7 @@ describe('Desktop agent (FR-ATT-011, FR-ATT-012)', { concurrency: false }, () =>
       assert.equal(over.accepted, 0);
       assert.equal(over.rejected.OVERLAP, 10);
       const n = (await adminPool.query(`SELECT count(*)::int AS n FROM attendance_sessions WHERE user_id = $1 AND clock_in_source = 'OFFLINE_SYNC'`, [U.a.id])).rows[0].n;
-      assert.equal(n, 1);
+      assert.equal(n, firstSessions);
     });
 
     it('time after "now" and anchors older than the window are refused', async () => {
@@ -266,6 +271,8 @@ describe('Desktop agent (FR-ATT-011, FR-ATT-012)', { concurrency: false }, () =>
       const r = await ok<{ revokedAt: string | null }>(await api('a', `/agent/devices/${agent.deviceId}`, { method: 'DELETE' }), 200);
       assert.ok(r.revokedAt);
       await Promise.race([dropped, wait(5000).then(() => assert.fail('socket not dropped'))]);
+      const lead = (await adminPool.query(`SELECT agent_last_seen_at FROM attendance_sessions WHERE agent_device_id = $1 AND status = 'OPEN'`, [agent.deviceId])).rows;
+      assert.ok(lead.every((r) => r.agent_last_seen_at === null), 'the browser counts again at once');
       assert.equal((await call('/agent/token', { method: 'POST', body: { deviceId: agent.deviceId, refreshToken: agent.refreshToken } })).status, 401);
     });
 

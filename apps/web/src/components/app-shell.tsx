@@ -4,11 +4,12 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BadgeDollarSign, Building2, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, Laptop, ListChecks, LogOut, Menu, MessagesSquare, Video, Timer, Users } from 'lucide-react';
+import { Archive, BadgeDollarSign, Building2, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, Laptop, ListChecks, ShieldAlert, LogOut, Menu, MessagesSquare, Video, Timer, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { NotificationBell } from '@/components/notification-bell';
 import { LiveAlerts } from '@/components/live-alerts';
+import { PresenceChallengeDialog } from '@/components/presence-challenge';
 import { TimerBadge } from '@/components/timesheets/timer';
 import { ConsentGate } from '@/components/consent-gate';
 import { ErrorState, LoadingState } from '@/components/state-views';
@@ -74,6 +75,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useHeartbeat(status === 'authenticated' && accepted);
 
   const canSeeBoard = useCan(Permission.ATTENDANCE_READ_TEAM);
+  const canSeeAllAttendance = useCan(Permission.ATTENDANCE_READ_ALL);
   const canReview = useCan(Permission.ATTENDANCE_CORRECTIONS_REVIEW);
   const canTasks = useCan(Permission.TASKS_USE);
   const canTimesheets = useCan(Permission.TIMESHEETS_USE);
@@ -89,6 +91,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canMeetings = useCan(Permission.MEETINGS_USE);
   const canChat = useCan(Permission.CHAT_USE);
   const canAgent = useCan(Permission.AGENT_USE);
+  const canReviewFlags = useCan(Permission.ATTENDANCE_CORRECTIONS_REVIEW) || canSeeAllAttendance;
   const canReportsTeam = useCan(Permission.REPORTS_TEAM);
   const canReportsAll = useCan(Permission.REPORTS_ALL);
   const canReports = canReportsTeam || canReportsAll;
@@ -222,6 +225,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <NavLink href="/corrections" icon={ListChecks}>Corrections</NavLink>
               </li>
             ) : null}
+            {canReviewFlags ? (
+              <li>
+                <NavLink href="/attendance/review" icon={ShieldAlert}>Attendance review</NavLink>
+              </li>
+            ) : null}
             {canTasks ? (
               <li>
                 <NavLink href="/projects" icon={FolderKanban}>Projects</NavLink>
@@ -305,6 +313,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {children}
         </main>
         <LiveAlerts />
+        <PresenceChallengeDialog />
       </div>
     </div>
   );

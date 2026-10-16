@@ -9,6 +9,60 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { usePolicy, useSavePolicy } from '@/lib/admin-queries';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { useAttendanceGuards, useSaveAttendanceGuards } from '@/lib/flag-queries';
+import type { AttendanceGuards } from '@hrvo/shared';
+
+const lines = (v: string) => v.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+
+/**
+ * ADR 019 (FR-ATT-017/018/021/023): network lists only FLAG for review (never block); empty lists
+ * switch the network policy off. Countries come from Cloudflare's country header.
+ */
+function SafeguardsForm() {
+  const guards = useAttendanceGuards(true);
+  const save = useSaveAttendanceGuards();
+  const [g, setG] = useState<{ cidrs: string; countries: string; challenge: boolean; idle: string; flags: string; reminder: boolean } | null>(null);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (guards.data) setG({ cidrs: guards.data.allowedCidrs.join('\n'), countries: guards.data.allowedCountries.join(', '), challenge: guards.data.presenceChallenge, idle: String(guards.data.longIdleAlertMinutes), flags: String(guards.data.flagAlertThreshold), reminder: guards.data.noClockInReminder });
+  }, [guards.data]);
+  if (guards.isPending) return <LoadingState label="Loading safeguards" rows={2} />;
+  if (guards.isError) return <ErrorState error={guards.error} onRetry={() => void guards.refetch()} />;
+  if (!g) return null;
+  const dto: AttendanceGuards = { allowedCidrs: lines(g.cidrs), allowedCountries: lines(g.countries).map((c) => c.toUpperCase()), presenceChallenge: g.challenge, longIdleAlertMinutes: Number(g.idle) || 0, flagAlertThreshold: Number(g.flags) || 0, noClockInReminder: g.reminder };
+  return (
+    <form aria-label="Attendance safeguards" onSubmit={(e) => { e.preventDefault(); setSaved(false); save.mutate(dto, { onSuccess: () => setSaved(true) }); }}>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Attendance safeguards</CardTitle>
+          <CardDescription>Checks only raise items for a person to review in Attendance review. They never block anyone or change recorded time.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1">
+            <Label htmlFor="guard-cidrs">Allowed IP ranges (one per line; empty = any)</Label>
+            <Textarea id="guard-cidrs" rows={3} value={g.cidrs} placeholder="203.0.113.0/24" onChange={(e) => setG({ ...g, cidrs: e.target.value })} />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="guard-countries">Allowed countries (two-letter codes; empty = any)</Label>
+            <Textarea id="guard-countries" rows={3} value={g.countries} placeholder="LK, SG" onChange={(e) => setG({ ...g, countries: e.target.value })} />
+            <p className="text-xs text-muted-foreground">Needs the API behind Cloudflare with TRUST_PROXY_HEADERS=cloudflare.</p>
+          </div>
+          <FormField label="Alert the manager after this many minutes paused (0 = off)" type="number" min={0} max={1440} value={g.idle} onChange={(e) => setG({ ...g, idle: e.target.value })} />
+          <FormField label="Alert the manager at this many open items in 7 days (0 = off)" type="number" min={0} max={100} value={g.flags} onChange={(e) => setG({ ...g, flags: e.target.value })} />
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={g.challenge} onChange={(e) => setG({ ...g, challenge: e.target.checked })} /> Ask &ldquo;Are you still working?&rdquo; before pausing (60 seconds to answer)</label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={g.reminder} onChange={(e) => setG({ ...g, reminder: e.target.checked })} /> Remind people who have not clocked in by their start time</label>
+        </CardContent>
+      </Card>
+      <div className="mt-3 flex items-center gap-3">
+        <Button type="submit" disabled={save.isPending}>Save safeguards</Button>
+        {saved ? <p className="text-sm text-muted-foreground" role="status">Safeguards saved.</p> : null}
+      </div>
+      {save.isError ? <Alert variant="destructive" className="mt-2"><AlertDescription>{save.error.message}</AlertDescription></Alert> : null}
+    </form>
+  );
+}
 
 type Key = keyof OrgPolicy;
 /** Shown in the unit people think in; stored in the API's unit. */
@@ -75,6 +129,7 @@ export default function PolicyPage() {
           {save.isError ? <Alert variant="destructive"><AlertDescription>{save.error.message}</AlertDescription></Alert> : null}
         </form>
       ) : null}
+      <SafeguardsForm />
     </div>
   );
 }

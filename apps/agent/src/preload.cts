@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('agent', {
   notice: (apiUrl: string) => ipcRenderer.invoke('notice', apiUrl),
   pair: (input: { apiUrl: string; code: string; deviceName: string; consentNoticeVersion: string }) => ipcRenderer.invoke('pair', input),
   disconnect: () => ipcRenderer.invoke('disconnect'),
+  answerChallenge: (id: string) => ipcRenderer.invoke('challenge-answer', id),
   quit: () => ipcRenderer.invoke('quit'),
   onState: (cb: (s: unknown) => void) => { ipcRenderer.on('state-changed', (_e, s: unknown) => cb(s)); },
 });

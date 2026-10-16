@@ -84,4 +84,16 @@ describe('Desktop agent as the authoritative activity source', () => {
     for (let i = 1; i <= 11; i += 1) s = sm.handleHeartbeat(s, hb('agent-A', { activeSeconds: 0, idleSeconds: 30 }), at(i * 30), '10.0.0.1', 'AGENT').session;
     assert.equal(s.currentState, AttendanceState.IDLE);
   });
+
+  it('the agent keeps leading after the midnight split (and the country carries over)', () => {
+    const s = sm.handleHeartbeat(null, hb('agent-A'), new Date('2026-10-13T18:29:30.000Z'), '10.0.0.1', 'AGENT').session;
+    s.countryIn = 'LK';
+    s.countryOut = 'LK';
+    const split = sm.handleMidnightCheck(s, new Date('2026-10-13T18:30:05.000Z')).splitSession!;
+    assert.equal(split.agentDeviceId, 'agent-A');
+    assert.equal(split.countryIn, 'LK');
+    const after = sm.handleHeartbeat(split, hb('web-1'), new Date('2026-10-13T18:30:20.000Z'), '10.0.0.1', 'WEB').session;
+    assert.equal(after.activeSeconds, 0, 'browser counters still ignored while the agent is live');
+    assert.ok(!after.flags.includes('MULTI_DEVICE'));
+  });
 });
