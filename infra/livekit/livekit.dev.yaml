@@ -1,0 +1,22 @@
+# Local development LiveKit (ADR 016). Never used in production: keys come from the
+# environment there and LiveKit Cloud or a hardened self-hosted deployment is used.
+port: 7880
+bind_addresses: ["0.0.0.0"]
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: false
+  node_ip: 127.0.0.1
+# Dev key pair; the API reads the same values from LIVEKIT_API_KEY / LIVEKIT_API_SECRET.
+keys:
+  hrvo-dev: hrvo-dev-secret-change-me-0123456789abcdef  # gitleaks:allow (local dev key)
+webhook:
+  api_key: hrvo-dev
+  urls:
+    - http://127.0.0.1:3001/media/livekit/webhook   # npm run api
+    - http://127.0.0.1:3101/media/livekit/webhook   # Playwright API
+room:
+  empty_timeout: 60
+  max_participants: 50
+logging:
+  level: info

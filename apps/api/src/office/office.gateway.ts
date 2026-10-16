@@ -81,6 +81,11 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     return a && a.sockets.has(client.id) ? a : null;
   }
 
+  /** FR-VO-010: every socket of the organisation (office and attendance) sees the announcement. */
+  broadcast(orgId: string, msg: { id: string; message: string; from: string; at: string }): void {
+    this.server?.to(`org:${orgId}`).emit('office:broadcast', msg);
+  }
+
   @SubscribeMessage('office:join')
   async join(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): Promise<JoinAck> {
     const auth = this.auth(client);

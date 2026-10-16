@@ -4,10 +4,11 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BadgeDollarSign, Building2, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Timer, Users } from 'lucide-react';
+import { Archive, BadgeDollarSign, Building2, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, MessagesSquare, Video, Timer, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { NotificationBell } from '@/components/notification-bell';
+import { LiveAlerts } from '@/components/live-alerts';
 import { TimerBadge } from '@/components/timesheets/timer';
 import { ConsentGate } from '@/components/consent-gate';
 import { ErrorState, LoadingState } from '@/components/state-views';
@@ -46,7 +47,7 @@ function useSessionBootstrap() {
 
 function NavLink({ href, icon: Icon, children }: { href: string; icon: typeof Clock; children: React.ReactNode }) {
   const pathname = usePathname();
-  const active = pathname === href || (href === '/tasks' && pathname.startsWith('/tasks/'));
+  const active = pathname === href || ((href === '/tasks' || href === '/meetings') && pathname.startsWith(`${href}/`));
   return (
     <Link
       href={href}
@@ -85,6 +86,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const access = useMyAccess();
   const canManageOrg = useCan(Permission.ORG_MANAGE);
   const canOffice = useCan(Permission.OFFICE_USE);
+  const canMeetings = useCan(Permission.MEETINGS_USE);
+  const canChat = useCan(Permission.CHAT_USE);
   const canReportsTeam = useCan(Permission.REPORTS_TEAM);
   const canReportsAll = useCan(Permission.REPORTS_ALL);
   const canReports = canReportsTeam || canReportsAll;
@@ -175,6 +178,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {canOffice ? (
               <li>
                 <NavLink href="/office" icon={Building2}>Office</NavLink>
+              </li>
+            ) : null}
+            {canMeetings ? (
+              <li>
+                <NavLink href="/meetings" icon={Video}>Meetings</NavLink>
+              </li>
+            ) : null}
+            {canChat ? (
+              <li>
+                <NavLink href="/chat" icon={MessagesSquare}>Chat</NavLink>
               </li>
             ) : null}
             {canTasks ? (
@@ -285,6 +298,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main id="main" tabIndex={-1} className="min-w-0 flex-1 p-4 focus:outline-none sm:p-6">
           {children}
         </main>
+        <LiveAlerts />
       </div>
     </div>
   );

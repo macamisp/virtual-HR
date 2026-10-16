@@ -17,6 +17,7 @@ let socket: Socket | null = null;
 let creds: Credentials | null = null;
 let ids: { orgId: string; userId: string; deviceId: string } | null = null;
 let intervalMs = 30_000;
+let inCall = false;
 let timer: ReturnType<typeof setInterval> | null = null;
 let leader = false;
 let lastInputAt: number | null = null;
@@ -58,7 +59,7 @@ async function sendHeartbeat(): Promise<void> {
         idleSeconds: counters.idleSeconds,
         tabVisible: visible,
         windowFocused: focused,
-        inCall: false,
+        inCall,
       },
       creds!.sessionSecret,
     );
@@ -186,6 +187,13 @@ self.onmessage = (event: MessageEvent<MainToWorker>) => {
     }
     case 'activity':
       lastInputAt = msg.at;
+      break;
+    case 'inCall':
+      if (inCall !== msg.inCall) {
+        inCall = msg.inCall;
+        // Report the change now so the attendance state follows the call within a second.
+        void sendHeartbeat();
+      }
       break;
     case 'visibility':
       visible = msg.visible;

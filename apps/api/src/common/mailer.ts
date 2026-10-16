@@ -14,10 +14,19 @@ import { isProduction } from './config.ts';
 
 export const MAIL_TRANSPORT = Symbol('MAIL_TRANSPORT');
 
+export interface MailAttachment {
+  filename: string;
+  /** e.g. "text/calendar; method=REQUEST" */
+  contentType: string;
+  content: string;
+}
+
 export interface MailMessage {
   to: string;
   subject: string;
   text: string;
+  /** ADR 016: calendar invites (.ics). Text attachments only. */
+  attachments?: MailAttachment[];
 }
 
 export interface MailTransport {
@@ -98,17 +107,20 @@ export class SmtpMailTransport implements MailTransport {
         .split('\r\n')
         .map((l) => (l.startsWith('.') ? `.${l}` : l))
         .join('\r\n');
-      const data = [
-        `From: <${this.from}>`,
-        `To: <${message.to}>`,
-        `Subject: ${message.subject}`,
-        `Date: ${new Date().toUTCString()}`,
-        'MIME-Version: 1.0',
-        'Content-Type: text/plain; charset=utf-8',
-        '',
-        body,
-        '.',
-      ].join('\r\n');
+      const headers = [`From: <${this.from}>`, `To: <${message.to}>`, `Subject: ${message.subject}`, `Date: ${new Date().toUTCString()}`, 'MIME-Version: 1.0'];
+      let content: string[];
+      if (message.attachments?.length) {
+        const boundary = `hrvo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+        content = [`Content-Type: multipart/mixed; boundary="${boundary}"`, '', `--${boundary}`, 'Content-Type: text/plain; charset=utf-8', '', body];
+        for (const a of message.attachments) {
+          assertNoHeaderInjection(a.filename, 'attachment name');
+          assertNoHeaderInjection(a.contentType, 'attachment type');
+          const b64 = Buffer.from(a.content, 'utf8').toString('base64').replace(/.{76}/g, '$&\r\n');
+          content.push(`--${boundary}`, `Content-Type: ${a.contentType}; charset=utf-8; name="${a.filename}"`, 'Content-Transfer-Encoding: base64', `Content-Disposition: attachment; filename="${a.filename}"`, '', b64);
+        }
+        content.push(`--${boundary}--`);
+      } else content = ['Content-Type: text/plain; charset=utf-8', '', body];
+      const data = [...headers, ...content, '.'].join('\r\n');
       await command(data, [250]);
       await command('QUIT', [221]);
     } finally {

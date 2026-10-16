@@ -4,6 +4,9 @@ const wsUrl = apiUrl.replace(/^http/, 'ws');
 // Browsers upload documents straight to object storage through presigned URLs (ADR 009).
 const storageUrl = process.env.NEXT_PUBLIC_STORAGE_URL ?? '';
 const isDev = process.env.NODE_ENV !== 'production';
+// LiveKit signalling (wss) and its HTTP validate endpoint (ADR 016).
+const liveKitUrl = (process.env.NEXT_PUBLIC_LIVEKIT_URL ?? 'ws://localhost:7880').replace(/\/$/, '');
+const liveKitHttp = liveKitUrl.replace(/^ws/, 'http');
 
 // Next.js App Router injects inline bootstrap scripts, so script-src needs 'unsafe-inline'
 // until nonce-based CSP is adopted (ADR 006). Everything else is locked down.
@@ -15,7 +18,7 @@ const csp = [
   "img-src 'self' data: blob:",
   "frame-src blob:",
   "font-src 'self'",
-  `connect-src 'self' ${apiUrl} ${wsUrl}${storageUrl ? ` ${storageUrl}` : ''}${isDev ? ' ws://localhost:3000' : ''}`,
+  `connect-src 'self' ${apiUrl} ${wsUrl} ${liveKitUrl} ${liveKitHttp}${storageUrl ? ` ${storageUrl}` : ''}${isDev ? ' ws://localhost:3000' : ''}`,
   "worker-src 'self' blob:",
   "frame-ancestors 'none'",
   "base-uri 'none'",
@@ -39,7 +42,8 @@ const nextConfig = {
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'Referrer-Policy', value: 'no-referrer' },
           { key: 'X-Frame-Options', value: 'DENY' },
-          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+          // Meetings (ADR 016): camera, microphone, screen share and speaker choice for this origin only.
+          { key: 'Permissions-Policy', value: 'camera=(self), microphone=(self), display-capture=(self), speaker-selection=(self), geolocation=()' },
         ],
       },
     ];

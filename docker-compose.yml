@@ -52,6 +52,14 @@ services:
     ports:
       - "3310:3310"
 
+  # ADR 016: WebRTC SFU for meetings, rooms and proximity audio/video (local dev only).
+  livekit:
+    image: livekit/livekit-server:v1.9.1
+    command: ["--config", "/etc/livekit.yaml"]
+    network_mode: host
+    volumes:
+      - ./infra/livekit/livekit.dev.yaml:/etc/livekit.yaml:ro
+
   mailhog:
     image: mailhog/mailhog:v1.0.1
     container_name: hrvo-mailhog

@@ -6,8 +6,8 @@ import { RequirePermissions } from '../common/decorators/permissions.decorator.t
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.ts';
 import { Permission } from '../../../../packages/shared/src/index.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
-import { DeskAssignDtoSchema, OfficeMapDtoSchema, PeopleQuerySchema, RoomInvitesDtoSchema, RoomUpdateDtoSchema, StatusDtoSchema } from '../../../../packages/shared/src/office/index.ts';
-import type { DeskAssignDto, OfficeDefinition, PeopleQuery, RoomInvitesDto, RoomUpdateDto, StatusDto } from '../../../../packages/shared/src/office/index.ts';
+import { BroadcastDtoSchema, DeskAssignDtoSchema, OfficeMapDtoSchema, PeopleQuerySchema, RoomInvitesDtoSchema, RoomUpdateDtoSchema, StatusDtoSchema } from '../../../../packages/shared/src/office/index.ts';
+import type { BroadcastDto, DeskAssignDto, OfficeDefinition, PeopleQuery, RoomInvitesDto, RoomUpdateDto, StatusDto } from '../../../../packages/shared/src/office/index.ts';
 import { OfficeService } from './office.service.ts';
 
 const id = new ParseUUIDPipe({ version: '4' });
@@ -42,6 +42,19 @@ export class OfficeController {
   @Delete('desks/:id/claim')
   release(@CurrentUser() user: AuthenticatedUser, @Param('id', id) deskId: string) {
     return this.office.releaseDesk(user, deskId);
+  }
+}
+
+/** FR-VO-010: office.broadcast (admins, HR, managers). */
+@Controller('office')
+@UseGuards(JwtAuthGuard, PermissionsGuard)
+@RequirePermissions(Permission.BROADCAST)
+export class OfficeBroadcastController {
+  constructor(private readonly office: OfficeService) {}
+
+  @Post('broadcast')
+  broadcast(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(BroadcastDtoSchema)) dto: BroadcastDto) {
+    return this.office.broadcast(user, dto.message);
   }
 }
 

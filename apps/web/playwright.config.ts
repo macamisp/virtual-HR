@@ -30,8 +30,18 @@ export default defineConfig({
     name: 'chromium',
     use: {
       ...devices['Desktop Chrome'],
-      // OFFICE_BENCH_GPU=1 with --headed: let Chromium use the real GPU for the office render bench.
-      ...(process.env.OFFICE_BENCH_GPU ? { launchOptions: { args: ['--ignore-gpu-blocklist', '--enable-gpu-rasterization', '--disable-frame-rate-limit'] } } : {}),
+      // Fake camera and microphone for the meeting specs (FR-MEET-011), granted without a prompt.
+      permissions: ['camera', 'microphone'],
+      launchOptions: {
+        args: [
+          '--use-fake-ui-for-media-stream',
+          '--use-fake-device-for-media-stream',
+          '--auto-select-desktop-capture-source=Entire screen',
+          '--autoplay-policy=no-user-gesture-required',
+          // OFFICE_BENCH_GPU=1 with --headed: let Chromium use the real GPU for the office render bench.
+          ...(process.env.OFFICE_BENCH_GPU ? ['--ignore-gpu-blocklist', '--enable-gpu-rasterization', '--disable-frame-rate-limit'] : []),
+        ],
+      },
     },
   }],
   webServer: [
@@ -64,6 +74,7 @@ export default defineConfig({
         ...process.env,
         NEXT_PUBLIC_API_URL: apiUrl,
         NEXT_PUBLIC_STORAGE_URL: process.env.S3_PUBLIC_ENDPOINT ?? process.env.S3_ENDPOINT ?? '',
+        NEXT_PUBLIC_LIVEKIT_URL: process.env.LIVEKIT_URL ?? 'ws://localhost:7880',
         NEXT_TELEMETRY_DISABLED: '1',
       } as Record<string, string>,
     },

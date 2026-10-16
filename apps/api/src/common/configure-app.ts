@@ -46,6 +46,16 @@ export function configureApp(app: INestApplication): void {
     }),
   );
   app.use(cookieParser());
+  // ADR 016: LiveKit webhooks are signed over the exact bytes, so keep them raw. The content type
+  // (application/webhook+json) is not one Nest's JSON parser consumes.
+  app.use((req: { url?: string; method?: string; rawBody?: Buffer; on: (e: string, cb: (c?: Buffer) => void) => void }, _res: unknown, next: (err?: unknown) => void) => {
+    if (req.method !== 'POST' || !req.url?.startsWith('/media/livekit/webhook')) { next(); return; }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (c?: Buffer) => { if (!c) return; size += c.length; if (size > 1_000_000) { next(new Error('Webhook too large')); return; } chunks.push(c); });
+    req.on('end', () => { req.rawBody = Buffer.concat(chunks); next(); });
+    req.on('error', (e) => next(e));
+  });
 
   const origins = getCorsOrigins();
   app.enableCors({

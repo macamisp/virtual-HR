@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { DoorOpen, Lock, Map as MapIcon, Minus, Navigation, Plus, Users } from 'lucide-react';
+import { DoorOpen, Lock, Megaphone, Map as MapIcon, Minus, Navigation, Plus, Users } from 'lucide-react';
 import { ACCESS_MODES, VO_STATUS_LABEL } from '@hrvo/shared';
 import type { AccessMode, OfficeSnapshot, Room, VoStatus } from '@hrvo/shared';
 import { AccessDenied, ErrorState, LoadingState } from '@/components/state-views';
@@ -12,10 +12,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { NativeSelect } from '@/components/ui/select';
+import { OfficeMedia } from '@/components/media/office-media';
 import { OfficeClient } from '@/lib/office/office-client';
 import { STATUS_COLOUR } from '@/lib/office/office-renderer';
 import type { OfficeRenderer } from '@/lib/office/office-renderer';
-import { useClaimDesk, useOfficePeople, useOfficeSnapshot, useReleaseDesk, useSetStatus, useUpdateRoom } from '@/lib/office-queries';
+import { useBroadcast, useClaimDesk, useOfficePeople, useOfficeSnapshot, useReleaseDesk, useSetStatus, useUpdateRoom } from '@/lib/office-queries';
 import { Permission, useCan } from '@/lib/permissions';
 import { cn } from '@/lib/utils';
 
@@ -264,9 +265,28 @@ function MyPanel({ client, snapshot }: { client: OfficeClient; snapshot: OfficeS
   );
 }
 
-/** FR-VO-001..005, 007, 008, 012, 013 (ADR 015). */
+/** FR-VO-010: broadcast to the whole office (office.broadcast). */
+function BroadcastForm() {
+  const send = useBroadcast();
+  const [text, setText] = useState('');
+  const id = useId();
+  return (
+    <form className="space-y-2" aria-label="Broadcast" onSubmit={(e) => { e.preventDefault(); send.mutate(text.trim(), { onSuccess: () => setText('') }); }}>
+      <Label htmlFor={id}>Message to everyone online</Label>
+      <Input id={id} maxLength={500} value={text} onChange={(e) => setText(e.target.value)} />
+      <div className="flex items-center gap-2">
+        <Button size="sm" type="submit" disabled={send.isPending || !text.trim()}><Megaphone aria-hidden="true" /> Broadcast</Button>
+        {send.isSuccess ? <span role="status" className="text-xs text-muted-foreground">Sent.</span> : null}
+        {send.isError ? <span role="alert" className="text-xs text-destructive">{send.error.message}</span> : null}
+      </div>
+    </form>
+  );
+}
+
+/** FR-VO-001..005, 007, 008, 009, 010, 012, 013 (ADR 015, 016). */
 export default function OfficePage() {
   const allowed = useCan(Permission.OFFICE_USE);
+  const canBroadcast = useCan(Permission.BROADCAST);
   const snapshot = useOfficeSnapshot();
   const [view, setView] = useState<View>('map');
   useEffect(() => {
@@ -320,8 +340,10 @@ export default function OfficePage() {
             )}
             <div className="space-y-3">
               <Card><CardHeader><CardTitle className="text-base">Me</CardTitle></CardHeader><CardContent><MyPanel client={client} snapshot={snapshot.data} /></CardContent></Card>
+              <Card><CardHeader><CardTitle className="text-base">Audio and video</CardTitle></CardHeader><CardContent><OfficeMedia client={client} snapshot={snapshot.data} /></CardContent></Card>
               {view === 'map' ? <Card><CardHeader><CardTitle className="text-base">Rooms</CardTitle></CardHeader><CardContent><Rooms client={client} snapshot={snapshot.data} /></CardContent></Card> : null}
               <Card><CardHeader><CardTitle className="text-base">People</CardTitle></CardHeader><CardContent><People client={client} /></CardContent></Card>
+              {canBroadcast ? <Card><CardHeader><CardTitle className="text-base">Broadcast</CardTitle></CardHeader><CardContent><BroadcastForm /></CardContent></Card> : null}
             </div>
           </div>
         </>

@@ -31,6 +31,8 @@ export const NotificationType = {
   DOCUMENT_EXPIRING: 'DOCUMENT_EXPIRING',
   // AC-16 / FR-ORG: contract end date approaching
   CONTRACT_EXPIRING: 'CONTRACT_EXPIRING',
+  // FR-MEET-012
+  CHAT_MENTION: 'CHAT_MENTION',
   // FR-DOC-006 / FR-DOC-010
   DOCUMENT_PASSWORD_LOCKOUT: 'DOCUMENT_PASSWORD_LOCKOUT',
   DOCUMENT_PASSWORD_RECOVERED: 'DOCUMENT_PASSWORD_RECOVERED',
@@ -92,6 +94,7 @@ export const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; g
   DOCUMENT_REJECTED: { label: 'My upload was rejected', group: 'Documents' },
   DOCUMENT_EXPIRING: { label: 'A document is expiring', group: 'Documents' },
   CONTRACT_EXPIRING: { label: 'A contract is ending soon', group: 'Documents' },
+  CHAT_MENTION: { label: 'Mentioned in chat', group: 'Tasks' },
   DOCUMENT_INFECTED: { label: 'Malware found in an upload', group: 'Security', critical: true },
   DOCUMENT_PASSWORD_LOCKOUT: { label: 'Document password lockout', group: 'Security', critical: true },
   DOCUMENT_PASSWORD_RECOVERED: { label: 'Document password recovered by HR', group: 'Security', critical: true },

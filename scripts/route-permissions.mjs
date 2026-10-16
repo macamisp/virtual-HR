@@ -17,6 +17,8 @@ const PUBLIC_BY_DESIGN = new Set([
   'POST /auth/login', 'POST /auth/refresh', 'POST /auth/logout', 'POST /auth/password/forgot', 'POST /auth/password/reset',
   'POST /auth/invitations/accept', 'GET /auth/invitations/:token', 'POST /auth/2fa/verify', 'POST /auth/2fa/setup',
   'GET /share/:token', 'POST /share/:token/open', 'POST /notifications/unsubscribe',
+  // ADR 016: LiveKit calls it; the body is verified with the signed sha256 claim.
+  'POST /media/livekit/webhook',
 ]);
 /** Signed-in routes whose scope is "the caller's own data" and need no extra permission. */
 const SELF_SERVICE = new Set([

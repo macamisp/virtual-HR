@@ -89,6 +89,14 @@ model Organization {
   rooms                         Room[]
   roomInvites                   RoomInvite[]
   desks                         Desk[]
+  meetings                      Meeting[]
+  meetingAttendees              MeetingAttendee[]
+  meetingParticipants           MeetingParticipant[]
+  meetingLobby                  MeetingLobby[]
+  meetingActionItems            MeetingActionItem[]
+  channels                      Channel[]
+  channelMembers                ChannelMember[]
+  messages                      Message[]
 
   @@map("organizations")
 }
@@ -167,6 +175,12 @@ model User {
   contracts               Contract[]               @relation("UserContracts")
   roomInvites             RoomInvite[]
   desk                    Desk?
+  hostedMeetings          Meeting[]                @relation("MeetingHost")
+  meetingAttendance       MeetingAttendee[]
+  meetingSessions         MeetingParticipant[]
+  meetingLobbyEntries     MeetingLobby[]
+  channelMemberships      ChannelMember[]
+  messages                Message[]
 
   @@map("users")
 }
@@ -1290,6 +1304,7 @@ model Room {
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   office       Office       @relation(fields: [officeId], references: [id], onDelete: Cascade)
   invites      RoomInvite[]
+  meetings     Meeting[]
 
   @@unique([officeId, floorId, mapObjectId])
   @@index([orgId])
@@ -1331,4 +1346,180 @@ model Desk {
   @@unique([officeId, floorId, mapObjectId])
   @@index([orgId])
   @@map("desks")
+}
+
+/// FR-MEET-001..003, 009 / SRS 7.4: instant, room and scheduled meetings (ADR 016).
+model Meeting {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  type            String    @db.VarChar(10)
+  status          String    @default("SCHEDULED") @db.VarChar(10)
+  title           String    @db.VarChar(200)
+  agenda          String    @default("") @db.Text
+  notes           String    @default("") @db.Text
+  hostId          String    @map("host_id") @db.Uuid
+  roomId          String?   @map("room_id") @db.Uuid
+  scheduledStart  DateTime? @map("scheduled_start") @db.Timestamptz()
+  scheduledEnd    DateTime? @map("scheduled_end") @db.Timestamptz()
+  startedAt       DateTime? @map("started_at") @db.Timestamptz()
+  endedAt         DateTime? @map("ended_at") @db.Timestamptz()
+  recurrenceRule  String?   @map("recurrence_rule") @db.Text
+  recordingId     String?   @map("recording_id") @db.Uuid
+  lobby           Boolean   @default(true)
+  livekitRoomName String    @map("livekit_room_name") @db.VarChar(120)
+  icsSequence     Int       @default(0) @map("ics_sequence")
+  version         Int       @default(1)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  host         User                 @relation("MeetingHost", fields: [hostId], references: [id], onDelete: Cascade)
+  room         Room?                @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  attendees    MeetingAttendee[]
+  participants MeetingParticipant[]
+  lobbyEntries MeetingLobby[]
+  actionItems  MeetingActionItem[]
+
+  @@unique([livekitRoomName])
+  @@index([orgId, status])
+  @@index([orgId, scheduledStart])
+  @@map("meetings")
+}
+
+model MeetingAttendee {
+  orgId     String   @map("org_id") @db.Uuid
+  meetingId String   @map("meeting_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  role      String   @default("ATTENDEE") @db.VarChar(10)
+  response  String   @default("NEEDS_ACTION") @db.VarChar(12)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  meeting      Meeting      @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([meetingId, userId])
+  @@index([orgId, userId])
+  @@map("meeting_attendees")
+}
+
+/// FR-MEET-009: one row per join; times are the API server's clock when LiveKit reports the event.
+model MeetingParticipant {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  meetingId       String    @map("meeting_id") @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  livekitSid      String    @map("livekit_sid") @db.VarChar(64)
+  joinedAt        DateTime  @map("joined_at") @db.Timestamptz()
+  leftAt          DateTime? @map("left_at") @db.Timestamptz()
+  durationSeconds Int       @default(0) @map("duration_seconds")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  meeting      Meeting      @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([meetingId, livekitSid])
+  @@index([orgId, userId, joinedAt])
+  @@map("meeting_participants")
+}
+
+model MeetingLobby {
+  orgId       String    @map("org_id") @db.Uuid
+  meetingId   String    @map("meeting_id") @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  state       String    @default("WAITING") @db.VarChar(10)
+  requestedAt DateTime  @default(now()) @map("requested_at") @db.Timestamptz()
+  decidedBy   String?   @map("decided_by") @db.Uuid
+  decidedAt   DateTime? @map("decided_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  meeting      Meeting      @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([meetingId, userId])
+  @@map("meeting_lobby")
+}
+
+/// FR-MEET-008
+model MeetingActionItem {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId      String    @map("org_id") @db.Uuid
+  meetingId  String    @map("meeting_id") @db.Uuid
+  text       String    @db.VarChar(500)
+  assigneeId String?   @map("assignee_id") @db.Uuid
+  dueDate    DateTime? @map("due_date") @db.Date
+  taskId     String?   @map("task_id") @db.Uuid
+  createdBy  String    @map("created_by") @db.Uuid
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  meeting      Meeting      @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  @@index([meetingId])
+  @@map("meeting_action_items")
+}
+
+/// FR-MEET-012 / SRS 7.4 (ADR 017). DMs have dm_key = the two user ids, sorted, so one per pair.
+model Channel {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId      String    @map("org_id") @db.Uuid
+  kind       String    @db.VarChar(8)
+  name       String    @default("") @db.VarChar(60)
+  topic      String    @default("") @db.VarChar(250)
+  dmKey      String?   @map("dm_key") @db.VarChar(80)
+  createdBy  String    @map("created_by") @db.Uuid
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz()
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members      ChannelMember[]
+  messages     Message[]
+
+  @@unique([orgId, dmKey])
+  @@index([orgId, kind])
+  @@map("channels")
+}
+
+model ChannelMember {
+  orgId      String   @map("org_id") @db.Uuid
+  channelId  String   @map("channel_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  role       String   @default("MEMBER") @db.VarChar(8)
+  lastReadAt DateTime @default(now()) @map("last_read_at") @db.Timestamptz()
+  joinedAt   DateTime @default(now()) @map("joined_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  channel      Channel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([channelId, userId])
+  @@index([orgId, userId])
+  @@map("channel_members")
+}
+
+model Message {
+  id         String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId      String                   @map("org_id") @db.Uuid
+  channelId  String                   @map("channel_id") @db.Uuid
+  authorId   String                   @map("author_id") @db.Uuid
+  parentId   String?                  @map("parent_id") @db.Uuid
+  body       String                   @db.Text
+  mentions   String[]                 @default([]) @db.Uuid
+  documentId String?                  @map("document_id") @db.Uuid
+  editedAt   DateTime?                @map("edited_at") @db.Timestamptz()
+  deletedAt  DateTime?                @map("deleted_at") @db.Timestamptz()
+  createdAt  DateTime                 @default(now()) @map("created_at") @db.Timestamptz()
+  /// Generated column for FR-MEET-012 search (see the chat migration).
+  search     Unsupported("tsvector")? @default(dbgenerated("to_tsvector('simple'::regconfig,\nCASE\n    WHEN (deleted_at IS NULL) THEN body\n    ELSE ''::text\nEND)"))
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  channel      Channel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author       User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent       Message?     @relation("Thread", fields: [parentId], references: [id], onDelete: Cascade)
+  replies      Message[]    @relation("Thread")
+
+  @@index([channelId, createdAt])
+  @@index([parentId, createdAt])
+  @@index([search], map: "messages_search_idx", type: Gin)
+  @@map("messages")
 }

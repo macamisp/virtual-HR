@@ -76,6 +76,8 @@ export class OfficeWorld {
   readonly knocks = new Map<string, Map<string, number>>();
   private readonly known = new Map<string, Map<string, number>>();
   private readonly lastGroup = new Map<string, string>();
+  /** FR-VO-005: the current proximity group of each person (set every tick). */
+  readonly groupByUser = new Map<string, { id: string; members: string[] }>();
   rosterChanged = false;
   readonly changedRoster = new Set<string>();
 
@@ -242,6 +244,8 @@ export class OfficeWorld {
     }), this.proximityRadius);
     const groupOf = new Map<string, { id: string; members: string[] }>();
     for (const [id, members] of groups) for (const m of members) groupOf.set(m, { id, members });
+    this.groupByUser.clear();
+    for (const [u, g] of groupOf) this.groupByUser.set(u, g);
     for (const a of all) {
       const g = groupOf.get(a.userId);
       const sig = g ? `${g.id}|${g.members.join(',')}` : '';
@@ -262,6 +266,7 @@ export class OfficeWorld {
     this.avatars.delete(userId);
     this.known.delete(userId);
     this.lastGroup.delete(userId);
+    this.groupByUser.delete(userId);
     this.grants.delete(userId);
     for (const k of this.knocks.values()) k.delete(userId);
   }

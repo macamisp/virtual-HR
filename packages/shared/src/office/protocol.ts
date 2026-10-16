@@ -112,6 +112,11 @@ export const RoomInvitesSchema = z.object({ userIds: z.array(z.string()) });
 
 export const OfficeMapDtoSchema = OfficeDefinitionSchema;
 
+/** FR-VO-010: an announcement shown to every online user of the organisation. */
+export const BroadcastDtoSchema = z.object({ message: z.string().trim().min(1).max(500) }).strict();
+export type BroadcastDto = z.infer<typeof BroadcastDtoSchema>;
+export interface BroadcastMessage { id: string; message: string; from: string; at: string }
+
 // ---------------------------------------------------------------- Socket.IO
 
 export const JoinDtoSchema = z.object({

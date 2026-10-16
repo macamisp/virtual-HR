@@ -67,3 +67,8 @@ export function useSetRoomInvites() {
     onSuccess: (_r, v) => { void qc.invalidateQueries({ queryKey: ['office', 'invites', v.id] }); void qc.invalidateQueries({ queryKey: officeKeys.snapshot }); },
   });
 }
+
+/** FR-VO-010: a short announcement to everyone in the organisation who is online. */
+export function useBroadcast() {
+  return useMutation({ mutationFn: (message: string) => apiFetch('/office/broadcast', { method: 'POST', body: { message }, schema: z.object({ id: z.string() }).passthrough() }) });
+}

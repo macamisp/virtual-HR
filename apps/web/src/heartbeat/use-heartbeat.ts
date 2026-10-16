@@ -201,6 +201,12 @@ export function useHeartbeat(enabled: boolean): void {
   }, [enabled, userId, orgId, queryClient]);
 
   // Hand refreshed credentials to the worker (token refresh, FR-AUTH-003)
+  // ADR 016: forward the call state to the worker (the heartbeat's inCall counter).
+  const inCall = usePresenceStore((st) => st.inCall);
+  useEffect(() => {
+    workerRef.current?.postMessage({ type: 'inCall', inCall } satisfies MainToWorker);
+  }, [inCall]);
+
   useEffect(() => {
     if (!workerRef.current || !accessToken || !sessionId || !sessionSecret) return;
     workerRef.current.postMessage({ type: 'credentials', token: accessToken, sessionId, sessionSecret } satisfies MainToWorker);

@@ -16,6 +16,8 @@ export type MainToWorker =
   | { type: 'leader'; leader: boolean }
   | { type: 'activity'; at: number }
   | { type: 'visibility'; visible: boolean; focused: boolean }
+  /** ADR 016: a LiveKit call is live in this tab (meetings count as active, FR-MEET-009). */
+  | { type: 'inCall'; inCall: boolean }
   | { type: 'stop' };
 
 export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting';

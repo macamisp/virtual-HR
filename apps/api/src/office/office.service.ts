@@ -10,6 +10,8 @@ import type {
 } from '../../../../packages/shared/src/office/index.ts';
 import { ensureOffice, syncLayout } from './office-store.ts';
 import { OfficeRegistry } from './office-registry.ts';
+import { OfficeGateway } from './office.gateway.ts';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Virtual office REST side (FR-VO-001, 003, 004, 007, 008, 012; ADR 015): the map and layout,
@@ -21,6 +23,7 @@ export class OfficeService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly registry: OfficeRegistry,
+    private readonly gateway: OfficeGateway,
   ) {}
 
   private canManage(user: AuthenticatedUser): boolean {
@@ -94,6 +97,19 @@ export class OfficeService {
       world.changedRoster.add(user.id);
     }
     return { status: dto.status, message };
+  }
+
+  /** FR-VO-010: admins and managers announce something to everyone online; audited. */
+  async broadcast(user: AuthenticatedUser, message: string): Promise<{ id: string; at: string }> {
+    const id = randomUUID();
+    const at = new Date().toISOString();
+    const from = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      const name = (await db.query<{ n: string }>(`SELECT COALESCE(display_name, email) AS n FROM users WHERE id = $1`, [user.id])).rows[0]!.n;
+      await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'OFFICE_BROADCAST', entityType: 'ORGANIZATION', entityId: user.orgId, after: { id, length: message.length } });
+      return name;
+    });
+    this.gateway.broadcast(user.orgId, { id, message, from, at });
+    return { id, at };
   }
 
   // ---------------------------------------------------------------- FR-VO-007 desks
