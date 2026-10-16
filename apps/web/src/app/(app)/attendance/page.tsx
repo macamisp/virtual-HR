@@ -6,7 +6,7 @@ import type { MyDay, MyToday } from '@hrvo/shared';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
@@ -61,6 +61,15 @@ function TodayCard() {
         <CardDescription>
           Clock-in and clock-out are automatic. Times come from the server clock.
         </CardDescription>
+        {t?.lastClosed ? (
+          <Alert variant="warning" data-testid="outage-notice" className="mt-2">
+            <AlertTitle>Your earlier session ended at {formatClock(t.lastClosed.at)} because {t.lastClosed.source === 'DISCONNECT' ? 'the connection dropped' : 'heartbeats stopped'}.</AlertTitle>
+            <AlertDescription>
+              {t.lastClosed.minutesUnaccounted > 0 ? `${t.lastClosed.minutesUnaccounted} minute${t.lastClosed.minutesUnaccounted === 1 ? '' : 's'} are not counted. ` : ''}
+              If you were working, <a href="#correction-title" className="font-medium underline underline-offset-4">request a correction</a> below.
+            </AlertDescription>
+          </Alert>
+        ) : null}
       </CardHeader>
       <CardContent className="space-y-4">
         {today.isPending ? <LoadingState label="Loading today" rows={2} /> : null}

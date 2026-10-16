@@ -29,6 +29,8 @@ export const NotificationType = {
   DOCUMENT_INFECTED: 'DOCUMENT_INFECTED',
   DOCUMENT_REJECTED: 'DOCUMENT_REJECTED',
   DOCUMENT_EXPIRING: 'DOCUMENT_EXPIRING',
+  // AC-16 / FR-ORG: contract end date approaching
+  CONTRACT_EXPIRING: 'CONTRACT_EXPIRING',
   // FR-DOC-006 / FR-DOC-010
   DOCUMENT_PASSWORD_LOCKOUT: 'DOCUMENT_PASSWORD_LOCKOUT',
   DOCUMENT_PASSWORD_RECOVERED: 'DOCUMENT_PASSWORD_RECOVERED',
@@ -88,7 +90,8 @@ export const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; g
   TIMESHEET_APPROVAL_REMINDER: { label: 'Reminder to approve timesheets', group: 'Timesheets' },
   TIMESHEET_VARIANCE: { label: 'Timesheet differs from attendance', group: 'Timesheets' },
   DOCUMENT_REJECTED: { label: 'My upload was rejected', group: 'Documents' },
-  DOCUMENT_EXPIRING: { label: 'A document or contract is expiring', group: 'Documents' },
+  DOCUMENT_EXPIRING: { label: 'A document is expiring', group: 'Documents' },
+  CONTRACT_EXPIRING: { label: 'A contract is ending soon', group: 'Documents' },
   DOCUMENT_INFECTED: { label: 'Malware found in an upload', group: 'Security', critical: true },
   DOCUMENT_PASSWORD_LOCKOUT: { label: 'Document password lockout', group: 'Security', critical: true },
   DOCUMENT_PASSWORD_RECOVERED: { label: 'Document password recovered by HR', group: 'Security', critical: true },

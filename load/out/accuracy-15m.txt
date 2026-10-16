@@ -1,0 +1,4 @@
+PASS  NFR-ACC-001  first heartbeat acknowledged (session created) p50 173 ms, p99 3466 ms, max 3466 ms over 220 connections
+FAIL  NFR-ACC-002  200 sessions closed, 0 still open; clock_out = last heartbeat for 200/200; closure after the 120 s grace window measured from the last heartbeat (upper bound): p95 44.5 s, max 47.0 s (reconciler every 15 s); sources {"DISCONNECT":200}
+PASS  NFR-ACC-003  20 users heartbeated from two devices: 20 flagged MULTI_DEVICE, 0 with overlapping sessions, 0 sessions with net > wall clock
+PASS  NFR-ACC-004  200 person-days recomputed twice: 0 differed between runs, 0 differed from the stored daily row or the session sum

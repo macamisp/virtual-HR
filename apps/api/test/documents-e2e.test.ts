@@ -447,6 +447,22 @@ describe('Documents API (FR-DOC-001..004, 007, 009, 012, 013, 015, 019)', { conc
       assert.equal((await notes('emp', 'DOCUMENT_EXPIRING')).filter((n) => n.dedupe_key?.includes(soon.id)).length, 0);
     });
 
+    it('AC-16: a contract ending within its notice period alerts HR and the manager, once per stage', async () => {
+      const soonId = (await adminPool.query(`INSERT INTO contracts (org_id, user_id, title, start_date, end_date, status, renewal_notice_days) VALUES ($1, $2, 'Sid 2026', '2026-01-01', $3, 'ACTIVE', 30) RETURNING id`, [ORG, U.sub.id, addDaysIso(today, 20)])).rows[0].id as string;
+      await adminPool.query(`INSERT INTO contracts (org_id, user_id, title, start_date, end_date, status, renewal_notice_days) VALUES ($1, $2, 'Sid later', '2026-01-01', $3, 'ACTIVE', 30)`, [ORG, U.sub.id, addDaysIso(today, 50)]);
+      const work = app.get(DocumentMaintenanceService);
+      await work.run(new Date());
+      await work.run(new Date());
+      const lead = (await notes('lead', 'CONTRACT_EXPIRING')).filter((n) => n.dedupe_key?.startsWith(`contract-expiry:${soonId}`));
+      assert.equal(lead.length, 1, 'the manager, once');
+      assert.match(lead[0]!.title, /Contract ends in 20 days/);
+      assert.equal((await notes('hr', 'CONTRACT_EXPIRING')).filter((n) => n.dedupe_key?.startsWith(`contract-expiry:${soonId}`)).length, 1, 'HR, once');
+      assert.equal((await notes('sub', 'CONTRACT_EXPIRING')).length, 0, 'not the person themselves');
+      assert.equal((await notes('hr', 'CONTRACT_EXPIRING')).filter((n) => n.title.includes('Sid later')).length, 0, 'outside the notice period: nothing yet');
+      const emailed = await adminPool.query(`SELECT send_email, emailed_at FROM notifications WHERE user_id = $1 AND type = 'CONTRACT_EXPIRING'`, [U.lead.id]);
+      assert.equal(emailed.rows[0]?.send_email, true, 'sent by email too');
+    });
+
     it('abandoned uploads are aborted after 24 h', async () => {
       const ticket = await ok(await api('emp', '/documents/uploads', { method: 'POST', body: { fileName: 'never.pdf', size: 100, ...meta('Never finished') } }), 201, UploadTicketSchema);
       await adminPool.query(`UPDATE document_versions SET uploaded_at = now() - interval '25 hours' WHERE id = $1`, [ticket.versionId]);

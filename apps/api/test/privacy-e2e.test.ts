@@ -39,6 +39,7 @@ describe('Data-subject export and anonymisation (FR-AUD-002, 003)', { concurrenc
   let docHeld = '';
   let docLinked = '';
   let requestId = '';
+  let sheetId = '';
 
   const api = (who: Who, path: string, init: { method?: string; body?: unknown } = {}) =>
     fetch(`${base}${path}`, { method: init.method ?? 'GET', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokens[who]}` }, body: init.body === undefined ? undefined : JSON.stringify(init.body) });
@@ -73,7 +74,8 @@ describe('Data-subject export and anonymisation (FR-AUD-002, 003)', { concurrenc
     await q(`INSERT INTO presence_events (org_id, user_id, server_ts, event_type, state, ip) SELECT $1, $2, '2026-09-01T04:00:00Z'::timestamptz + (g || ' minutes')::interval, 'HEARTBEAT', 'ACTIVE', '10.0.0.5' FROM generate_series(0, 2) g`, [ORG, e]);
     await q(`INSERT INTO attendance_daily (org_id, user_id, work_date, net_seconds, expected_seconds, day_status) VALUES ($1, $2, '2026-09-01', 30000, 28800, 'PRESENT')`, [ORG, e]);
     await q(`INSERT INTO attendance_corrections (org_id, user_id, requested_in, requested_out, reason, status) VALUES ($1, $2, '2026-09-02T03:00:00Z', '2026-09-02T11:00:00Z', 'Doctor appointment, forgot to clock in', 'PENDING')`, [ORG, e]);
-    const sheet = (await q(`INSERT INTO timesheets (org_id, user_id, period_start, period_end, status, notes, amount, currency) VALUES ($1, $2, '2026-09-07', '2026-09-13', 'DRAFT', 'Worked from my sister''s place', 300.00, 'EUR') RETURNING id`, [ORG, e])).rows[0].id;
+    sheetId = (await q(`INSERT INTO timesheets (org_id, user_id, period_start, period_end, status, notes, amount, currency) VALUES ($1, $2, '2026-09-07', '2026-09-13', 'DRAFT', 'Worked from my sister''s place', 300.00, 'EUR') RETURNING id`, [ORG, e])).rows[0].id;
+    const sheet = sheetId;
     await q(`INSERT INTO time_entries (org_id, user_id, timesheet_id, work_date, started_at, ended_at, minutes, source, note, manual_reason) VALUES ($1, $2, $3, '2026-09-08', '2026-09-08T08:00:00Z', '2026-09-08T10:00:00Z', 120, 'MANUAL', 'Call with client X', 'Forgot the timer')`, [ORG, e, sheet]);
     await q(`UPDATE timesheets SET status = 'SUBMITTED', submitted_at = now() WHERE id = $1`, [sheet]);
     await q(`INSERT INTO contracts (org_id, user_id, title, start_date, end_date, status) VALUES ($1, $2, 'Eva contract', '2026-01-01', NULL, 'ACTIVE')`, [ORG, e]);
@@ -197,7 +199,7 @@ describe('Data-subject export and anonymisation (FR-AUD-002, 003)', { concurrenc
 
     it('once the obligations are settled the data is removed or replaced, and the person can never sign in again', async () => {
       await q(`UPDATE attendance_corrections SET status = 'REJECTED', reviewer_id = $2, reviewed_at = now(), review_note = 'No evidence' WHERE user_id = $1`, [U.emp.id, U.lead.id]);
-      await q(`UPDATE timesheets SET status = 'PAID' WHERE user_id = $1`, [U.emp.id]);
+      await q(`UPDATE timesheets SET status = 'PAID' WHERE user_id = $1 AND amount IS NOT NULL`, [U.emp.id]);
       await q(`UPDATE contracts SET status = 'TERMINATED', end_date = '2026-09-30' WHERE user_id = $1`, [U.emp.id]);
       await q(`UPDATE documents SET legal_hold = false, legal_hold_reason = NULL WHERE id = $1`, [docHeld]);
       const c = await ok(await api('hrm', `/privacy/subjects/${U.emp.id}/anonymisation-check`), 200, AnonymisationCheckSchema);
@@ -243,7 +245,7 @@ describe('Data-subject export and anonymisation (FR-AUD-002, 003)', { concurrenc
       assert.equal(docs.rows.find((d) => d.id === docHeld)!.shredded, true);
       assert.equal(docs.rows.find((d) => d.id === docLinked)!.shredded, false, 'filed by HR, linked to the person: retained');
       assert.equal((await q(`SELECT count(*)::int AS n FROM document_acl WHERE principal_id = $1`, [U.emp.id])).rows[0].n, 0);
-      assert.deepEqual((await q(`SELECT status, amount::text, notes FROM timesheets WHERE user_id = $1`, [U.emp.id])).rows, [{ status: 'PAID', amount: '300.00', notes: '' }]);
+      assert.deepEqual((await q(`SELECT status, amount::text, notes FROM timesheets WHERE id = $1`, [sheetId])).rows, [{ status: 'PAID', amount: '300.00', notes: '' }]);
       assert.equal((await q(`SELECT count(*)::int AS n FROM monitoring_consents WHERE user_id = $1`, [U.emp.id])).rows[0].n, 1);
       assert.equal(await auditCount('USER_ANONYMISED'), 1);
       const verify = await ok<{ valid: boolean }>(await api('hrm', '/audit-logs/verify'), 200);

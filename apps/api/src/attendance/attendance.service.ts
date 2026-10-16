@@ -1450,8 +1450,24 @@ export class AttendanceService {
       lastHeartbeatAt: open ? open.lastHeartbeatAt.toISOString() : null,
       totals: AttendanceService.sumTotals(all.map((s) => this.totalsAsOf(s, now))),
       sessionCount: all.length,
+      lastClosed: AttendanceService.lastServerClosed(today, open ?? null, now),
       asOf: now.toISOString(),
     };
+  }
+
+  /**
+   * AC-04: after an outage the person should be offered a correction. The newest session today
+   * that the server closed (TIMEOUT or DISCONNECT), unless a later session already covers it.
+   */
+  private static lastServerClosed(closed: AttendanceSession[], open: AttendanceSession | null, now: Date): MyToday['lastClosed'] {
+    const candidates = closed
+      .filter((s) => s.clockOutAt && (s.clockOutSource === 'TIMEOUT' || s.clockOutSource === 'DISCONNECT'))
+      .sort((a, b) => b.clockOutAt!.getTime() - a.clockOutAt!.getTime());
+    const last = candidates[0];
+    if (!last) return null;
+    const resumedAt = open?.clockInAt ?? closed.filter((s) => s.clockInAt > last.clockOutAt!).sort((a, b) => a.clockInAt.getTime() - b.clockInAt.getTime())[0]?.clockInAt ?? null;
+    const until = resumedAt ?? now;
+    return { at: last.clockOutAt!.toISOString(), source: last.clockOutSource ?? 'TIMEOUT', minutesUnaccounted: Math.max(0, Math.floor((until.getTime() - last.clockOutAt!.getTime()) / 60_000)) };
   }
 
   /** GET /attendance/me/days: one row per work date that has sessions (FR-ATT-015). */

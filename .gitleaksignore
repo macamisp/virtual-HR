@@ -1,0 +1,2 @@
+# Historic CI test secret (replaced by a per-run openssl rand value in the same file; never a production credential).
+420954eb6c5011f2ec419db8f9a6e25c680263f0:.github/workflows/ci.yml:generic-api-key:72

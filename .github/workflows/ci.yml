@@ -73,6 +73,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # SRS 10.3: secret scanning in CI. Historic, accepted findings live in .gitleaksignore.
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_SUMMARY: 'false'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

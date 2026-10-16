@@ -15,7 +15,8 @@ type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attend
 
 /** Repeatable jobs. BullMQ job schedulers are de-duplicated in Redis, so N API instances run each tick once. */
 export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs: number }> = [
-  { name: 'attendance-reconcile', everyMs: 60_000 },
+  // AC-02: a dropped client must be closed within 30 s of its grace window ending.
+  { name: 'attendance-reconcile', everyMs: 15_000 },
   { name: 'task-reminders', everyMs: 5 * 60_000 },
   { name: 'carry-over', everyMs: 15 * 60_000 },
   { name: 'weekly-summary', everyMs: 15 * 60_000 },

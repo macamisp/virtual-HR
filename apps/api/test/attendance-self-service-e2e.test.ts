@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
+import { formatInTimeZone } from 'date-fns-tz';
 import { io, Socket } from 'socket.io-client';
 import argon2 from 'argon2';
 import { AppModule } from '../src/app.module.ts';
@@ -279,4 +280,26 @@ describe('Attendance self-service API (apps/web contract)', { concurrency: false
     assert.equal(orgBoard.status, 200);
     assert.ok(LiveBoardSchema.parse(await orgBoard.json()).some((r) => r.userId === U.hrm.id));
   });
+  it('AC-04: after a server-side closure (TIMEOUT or DISCONNECT) today offers a correction for the gap', async () => {
+    const now = new Date();
+    const workDate = formatInTimeZone(now, 'Asia/Colombo', 'yyyy-MM-dd');
+    const closedAt = new Date(now.getTime() - 2 * 3_600_000);
+    const inserted = await adminPool.query(
+      `INSERT INTO attendance_sessions (org_id, user_id, device_id, work_date, clock_in_at, clock_out_at, clock_in_source, clock_out_source, last_heartbeat_at, ip_in, status)
+       VALUES ($1, $2, 'old-laptop', $3, $4, $5, 'AUTO', 'TIMEOUT', $5, '127.0.0.1', 'CLOSED') RETURNING id`,
+      [ORG, U.emp.id, workDate, new Date(now.getTime() - 3 * 3_600_000), closedAt],
+    );
+    try {
+      const today = MyTodaySchema.parse(await (await api(emp.accessToken, '/attendance/me/today')).json());
+      assert.ok(today.lastClosed, 'the closed session is reported');
+      assert.equal(today.lastClosed!.source, 'TIMEOUT');
+      assert.equal(today.lastClosed!.at, closedAt.toISOString());
+      // Unaccounted until the next session started (or until now when none did).
+      const resumedAt = today.trackingSince ? Date.parse(today.trackingSince) : now.getTime();
+      assert.equal(today.lastClosed!.minutesUnaccounted, Math.max(0, Math.floor((resumedAt - closedAt.getTime()) / 60_000)));
+    } finally {
+      await adminPool.query(`DELETE FROM attendance_sessions WHERE id = $1`, [inserted.rows[0].id]);
+    }
+  });
+
 });

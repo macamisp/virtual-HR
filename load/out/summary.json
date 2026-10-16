@@ -1,0 +1,31 @@
+{
+  "users": 200,
+  "phones": 20,
+  "duration": "15m",
+  "intervalMs": 30000,
+  "heartbeatsSent": 6600,
+  "heartbeatsAcked": 6600,
+  "ackLatencyMs": {
+    "p50": 46,
+    "p95": 77,
+    "p99": null,
+    "max": 3466
+  },
+  "clockinLatencyMs": {
+    "p50": 173,
+    "p99": null,
+    "max": 3466
+  },
+  "errorRate": 0.03,
+  "loginMs": {
+    "p95": 1129.25
+  },
+  "connectMs": {
+    "p95": 42.05
+  },
+  "thresholds": {
+    "heartbeat_errors": false,
+    "clockin_latency": true,
+    "heartbeat_ack": true
+  }
+}

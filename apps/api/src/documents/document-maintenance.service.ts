@@ -58,6 +58,7 @@ export class DocumentMaintenanceService {
         sealed += await this.sealLegacyTitles(org.id);
         shredded += await this.shredDue(org.id, now);
         reminders += await this.expiryReminders(org, now);
+        reminders += await this.contractReminders(org, now);
         const h = await this.housekeeping(org.id, now);
         abandoned += h.abandoned;
         rescanned += h.rescanned;
@@ -164,6 +165,43 @@ export class DocumentMaintenanceService {
             body: `“${d.title}” expires on ${d.expires}. Upload the renewed document as a new version, or update the expiry date.`,
             link: `/documents/${d.id}`, entityType: 'DOCUMENT', entityId: d.id,
             dedupeKey: `doc-expiry:${d.id}:${d.expires}:${stage}`, email: true,
+          });
+        }
+      }
+      return await this.notifications.create(db, org.id, items);
+    });
+    await this.notifications.deliver(org.id, created);
+    return created.length;
+  }
+
+  /**
+   * AC-16: a contract ending within its notice period (default 30 days) alerts HR and the
+   * person's manager, in-app and by email, at the 60/30/7/0-day stages inside that period, once.
+   */
+  async contractReminders(org: { id: string; timezone: string }, now: Date): Promise<number> {
+    const today = localDate(now, org.timezone);
+    const created = await this.prisma.runWithTenantContext(org.id, async (db) => {
+      const rows = await db.query<{ id: string; title: string; ends: string; notice: number; person: string; manager_id: string | null }>(
+        `SELECT c.id, c.title, to_char(c.end_date, 'YYYY-MM-DD') AS ends, c.renewal_notice_days AS notice,
+                COALESCE(u.display_name, u.email) AS person, u.manager_id
+         FROM contracts c JOIN users u ON u.id = c.user_id
+         WHERE c.status = 'ACTIVE' AND c.end_date BETWEEN $1::date AND $1::date + c.renewal_notice_days`,
+        [today],
+      );
+      if (rows.rows.length === 0) return [];
+      const hr = await db.query<{ id: string }>(`SELECT id FROM users WHERE role IN ('HR', 'HR_MANAGER') AND status = 'ACTIVE'`);
+      const items: NewNotification[] = [];
+      for (const c of rows.rows) {
+        const left = daysBetween(today, c.ends);
+        const stage = expiryStage(left);
+        if (!stage || Number(stage) > c.notice) continue;
+        for (const userId of new Set([...(c.manager_id ? [c.manager_id] : []), ...hr.rows.map((r) => r.id)])) {
+          items.push({
+            userId, type: 'CONTRACT_EXPIRING',
+            title: left === 0 ? `Contract ends today: ${c.person}` : `Contract ends in ${left} day${left === 1 ? '' : 's'}: ${c.person}`,
+            body: `“${c.title}” for ${c.person} ends on ${c.ends}. Renew it, or end the engagement and plan the hand-over.`,
+            link: '/documents/contracts', entityType: 'CONTRACT', entityId: c.id,
+            dedupeKey: `contract-expiry:${c.id}:${c.ends}:${stage}`, email: true,
           });
         }
       }

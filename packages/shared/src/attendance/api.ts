@@ -39,6 +39,8 @@ export const MyTodaySchema = z.object({
   lastHeartbeatAt: isoDate.nullable(),
   totals: TimeTotalsSchema,
   sessionCount: z.number().int().nonnegative(),
+  /** AC-04: the latest session today that the server closed for you (connection lost, heartbeats stopped). */
+  lastClosed: z.object({ at: isoDate, source: z.string(), minutesUnaccounted: z.number().int().nonnegative() }).nullable(),
   asOf: isoDate,
 });
 export type MyToday = z.infer<typeof MyTodaySchema>;
