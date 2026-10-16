@@ -5,6 +5,7 @@ import type { ConnectionOptions, Job } from 'bullmq';
 import { NotificationEmailSender } from './notifications.service.ts';
 import type { EmailDispatcher } from './notifications.service.ts';
 import { ScheduledWorkService } from './scheduled-work.service.ts';
+import { redisOptions } from '../common/coordination.ts';
 import { DocumentScannerService } from '../documents/document-scanner.service.ts';
 import { DocumentMaintenanceService } from '../documents/document-maintenance.service.ts';
 import type { ScanDispatcher } from '../documents/scan-dispatcher.ts';
@@ -35,11 +36,8 @@ export function jobsEnabled(): boolean {
 
 function redisConnection(): ConnectionOptions {
   return {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: Number.parseInt(process.env.REDIS_PORT || '6379', 10),
-    password: process.env.REDIS_PASSWORD || undefined,
-    // Separate logical databases keep e.g. a demo and the test suite off each other's queue.
-    db: Number.parseInt(process.env.REDIS_DB || '0', 10),
+    // Host, port, password, db (separate databases keep a demo and the tests apart) and TLS.
+    ...redisOptions(),
     // Required by BullMQ workers.
     maxRetriesPerRequest: null,
   };

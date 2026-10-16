@@ -1,0 +1,7 @@
+# Copy to staging.tfvars (not committed). No secrets here: they live in Secrets Manager.
+aws_account_id     = "000000000000"
+domain             = "staging.hrvo.example.com"
+cloudflare_zone_id = "<zone id>"
+alert_emails       = ["ops@example.com"]
+image_tag          = "<git sha>"
+livekit_url        = "wss://<project>.livekit.cloud"

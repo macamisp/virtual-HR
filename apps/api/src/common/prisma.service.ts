@@ -1,33 +1,20 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
+import { databaseUrl, poolConfig } from './db-config.ts';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private pool: pg.Pool;
 
   constructor() {
-    const defaultUrl =
-      process.env.DATABASE_URL ||
-      'postgresql://hrvo_app:hrvo_app_pass@localhost:5433/hrvo_dev?schema=public';
-    super({
-      datasources: {
-        db: {
-          url: defaultUrl,
-        },
-      },
-    });
+    // DATABASE_URL locally; on AWS built from PG* with verified TLS (db-config.ts, ADR 020).
+    super({ datasources: { db: { url: databaseUrl() } } });
     this.pool = new pg.Pool(PrismaService.connectionConfig());
   }
 
   private static connectionConfig(): pg.ClientConfig {
-    return {
-      host: process.env.PGHOST || 'localhost',
-      port: Number(process.env.PGPORT || 5433),
-      database: process.env.PGDATABASE || 'hrvo_dev',
-      user: process.env.PGUSER || 'hrvo_app',
-      password: process.env.PGPASSWORD || 'hrvo_app_pass',
-    };
+    return poolConfig();
   }
 
   /** A dedicated (non-pooled) connection for LISTEN; the caller owns and ends it. */

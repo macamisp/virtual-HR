@@ -3,6 +3,10 @@
  */
 import type { INestApplication } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { createAdapter } from '@socket.io/redis-adapter';
+import { coordinationEnabled, newRedis } from './coordination.ts';
+import type { Redis } from 'ioredis';
+import type { Server } from 'socket.io';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import type { ServerOptions } from 'socket.io';
 import cookieParser from 'cookie-parser';
@@ -12,13 +16,30 @@ import { CSRF_HEADER, getCorsOrigins, isOriginAllowed, isProduction } from './co
 /** Socket.IO adapter with the same origin allow-list as HTTP CORS. */
 export class ConfiguredIoAdapter extends IoAdapter {
   override createIOServer(port: number, options?: ServerOptions) {
-    return super.createIOServer(port, {
+    const server = super.createIOServer(port, {
       ...(options as ServerOptions),
       cors: { origin: getCorsOrigins(), credentials: true },
       // CORS does not apply to the websocket transport; reject disallowed browser
       // origins explicitly to prevent cross-site WebSocket hijacking.
       allowRequest: (req, callback) => callback(null, isOriginAllowed(req.headers.origin)),
     });
+    // ADR 020: rooms (user:, org:, family:) span every API task, so a REST task can reach a socket
+    // held by the realtime task (notifications, revocations, chat, meeting rings).
+    if (coordinationEnabled()) {
+      const pub = newRedis();
+      const sub = newRedis();
+      this.redisClients.push(pub, sub);
+      server.adapter(createAdapter(pub, sub));
+    }
+    return server;
+  }
+
+  private readonly redisClients: Redis[] = [];
+
+  /** Close the adapter's connections only after the Socket.IO server (it unsubscribes on close). */
+  override async close(server: Server): Promise<void> {
+    await super.close(server);
+    await Promise.all(this.redisClients.splice(0).map((c) => c.quit().catch(() => c.disconnect())));
   }
 }
 

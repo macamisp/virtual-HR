@@ -159,6 +159,43 @@ jobs:
           path: apps/web/playwright-report
           retention-days: 7
 
+  # ADR 020: Terraform format and validation only. No credentials, no plan, no apply.
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+
+      - name: Format
+        run: terraform fmt -check -recursive infra/terraform
+
+      - name: Validate (no backend, no credentials)
+        run: |
+          for d in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production; do
+            terraform -chdir="$d" init -backend=false -input=false -lockfile=readonly
+            terraform -chdir="$d" validate
+          done
+
+  # ADR 020: the container images build (not pushed anywhere).
+  images:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Build API, migrate and web images
+        run: |
+          docker build -f docker/api.Dockerfile --target api -t hrvo-api:ci .
+          docker build -f docker/api.Dockerfile --target migrate -t hrvo-api:ci-migrate .
+          docker build -f docker/web.Dockerfile --target web -t hrvo-web:ci \
+            --build-arg NEXT_PUBLIC_API_URL=https://api.example.invalid --build-arg NEXT_PUBLIC_LIVEKIT_URL=wss://livekit.example.invalid .
+
   # ADR 018: unsigned desktop agent installers for review. Building only; nothing is published.
   # Code signing (Windows certificate, Apple notarisation) is a release step that needs secrets.
   agent-installers:

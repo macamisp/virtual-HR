@@ -1,0 +1,15 @@
+# Keep build contexts small and free of secrets.
+.git
+**/node_modules
+**/dist
+**/.next
+**/.next-e2e
+apps/agent/release
+**/test-results
+**/playwright-report
+coverage
+.env
+.env.*
+!.env.example
+infra/terraform/**/.terraform
+**/*.tfstate*

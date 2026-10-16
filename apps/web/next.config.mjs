@@ -1,4 +1,5 @@
 // @ts-check
+import { fileURLToPath } from 'node:url';
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 const wsUrl = apiUrl.replace(/^http/, 'ws');
 // Browsers upload documents straight to object storage through presigned URLs (ADR 009).
@@ -31,6 +32,8 @@ const nextConfig = {
   reactStrictMode: true,
   // Playwright builds into its own folder so it never overwrites a running dev server's .next.
   distDir: process.env.NEXT_DIST_DIR || '.next',
+  // Container images (docker/web.Dockerfile) use the standalone server; `next start` does not.
+  ...(process.env.NEXT_OUTPUT === 'standalone' ? { output: 'standalone', outputFileTracingRoot: fileURLToPath(new URL('../..', import.meta.url)) } : {}),
   poweredByHeader: false,
   transpilePackages: ['@hrvo/shared'],
   // The image optimizer is unused and has had RCE/DoS advisories; keep it off.

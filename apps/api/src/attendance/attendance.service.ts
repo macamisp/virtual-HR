@@ -122,6 +122,12 @@ export class AttendanceService {
 
   /** FR-ADM-001: where each organisation's thresholds come from (the org settings table). */
   private flagSink: FlagSink | null = null;
+  private lockProvider: { run<T>(name: string, fn: () => Promise<T>): Promise<T> } | null = null;
+
+  /** ADR 020: a lock shared by API tasks (RedisLock); without it, the in-process queue alone. */
+  public setLockProvider(lock: { run<T>(name: string, fn: () => Promise<T>): Promise<T> }): void {
+    this.lockProvider = lock;
+  }
 
   /** ADR 019: where review flags go (AttendanceFlagsService). Flags never change recorded time. */
   public setFlagSink(sink: FlagSink): void {
@@ -172,7 +178,8 @@ export class AttendanceService {
     this.sessionLocks.set(key, tail);
     await previous;
     try {
-      return await fn();
+      // ADR 020: across API tasks as well (heartbeats, breaks, corrections and the reconciler).
+      return this.lockProvider ? await this.lockProvider.run(`attendance:${key}`, fn) : await fn();
     } finally {
       release();
       if (this.sessionLocks.get(key) === tail) this.sessionLocks.delete(key);

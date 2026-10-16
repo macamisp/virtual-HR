@@ -78,6 +78,9 @@ export class AttendanceGateway
   }
 
   private publishPresence(orgId: string, payload: { userId: string; state: string; [k: string]: unknown }): void {
+    // While the server shuts down (ECS rolling deploy) sockets disconnect; their presence updates
+    // must not be published through an adapter whose Redis connection is already closing.
+    if (this.shuttingDown) return;
     this.server?.to(`org:${orgId}`).emit('presence:update', payload);
     for (const l of this.presenceListeners) {
       try { l(orgId, payload.userId, payload.state); } catch { /* a listener never breaks attendance */ }

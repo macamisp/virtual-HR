@@ -21,6 +21,8 @@ const PUBLIC_BY_DESIGN = new Set([
   'POST /media/livekit/webhook',
   // ADR 018: the desktop agent has no session yet (consent text, pairing code, its own token rotation).
   'GET /agent/notice', 'POST /agent/pair', 'POST /agent/token',
+  // ADR 020: load-balancer health check (ok/unavailable only).
+  'GET /health',
 ]);
 /** Signed-in routes whose scope is "the caller's own data" and need no extra permission. */
 const SELF_SERVICE = new Set([

@@ -5,13 +5,15 @@
  * with @RateLimit('<bucket>'); every other route skips it. Limits come from env via
  * getRateLimits() and are read when the module initialises.
  *
- * Storage is the throttler's in-memory store, so limits are per API instance. A shared
- * Redis store is needed before running more than one instance (ADR 005).
+ * Storage: in memory for a single process; with COORDINATION=redis the counters are shared by
+ * every API task (RedisThrottlerStorage, ADR 020).
  */
 import { SetMetadata } from '@nestjs/common';
 import type { ExecutionContext } from '@nestjs/common';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { getRateLimits } from './config.ts';
+import { coordinationEnabled, sharedRedis } from './coordination.ts';
+import { RedisThrottlerStorage } from './redis-throttler-storage.ts';
 
 export type HttpRateLimitBucket = 'login' | 'refresh' | 'passwordReset' | 'vault' | 'share' | 'unsubscribe' | 'agentPair' | 'agentToken';
 
@@ -25,6 +27,8 @@ export function rateLimitModule() {
       const limits = getRateLimits();
       const buckets: HttpRateLimitBucket[] = ['login', 'refresh', 'passwordReset', 'vault', 'share', 'unsubscribe', 'agentPair', 'agentToken'];
       return {
+        // ADR 020: one set of counters for every API task (in memory when running alone).
+        ...(coordinationEnabled() ? { storage: new RedisThrottlerStorage(sharedRedis()) } : {}),
         errorMessage: 'Too many requests; please slow down',
         throttlers: buckets.map((name) => ({
           name,

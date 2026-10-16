@@ -6,6 +6,8 @@ import { configureApp } from './common/configure-app.ts';
 export async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   configureApp(app);
+  // ECS stops tasks with SIGTERM: close sockets, stop the office tick and jobs, release Redis.
+  app.enableShutdownHooks(['SIGTERM', 'SIGINT']);
 
   const port = process.env.PORT || 3001;
   await app.listen(port);

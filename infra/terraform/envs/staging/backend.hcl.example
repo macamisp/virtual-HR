@@ -1,0 +1,4 @@
+# Copy to backend.hcl (not committed). The bucket is created by ../../bootstrap in the staging account.
+bucket = "hrvo-staging-tfstate-<account-id>"
+key    = "platform/terraform.tfstate"
+region = "ap-southeast-1"
