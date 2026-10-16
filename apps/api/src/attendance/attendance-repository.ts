@@ -56,6 +56,8 @@ export interface CorrectionRequester {
 
 export interface IAttendanceRepository {
   findOpenSessionByUserId(orgId: string, userId: string): Promise<AttendanceSession | null>;
+  /** ADR 018: time already accounted for by the user's sessions overlapping [from, to). */
+  findCoveredSpans(orgId: string, userId: string, from: Date, to: Date): Promise<Array<{ start: Date; end: Date }>>;
   findSessionById(orgId: string, sessionId: string): Promise<AttendanceSession | null>;
   findAllOpenSessions(orgId: string): Promise<AttendanceSession[]>;
   saveSession(session: AttendanceSession): Promise<void>;
@@ -287,9 +289,10 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         id, org_id, user_id, device_id, work_date, clock_in_at, clock_out_at,
         clock_in_source, clock_out_source, active_seconds, idle_seconds, break_seconds,
         meeting_seconds, net_seconds, last_heartbeat_at, ip_in, ip_out, flags,
-        status, current_state, previous_state, grace_timer_expires_at, consecutive_idle_seconds, updated_at
+        status, current_state, previous_state, grace_timer_expires_at, consecutive_idle_seconds,
+        agent_device_id, agent_last_seen_at, web_in_call_at, updated_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, CURRENT_TIMESTAMP
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, CURRENT_TIMESTAMP
       )
       ON CONFLICT (id) DO UPDATE SET
         clock_out_at = EXCLUDED.clock_out_at,
@@ -307,6 +310,9 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         previous_state = EXCLUDED.previous_state,
         grace_timer_expires_at = EXCLUDED.grace_timer_expires_at,
         consecutive_idle_seconds = EXCLUDED.consecutive_idle_seconds,
+        agent_device_id = EXCLUDED.agent_device_id,
+        agent_last_seen_at = EXCLUDED.agent_last_seen_at,
+        web_in_call_at = EXCLUDED.web_in_call_at,
         updated_at = CURRENT_TIMESTAMP`,
       [
         session.id,
@@ -332,6 +338,9 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         session.previousState || null,
         session.graceTimerExpiresAt || null,
         session.consecutiveIdleSeconds,
+        session.agentDeviceId ?? null,
+        session.agentLastSeenAt ?? null,
+        session.webInCallAt ?? null,
       ],
     );
 
@@ -346,6 +355,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       session.clockOutAt &&
       session.clockOutSource !== ClockOutSource.MIDNIGHT &&
       session.clockOutSource !== ClockOutSource.CORRECTION &&
+      // ADR 018: a synced offline session is in the past; it must not stop today's running timer.
+      session.clockOutSource !== ClockOutSource.OFFLINE_SYNC &&
       session.status !== SessionStatus.ADJUSTED &&
       session.status !== SessionStatus.CANCELLED
     ) {
@@ -724,6 +735,17 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     query += ` ORDER BY d.work_date ASC, u.display_name ASC`;
     const res = await this.queryWithRls(orgId, query, params);
     return res.rows.map(this.mapRowToDaily);
+  }
+
+  public async findCoveredSpans(orgId: string, userId: string, from: Date, to: Date): Promise<Array<{ start: Date; end: Date }>> {
+    const res = await this.queryWithRls<{ s: Date; e: Date }>(
+      orgId,
+      `SELECT clock_in_at AS s, COALESCE(clock_out_at, last_heartbeat_at) AS e FROM attendance_sessions
+       WHERE org_id = $1 AND user_id = $2 AND status <> 'CANCELLED'
+         AND clock_in_at < $4 AND COALESCE(clock_out_at, last_heartbeat_at) > $3`,
+      [orgId, userId, from, to],
+    );
+    return res.rows.map((r) => ({ start: new Date(r.s), end: new Date(r.e) }));
   }
 
   public async findSessionsByDate(orgId: string, workDate: string): Promise<AttendanceSession[]> {
@@ -1213,6 +1235,9 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         ? new Date(row.grace_timer_expires_at)
         : null,
       consecutiveIdleSeconds: row.consecutive_idle_seconds,
+      agentDeviceId: row.agent_device_id ?? null,
+      agentLastSeenAt: row.agent_last_seen_at ? new Date(row.agent_last_seen_at) : null,
+      webInCallAt: row.web_in_call_at ? new Date(row.web_in_call_at) : null,
     };
   }
 }

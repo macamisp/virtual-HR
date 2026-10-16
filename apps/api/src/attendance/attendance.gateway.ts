@@ -14,7 +14,8 @@ import { Server, Socket } from 'socket.io';
 import type pg from 'pg';
 import { AttendanceService } from './attendance.service.ts';
 import { PrismaService } from '../common/prisma.service.ts';
-import { getRateLimits } from '../common/config.ts';
+import { getJwtSecret, getRateLimits } from '../common/config.ts';
+import { anchorKey, signAnchor } from '../agent/offline-sync.ts';
 import { verifyToken } from '../auth/tokens.ts';
 import type { JwtPayload, HeartbeatPayload, StateMachineTransitionResult } from '../../../../packages/shared/src/index.ts';
 
@@ -26,6 +27,8 @@ interface SocketAuth {
   sessionId: string;
   familyId: string;
   expiresAtMs: number;
+  /** ADR 018: set when this login belongs to a paired, unrevoked desktop agent. */
+  agentDeviceId: string | null;
 }
 
 type AuthEvent =
@@ -55,6 +58,16 @@ export class AttendanceGateway
   private expiryTimers = new Map<string, NodeJS.Timeout>();
   private shuttingDown = false;
   private readonly heartbeatLimit = getRateLimits().heartbeat;
+  private readonly anchorKey = anchorKey(getJwtSecret());
+  private readonly agentTouched = new Map<string, number>();
+
+  /** Device list shows when each agent last reported; written at most once a minute per device. */
+  private touchAgent(orgId: string, deviceId: string): void {
+    const now = Date.now();
+    if ((this.agentTouched.get(deviceId) ?? 0) > now - 60_000) return;
+    this.agentTouched.set(deviceId, now);
+    void this.prisma.runWithTenantContext(orgId, (db) => db.query(`UPDATE agent_devices SET last_seen_at = now() WHERE id = $1`, [deviceId])).catch(() => undefined);
+  }
   private readonly presenceListeners: Array<(orgId: string, userId: string, state: string) => void> = [];
 
   /** FR-VO-003: the virtual office shows the attendance state on avatars. */
@@ -206,9 +219,12 @@ export class AttendanceGateway
     // Ensure payload user and org match authenticated socket
     payload.userId = user.sub;
     payload.orgId = user.orgId;
+    // ADR 018: an agent's device id comes from its pairing, never from the client.
+    const agentDeviceId = auth.agentDeviceId;
+    if (agentDeviceId) payload.deviceId = agentDeviceId;
 
     try {
-      const result = await this.attendanceService.ingestHeartbeat(payload, undefined, client.handshake.address || undefined);
+      const result = await this.attendanceService.ingestHeartbeat(payload, undefined, client.handshake.address || undefined, agentDeviceId ? 'AGENT' : 'WEB');
 
       this.publishPresence(user.orgId, {
         userId: user.sub,
@@ -222,6 +238,17 @@ export class AttendanceGateway
         currentState: result.currentState,
       });
 
+      if (agentDeviceId) {
+        // FR-ATT-012: the anchor offline intervals are measured from (server time, signed).
+        const serverTimeMs = result.session.lastHeartbeatAt.getTime();
+        this.touchAgent(user.orgId, agentDeviceId);
+        return {
+          success: true,
+          actionTaken: result.actionTaken,
+          currentState: result.currentState,
+          anchor: { serverTimeMs, signature: signAnchor(this.anchorKey, { orgId: user.orgId, userId: user.sub, deviceId: agentDeviceId }, serverTimeMs) },
+        };
+      }
       return {
         success: true,
         actionTaken: result.actionTaken,
@@ -241,11 +268,14 @@ export class AttendanceGateway
     const sessionId = payload.sid as string;
     const familyId = await this.liveFamilyId(payload.orgId, payload.sub, sessionId);
     if (!familyId) return null;
+    const agentDeviceId = await this.prisma.runWithTenantContext(payload.orgId, async (db) =>
+      (await db.query<{ id: string }>(`SELECT id FROM agent_devices WHERE family_id = $1 AND revoked_at IS NULL`, [familyId])).rows[0]?.id ?? null);
     return {
       user: payload,
       sessionId,
       familyId,
       expiresAtMs: (payload.exp ?? 0) * 1000,
+      agentDeviceId,
     };
   }
 

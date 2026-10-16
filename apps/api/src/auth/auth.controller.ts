@@ -57,9 +57,10 @@ function requestMeta(req: Request): [string | undefined, string | undefined] {
  * production, SameSite=Strict, Path=/auth/refresh). It is removed from every JSON body so
  * page scripts can never read it.
  */
-function moveRefreshTokenToCookie<T extends object>(res: Response, result: T): Omit<T, 'refreshToken'> {
+function moveRefreshTokenToCookie<T extends object>(res: Response, result: T): Omit<T, 'refreshToken' | 'familyId'> {
   if (!('refreshToken' in result)) return result;
-  const { refreshToken, ...body } = result as T & { refreshToken: unknown };
+  // familyId is internal (ADR 018 device binding); the browser never needs it.
+  const { refreshToken, familyId: _familyId, ...body } = result as T & { refreshToken: unknown; familyId?: unknown };
   if (typeof refreshToken === 'string' && refreshToken.length > 0) {
     res.cookie(REFRESH_COOKIE_NAME, refreshToken, { ...refreshCookieOptions(), maxAge: REFRESH_MAX_AGE_MS });
   }

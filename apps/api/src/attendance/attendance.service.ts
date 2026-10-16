@@ -16,8 +16,12 @@ import type {
   ConsentStatus,
   TimeTotals,
 } from '../../../../packages/shared/src/attendance/api.ts';
+import { planOfflineSync } from '../agent/offline-sync.ts';
+import type { OfflineInterval, OfflinePlan } from '../agent/offline-sync.ts';
 import {
   AttendanceState,
+  ClockInSource,
+  ClockOutSource,
   SessionStatus,
   DEFAULT_ATTENDANCE_CONFIG,
   SystemClock,
@@ -31,6 +35,7 @@ import type {
   AttendanceSession,
   Clock,
   HeartbeatPayload,
+  HeartbeatSource,
   StateMachineTransitionResult,
   AttendanceCorrection,
   ScheduleComplianceResult,
@@ -256,6 +261,7 @@ export class AttendanceService {
     payload: HeartbeatPayload,
     serverTime: Date = this.clock.now(),
     ip: string = '127.0.0.1',
+    source: HeartbeatSource = 'WEB',
   ): Promise<StateMachineTransitionResult> {
     // Secret must be strictly bound to payload.sessionId & payload.orgId (per-session secret)
     const secret = await this.getSessionSecret(payload.sessionId, payload.orgId);
@@ -309,6 +315,7 @@ export class AttendanceService {
         payload,
         serverTime,
         ip,
+        source,
       );
 
       if (this.repository) {
@@ -329,12 +336,67 @@ export class AttendanceService {
             tabVisible: payload.tabVisible,
             windowFocused: payload.windowFocused,
             inCall: payload.inCall,
+            source,
           },
         });
       }
       this.sessions.set(payload.userId, result.session);
 
       return result;
+    });
+  }
+
+  /**
+   * FR-ATT-012 (ADR 018): turn a verified offline buffer into closed sessions flagged
+   * OFFLINE_SYNCED. Runs under the user's session lock so it cannot race live heartbeats; only
+   * time the server did not already account for is accepted.
+   */
+  public async applyOfflineSync(p: {
+    orgId: string;
+    userId: string;
+    deviceId: string;
+    anchorServerMs: number;
+    intervals: OfflineInterval[];
+    ip: string;
+    maxWindowSeconds?: number;
+  }): Promise<{ plan: OfflinePlan; sessionIds: string[] }> {
+    const repo = this.repository;
+    if (!repo) throw new Error('Repository is required for applyOfflineSync');
+    return await this.withSessionLock(p.orgId, p.userId, async () => {
+      const now = this.clock.now();
+      const { config } = await this.policy(p.orgId);
+      const covered = await repo.findCoveredSpans(p.orgId, p.userId, new Date(p.anchorServerMs - 60_000), now);
+      const plan = planOfflineSync({
+        anchorServerMs: p.anchorServerMs, intervals: p.intervals, nowMs: now.getTime(), covered,
+        maxWindowSeconds: p.maxWindowSeconds ?? 12 * 3600, timeZone: config.orgTimezone,
+      });
+      const sessionIds: string[] = [];
+      const dates = new Set<string>();
+      for (const planned of plan.sessions) {
+        const session: AttendanceSession = {
+          id: randomUUID(), orgId: p.orgId, userId: p.userId, deviceId: p.deviceId, workDate: planned.workDate,
+          clockInAt: planned.start, clockOutAt: planned.end,
+          clockInSource: ClockInSource.OFFLINE_SYNC, clockOutSource: ClockOutSource.OFFLINE_SYNC,
+          activeSeconds: planned.activeSeconds, idleSeconds: planned.idleSeconds, breakSeconds: 0, meetingSeconds: 0,
+          netSeconds: planned.activeSeconds, lastHeartbeatAt: planned.end, ipIn: p.ip, ipOut: p.ip,
+          flags: ['OFFLINE_SYNCED'], status: SessionStatus.CLOSED, currentState: AttendanceState.OFFLINE,
+          segments: planned.segments.map((g) => ({
+            id: randomUUID(), state: g.state === 'ACTIVE' ? AttendanceState.ACTIVE : AttendanceState.IDLE,
+            startedAt: g.start, endedAt: g.end, durationSeconds: Math.round((g.end.getTime() - g.start.getTime()) / 1000), flags: ['OFFLINE_SYNCED'],
+          })),
+          consecutiveIdleSeconds: 0, agentDeviceId: p.deviceId, agentLastSeenAt: null, webInCallAt: null,
+        };
+        await repo.saveSession(session);
+        // FR-ATT-020: the user sees the synced block among their raw events.
+        await repo.recordPresenceEvent({
+          orgId: p.orgId, userId: p.userId, sessionId: session.id, serverTs: now, eventType: 'OFFLINE_SYNC', state: AttendanceState.OFFLINE, seq: 0, ip: p.ip,
+          meta: { from: planned.start.toISOString(), to: planned.end.toISOString(), activeSeconds: planned.activeSeconds, idleSeconds: planned.idleSeconds },
+        });
+        sessionIds.push(session.id);
+        dates.add(planned.workDate);
+      }
+      for (const d of dates) await this.recomputeDailySummaryForUser(p.orgId, p.userId, d);
+      return { plan, sessionIds };
     });
   }
 

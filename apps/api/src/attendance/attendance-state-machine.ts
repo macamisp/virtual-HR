@@ -18,6 +18,7 @@ import type {
   AttendanceSession,
   AttendanceSegment,
   HeartbeatPayload,
+  HeartbeatSource,
   StateMachineTransitionResult,
 } from '../../../../packages/shared/src/attendance/types.ts';
 
@@ -82,10 +83,23 @@ export class AttendanceStateMachine {
    */
   public handleHeartbeat(
     session: AttendanceSession | null,
-    heartbeat: HeartbeatPayload,
+    incoming: HeartbeatPayload,
     serverTime: Date,
     ip: string,
+    source: HeartbeatSource = 'WEB',
   ): StateMachineTransitionResult {
+    // ADR 018: while a desktop agent reports, its OS-level counters lead. A browser heartbeat
+    // then only keeps the session alive and passes on whether it is in a call.
+    const agentLive = !!session?.agentLastSeenAt && session.status === SessionStatus.OPEN &&
+      serverTime.getTime() - session.agentLastSeenAt.getTime() <= this.config.missedHeartbeatTimeoutSeconds * 1000;
+    if (session && source === 'WEB' && agentLive) {
+      const updated: AttendanceSession = { ...session, lastHeartbeatAt: serverTime };
+      if (incoming.inCall) updated.webInCallAt = serverTime;
+      return { session: updated, previousState: session.currentState, currentState: session.currentState, actionTaken: 'Liveness only: the desktop agent leads the counters' };
+    }
+    const webCallRecent = source === 'AGENT' && !!session?.webInCallAt &&
+      serverTime.getTime() - session.webInCallAt.getTime() <= 2 * this.config.heartbeatIntervalSeconds * 1000;
+    const heartbeat: HeartbeatPayload = webCallRecent ? { ...incoming, inCall: true } : incoming;
     const isActivity = heartbeat.inCall || heartbeat.activeSeconds > 0;
 
     // Row 1: OFFLINE -> First ACTIVE heartbeat (no open session) -> ACTIVE
@@ -98,7 +112,7 @@ export class AttendanceStateMachine {
         workDate: this.getWorkDate(serverTime),
         clockInAt: serverTime,
         clockOutAt: null,
-        clockInSource: ClockInSource.AUTO_HEARTBEAT,
+        clockInSource: source === 'AGENT' ? ClockInSource.AGENT : ClockInSource.AUTO_HEARTBEAT,
         clockOutSource: null,
         activeSeconds: heartbeat.activeSeconds,
         idleSeconds: heartbeat.idleSeconds,
@@ -124,6 +138,9 @@ export class AttendanceStateMachine {
         ],
         graceTimerExpiresAt: null,
         consecutiveIdleSeconds: isActivity ? 0 : heartbeat.idleSeconds,
+        agentDeviceId: source === 'AGENT' ? heartbeat.deviceId : null,
+        agentLastSeenAt: source === 'AGENT' ? serverTime : null,
+        webInCallAt: null,
       };
 
       return {
@@ -139,11 +156,18 @@ export class AttendanceStateMachine {
     const prev = updatedSession.currentState;
     updatedSession.lastHeartbeatAt = serverTime;
 
-    // Multi-device detection (FR-ATT-010)
-    if (heartbeat.deviceId !== updatedSession.deviceId) {
-      if (!updatedSession.flags.includes('MULTI_DEVICE')) {
-        updatedSession.flags.push('MULTI_DEVICE');
-      }
+    // Multi-device detection (FR-ATT-010). An agent next to a browser is one person at one
+    // machine (ADR 018); two agents, or two browsers without an agent, are two devices.
+    let otherDevice: boolean;
+    if (source === 'AGENT') {
+      otherDevice = !!updatedSession.agentDeviceId && updatedSession.agentDeviceId !== heartbeat.deviceId;
+      updatedSession.agentDeviceId ??= heartbeat.deviceId;
+      updatedSession.agentLastSeenAt = serverTime;
+    } else {
+      otherDevice = !updatedSession.agentDeviceId && heartbeat.deviceId !== updatedSession.deviceId;
+    }
+    if (otherDevice && !updatedSession.flags.includes('MULTI_DEVICE')) {
+      updatedSession.flags.push('MULTI_DEVICE');
     }
 
     // Accumulate total counters

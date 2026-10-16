@@ -1,0 +1,24 @@
+:root { color-scheme: light dark; --fg: #1a1a1a; --muted: #5c5c5c; --bg: #fff; --card: #f4f4f5; --accent: #1d4ed8; --bad: #b91c1c; --ok: #15803d; --warn: #b45309; }
+@media (prefers-color-scheme: dark) { :root { --fg: #ececec; --muted: #a3a3a3; --bg: #18181b; --card: #27272a; --accent: #60a5fa; --bad: #f87171; --ok: #4ade80; --warn: #fbbf24; } }
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.5 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+main { padding: 20px; max-width: 480px; margin: 0 auto; }
+h1 { font-size: 20px; margin: 0 0 12px; }
+h2 { font-size: 15px; margin: 16px 0 6px; }
+p, li { color: var(--fg); }
+.muted { color: var(--muted); font-size: 13px; }
+.card { background: var(--card); border-radius: 8px; padding: 12px 14px; margin: 10px 0; }
+label { display: block; font-weight: 600; margin: 10px 0 4px; }
+input[type=text], input[type=url] { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--muted); background: var(--bg); color: var(--fg); font: inherit; }
+input.code { font: 600 20px/1.2 ui-monospace, monospace; letter-spacing: 3px; text-transform: uppercase; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; }
+.row { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+button { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+button.secondary { background: transparent; color: var(--fg); border-color: var(--muted); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.error { color: var(--bad); }
+.state { font-weight: 600; }
+.state.online { color: var(--ok); } .state.offline, .state.connecting { color: var(--warn); } .state.revoked, .state.unpaired { color: var(--bad); }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+dt { color: var(--muted); } dd { margin: 0; }

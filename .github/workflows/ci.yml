@@ -138,6 +138,9 @@ jobs:
       - name: Typecheck web app
         run: npm run web:typecheck
 
+      - name: Desktop agent unit tests (ADR 018)
+        run: npm test -w @hrvo/agent
+
       - name: Install Playwright Chromium
         working-directory: apps/web
         run: npx playwright install --with-deps chromium
@@ -145,7 +148,8 @@ jobs:
       - name: Web end-to-end tests (real API + Postgres)
         env:
           CI: 'true'
-        run: npm run e2e
+        # xvfb: the desktop agent spec (19) runs the real Electron app, which needs a display.
+        run: xvfb-run -a npm run e2e
 
       - name: Upload Playwright report
         if: failure()
@@ -154,3 +158,48 @@ jobs:
           name: playwright-report
           path: apps/web/playwright-report
           retention-days: 7
+
+  # ADR 018: unsigned desktop agent installers for review. Building only; nothing is published.
+  # Code signing (Windows certificate, Apple notarisation) is a release step that needs secrets.
+  agent-installers:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            script: dist:linux
+          - os: windows-latest
+            script: dist:win
+          - os: macos-latest
+            script: dist:mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build installer
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run ${{ matrix.script }} -w @hrvo/agent
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: hrvo-agent-${{ matrix.os }}
+          path: |
+            apps/agent/release/*.AppImage
+            apps/agent/release/*.deb
+            apps/agent/release/*.exe
+            apps/agent/release/*.dmg
+          if-no-files-found: error
+          retention-days: 14

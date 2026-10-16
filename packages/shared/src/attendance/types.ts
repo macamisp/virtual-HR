@@ -20,6 +20,8 @@ export const ClockInSource = {
   AUTO_LOGIN: 'AUTO_LOGIN',
   AGENT: 'AGENT',
   CORRECTION: 'CORRECTION',
+  /** FR-ATT-012: rebuilt from a desktop agent's offline buffer (ADR 018). */
+  OFFLINE_SYNC: 'OFFLINE_SYNC',
 } as const;
 export type ClockInSource = (typeof ClockInSource)[keyof typeof ClockInSource];
 
@@ -31,6 +33,8 @@ export const ClockOutSource = {
   MAX_LENGTH: 'MAX_LENGTH',
   AGENT: 'AGENT',
   CORRECTION: 'CORRECTION',
+  /** FR-ATT-012: rebuilt from a desktop agent's offline buffer (ADR 018). */
+  OFFLINE_SYNC: 'OFFLINE_SYNC',
 } as const;
 export type ClockOutSource = (typeof ClockOutSource)[keyof typeof ClockOutSource];
 
@@ -105,7 +109,15 @@ export interface AttendanceSession {
   segments: AttendanceSegment[];
   graceTimerExpiresAt?: Date | null;
   consecutiveIdleSeconds: number;
+  /** ADR 018: the desktop agent that leads this session's counters, and when it last reported. */
+  agentDeviceId?: string | null;
+  agentLastSeenAt?: Date | null;
+  /** ADR 018: last browser heartbeat that was in a call (keeps agent-reported idle time active). */
+  webInCallAt?: Date | null;
 }
+
+/** Where a heartbeat came from, decided by the server from the auth session (never the client). */
+export type HeartbeatSource = 'WEB' | 'AGENT';
 
 export interface AttendanceConfig {
   heartbeatIntervalSeconds: number;     // default 30

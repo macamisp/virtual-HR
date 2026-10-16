@@ -19,6 +19,8 @@ const PUBLIC_BY_DESIGN = new Set([
   'GET /share/:token', 'POST /share/:token/open', 'POST /notifications/unsubscribe',
   // ADR 016: LiveKit calls it; the body is verified with the signed sha256 claim.
   'POST /media/livekit/webhook',
+  // ADR 018: the desktop agent has no session yet (consent text, pairing code, its own token rotation).
+  'GET /agent/notice', 'POST /agent/pair', 'POST /agent/token',
 ]);
 /** Signed-in routes whose scope is "the caller's own data" and need no extra permission. */
 const SELF_SERVICE = new Set([

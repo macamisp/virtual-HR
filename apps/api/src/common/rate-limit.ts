@@ -13,7 +13,7 @@ import type { ExecutionContext } from '@nestjs/common';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { getRateLimits } from './config.ts';
 
-export type HttpRateLimitBucket = 'login' | 'refresh' | 'passwordReset' | 'vault' | 'share' | 'unsubscribe';
+export type HttpRateLimitBucket = 'login' | 'refresh' | 'passwordReset' | 'vault' | 'share' | 'unsubscribe' | 'agentPair' | 'agentToken';
 
 const RATE_LIMIT_KEY = 'hrvo:rateLimitBucket';
 
@@ -23,7 +23,7 @@ export function rateLimitModule() {
   return ThrottlerModule.forRootAsync({
     useFactory: () => {
       const limits = getRateLimits();
-      const buckets: HttpRateLimitBucket[] = ['login', 'refresh', 'passwordReset', 'vault', 'share', 'unsubscribe'];
+      const buckets: HttpRateLimitBucket[] = ['login', 'refresh', 'passwordReset', 'vault', 'share', 'unsubscribe', 'agentPair', 'agentToken'];
       return {
         errorMessage: 'Too many requests; please slow down',
         throttlers: buckets.map((name) => ({

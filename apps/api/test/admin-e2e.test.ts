@@ -300,9 +300,9 @@ describe('Administration (FR-ADM-001, 002, 004, 006; FR-AUD-004)', { concurrency
   });
 
   describe('Consent records (FR-AUD-004)', { concurrency: false }, () => {
-    it('lists monitoring, recording and AI with the current notice versions', async () => {
+    it('lists monitoring, recording, AI and desktop-agent consents with the current notice versions', async () => {
       const list = await ok<ConsentOverview[]>(await api('emp', '/me/consents'), 200);
-      assert.deepEqual(list.map((c) => c.type), ['MONITORING', 'RECORDING', 'AI']);
+      assert.deepEqual(list.map((c) => c.type), ['MONITORING', 'RECORDING', 'AI', 'DESKTOP_AGENT']);
       assert.equal(list[0]!.granted, true, 'accepted earlier through the attendance notice');
       assert.equal(list[1]!.granted, null);
     });

@@ -98,6 +98,10 @@ model Organization {
   channelMembers                ChannelMember[]
   messages                      Message[]
 
+  agentDevices       AgentDevice[]
+  agentPairingCodes  AgentPairingCode[]
+  offlineSyncBatches OfflineSyncBatch[]
+
   @@map("organizations")
 }
 
@@ -182,6 +186,10 @@ model User {
   channelMemberships      ChannelMember[]
   messages                Message[]
 
+  agentDevices       AgentDevice[]
+  agentPairingCodes  AgentPairingCode[]
+  offlineSyncBatches OfflineSyncBatch[]
+
   @@map("users")
 }
 
@@ -244,6 +252,10 @@ model AttendanceSession {
   previousState          String?   @map("previous_state") @db.VarChar(20)
   graceTimerExpiresAt    DateTime? @map("grace_timer_expires_at") @db.Timestamptz()
   consecutiveIdleSeconds Int       @default(0) @map("consecutive_idle_seconds")
+  /// ADR 018: the desktop agent leading this session's counters.
+  agentDeviceId          String?   @map("agent_device_id") @db.VarChar(100)
+  agentLastSeenAt        DateTime? @map("agent_last_seen_at") @db.Timestamptz()
+  webInCallAt            DateTime? @map("web_in_call_at") @db.Timestamptz()
   createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt              DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
 
@@ -1522,4 +1534,63 @@ model Message {
   @@index([parentId, createdAt])
   @@index([search], map: "messages_search_idx", type: Gin)
   @@map("messages")
+}
+
+/// FR-ATT-011 (ADR 018): a paired desktop agent. Its auth session family is the agent's login;
+/// revoking the device revokes the family.
+model AgentDevice {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        String    @map("org_id") @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  familyId     String    @unique @map("family_id") @db.Uuid
+  name         String    @db.VarChar(100)
+  platform     String    @db.VarChar(20)
+  agentVersion String    @map("agent_version") @db.VarChar(40)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  lastSeenAt   DateTime? @map("last_seen_at") @db.Timestamptz()
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz()
+  revokedBy    String?   @map("revoked_by") @db.Uuid
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, userId])
+  @@map("agent_devices")
+}
+
+/// One-time pairing codes (5 minutes); only the SHA-256 of the code is stored.
+model AgentPairingCode {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId     String    @map("org_id") @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  codeHash  String    @unique @map("code_hash") @db.VarChar(64)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz()
+  usedAt    DateTime? @map("used_at") @db.Timestamptz()
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, userId])
+  @@map("agent_pairing_codes")
+}
+
+/// FR-ATT-012: each offline upload, so a batch is applied once and its outcome is reviewable.
+model OfflineSyncBatch {
+  id         String   @db.Uuid
+  orgId      String   @map("org_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  deviceId   String   @map("device_id") @db.Uuid
+  anchorAt   DateTime @map("anchor_at") @db.Timestamptz()
+  receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz()
+  accepted   Int
+  rejected   Json     @default("{}")
+  sessionIds String[] @default([]) @map("session_ids") @db.Uuid
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([orgId, id])
+  @@index([orgId, userId])
+  @@map("offline_sync_batches")
 }

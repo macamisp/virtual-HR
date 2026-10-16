@@ -2,9 +2,9 @@
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'apps/web/**'] },
+  { ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'apps/web/**', 'apps/agent/dist/**', 'apps/agent/release/**'] },
   {
-    files: ['apps/api/**/*.ts', 'packages/shared/**/*.ts'],
+    files: ['apps/api/**/*.ts', 'apps/agent/**/*.ts', 'apps/agent/**/*.cts', 'packages/shared/**/*.ts'],
     extends: [tseslint.configs.recommended],
     rules: {
       // AGENTS.md: no `any`.

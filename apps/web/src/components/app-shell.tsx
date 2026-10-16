@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BadgeDollarSign, Building2, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, MessagesSquare, Video, Timer, Users } from 'lucide-react';
+import { Archive, BadgeDollarSign, Building2, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, Laptop, ListChecks, LogOut, Menu, MessagesSquare, Video, Timer, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { NotificationBell } from '@/components/notification-bell';
@@ -88,6 +88,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canOffice = useCan(Permission.OFFICE_USE);
   const canMeetings = useCan(Permission.MEETINGS_USE);
   const canChat = useCan(Permission.CHAT_USE);
+  const canAgent = useCan(Permission.AGENT_USE);
   const canReportsTeam = useCan(Permission.REPORTS_TEAM);
   const canReportsAll = useCan(Permission.REPORTS_ALL);
   const canReports = canReportsTeam || canReportsAll;
@@ -265,6 +266,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <li>
               <NavLink href="/account/privacy" icon={FileLock2}>My data</NavLink>
             </li>
+            {canAgent ? (
+              <li>
+                <NavLink href="/account/agents" icon={Laptop}>My desktop agents</NavLink>
+              </li>
+            ) : null}
             {canManageOrg || canManageRoles || canAudit || canPrivacy ? (
               <li className="px-2 pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground" aria-hidden="true">Administration</li>
             ) : null}

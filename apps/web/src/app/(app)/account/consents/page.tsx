@@ -40,6 +40,11 @@ export default function ConsentsPage() {
             <CardContent className="space-y-3">
               {c.type === 'MONITORING' ? (
                 <p className="text-sm text-muted-foreground">You accept this notice when you start attendance tracking. It is required to clock in.</p>
+              ) : c.type === 'DESKTOP_AGENT' ? (
+                <div className="space-y-2">
+                  <p className="text-sm text-muted-foreground">You give this consent in the desktop agent when you connect it. Withdrawing it disconnects every desktop agent of yours.</p>
+                  <Button size="sm" variant="outline" disabled={record.isPending || c.granted !== true} onClick={() => { if (window.confirm('Withdraw consent and disconnect all your desktop agents?')) record.mutate({ type: 'DESKTOP_AGENT', granted: false, noticeVersion: c.currentVersion }); }}>Withdraw</Button>
+                </div>
               ) : (
                 <div className="flex gap-2">
                   <Button size="sm" disabled={record.isPending || c.granted === true} onClick={() => record.mutate({ type: c.type as 'RECORDING' | 'AI', granted: true, noticeVersion: c.currentVersion })}>Give consent</Button>

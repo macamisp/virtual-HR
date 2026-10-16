@@ -50,7 +50,7 @@ const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000; // FR-AUTH-003
 export const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000; // FR-AUTH-008
 
 /** Why an auth_sessions row was revoked. ROTATED is a normal refresh and does not end the login. */
-export type RevokeReason = 'ROTATED' | 'LOGOUT' | 'FAMILY_REUSE' | 'PASSWORD_RESET' | 'USER_DEACTIVATED';
+export type RevokeReason = 'ROTATED' | 'LOGOUT' | 'FAMILY_REUSE' | 'PASSWORD_RESET' | 'USER_DEACTIVATED' | 'DEVICE_REVOKED';
 
 interface AuthUserRow {
   id: string;
@@ -463,6 +463,7 @@ export class AuthService {
       accessToken,
       refreshToken,
       sessionId,
+      familyId,
       sessionSecret,
       user: {
         id: user.id,
@@ -472,6 +473,20 @@ export class AuthService {
         role: user.role,
       },
     };
+  }
+
+  /** ADR 018: a desktop agent's own login, created when a pairing code is redeemed (same audit as a login). */
+  async issueAgentSession(
+    client: pg.PoolClient,
+    user: Pick<AuthUserRow, 'id' | 'org_id' | 'email' | 'display_name' | 'role' | 'team_id'>,
+    meta: RequestMeta,
+  ) {
+    return await this.issueSession(client, user, meta, 'AGENT_PAIRED_LOGIN');
+  }
+
+  /** ADR 018: revoking a desktop agent revokes its session family (sockets are dropped via hrvo_auth_events). */
+  async revokeFamily(client: pg.PoolClient, orgId: string, familyId: string): Promise<number> {
+    return await this.revokeSessions(client, orgId, { familyId }, 'DEVICE_REVOKED');
   }
 
   /**
@@ -607,6 +622,7 @@ export class AuthService {
         accessToken,
         refreshToken: newRefreshToken,
         sessionId: newSessionId,
+        familyId: session.family_id as string,
         sessionSecret: newSessionSecret,
         user: {
           id: session.user_id,

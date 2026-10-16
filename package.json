@@ -62,6 +62,7 @@
   },
   "workspaces": [
     "apps/web",
+    "apps/agent",
     "packages/shared"
   ]
 }

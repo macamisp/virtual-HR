@@ -190,7 +190,7 @@ export type AuditVerification = z.infer<typeof AuditVerificationSchema>;
 
 // ---------------------------------------------------------------- FR-AUD-004 consents
 
-export const CONSENT_TYPES = ['MONITORING', 'RECORDING', 'AI'] as const;
+export const CONSENT_TYPES = ['MONITORING', 'RECORDING', 'AI', 'DESKTOP_AGENT'] as const;
 export type ConsentType = (typeof CONSENT_TYPES)[number];
 
 /** Current notice version per consent type. The monitoring notice is FR-ATT-020's. */
@@ -198,12 +198,15 @@ export const CONSENT_NOTICES: Record<ConsentType, { version: string; title: stri
   MONITORING: { version: 'v1.0.0', title: 'Attendance monitoring', summary: 'Presence signals (activity, tab visibility, calls) decide attendance states. No screenshots, keystrokes or content.' },
   RECORDING: { version: 'v1.0.0', title: 'Meeting recording', summary: 'Meetings you join may be recorded when every participant is told. Recordings are kept per the retention settings.' },
   AI: { version: 'v1.0.0', title: 'AI features', summary: 'Summaries and suggestions may process task and meeting text. Nothing is used to train models.' },
+  // FR-ATT-011 (ADR 018): given on the agent's own consent screen when it is paired.
+  DESKTOP_AGENT: { version: 'v1.0.0', title: 'Desktop agent', summary: 'The desktop agent reads how long the computer has had no keyboard or mouse input (OS idle time) and whether it is locked. It never reads keystrokes, screens, window titles, files or application names. A tray icon is shown whenever it runs; quitting it stops tracking.' },
 };
 
 /** Recording and AI consents can be given and withdrawn here; monitoring is accepted in the attendance notice. */
 export const ConsentDtoSchema = z
   .object({
-    type: z.enum(['RECORDING', 'AI']),
+    // DESKTOP_AGENT can only be withdrawn here (that revokes your agents); it is given when pairing.
+    type: z.enum(['RECORDING', 'AI', 'DESKTOP_AGENT']),
     granted: z.boolean(),
     noticeVersion: z.string().trim().max(20),
   })

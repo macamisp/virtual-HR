@@ -1,0 +1,74 @@
+{
+  "name": "@hrvo/agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HRVO desktop agent: OS idle time, tray status, offline buffering (FR-ATT-011, FR-ATT-012; ADR 018).",
+  "author": "HRVO",
+  "type": "module",
+  "main": "dist/apps/agent/src/main.js",
+  "scripts": {
+    "build": "tsc -p . && node scripts/copy-static.mjs",
+    "test": "npm run build && node --test dist/apps/agent/test/*.test.js",
+    "start": "npm run build && node scripts/start.mjs",
+    "lint": "eslint src test",
+    "dist:linux": "npm run build && electron-builder --linux AppImage deb --publish never",
+    "dist:win": "npm run build && electron-builder --win nsis --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg --publish never"
+  },
+  "dependencies": {
+    "socket.io-client": "4.8.4",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "electron": "43.7.7",
+    "electron-builder": "26.17.0"
+  },
+  "build": {
+    "appId": "com.hrvo.agent",
+    "productName": "HRVO Agent",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "!dist/apps/agent/test/**"
+    ],
+    "extraMetadata": {
+      "main": "dist/apps/agent/src/main.js"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Office",
+      "maintainer": "HRVO <noreply@example.invalid>",
+      "executableName": "hrvo-agent",
+      "desktop": {
+        "entry": {
+          "StartupWMClass": "hrvo-agent"
+        }
+      }
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.business",
+      "hardenedRuntime": true
+    },
+    "executableName": "hrvo-agent"
+  },
+  "desktopName": "hrvo-agent.desktop"
+}

@@ -1,4 +1,5 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { AgentService } from '../agent/agent.service.ts';
 import { PrismaService } from '../common/prisma.service.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
 import type { RequestContext } from '../common/decorators/request-context.decorator.ts';
@@ -13,7 +14,7 @@ import type { ConsentDto, ConsentOverview, ConsentRecord, ConsentType } from '..
  */
 @Injectable()
 export class ConsentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly agents: AgentService) {}
 
   async overview(orgId: string, userId: string): Promise<ConsentOverview[]> {
     const rows = await this.prisma.runWithTenantContext(orgId, async (db) => {
@@ -37,7 +38,10 @@ export class ConsentsService {
 
   async record(user: AuthenticatedUser, dto: ConsentDto, ctx: RequestContext): Promise<ConsentOverview[]> {
     if (dto.noticeVersion !== CONSENT_NOTICES[dto.type].version) throw new ConflictException('The notice has changed. Reload and read the current version.');
+    if (dto.type === 'DESKTOP_AGENT' && dto.granted) throw new BadRequestException('The desktop agent consent is given in the agent itself when you pair it.');
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      // ADR 018: withdrawing the agent consent stops every agent of this user at once.
+      if (dto.type === 'DESKTOP_AGENT') await this.agents.revokeAllForUser(db, user, { ip: ctx.ip ?? null, userAgent: ctx.userAgent ?? null });
       const res = await db.query<{ id: string }>(
         `INSERT INTO monitoring_consents (org_id, user_id, notice_version, consent_type, granted, accepted_at, ip, user_agent)
          VALUES ($1, $2, $3, $4, $5, now(), $6, $7) RETURNING id`,

@@ -81,5 +81,8 @@ export function getRateLimits() {
     share: { limit: intFromEnv('RATE_LIMIT_SHARE', 30), ttl: ttlMs },
     // FR-NOTIF-002: public one-click unsubscribe.
     unsubscribe: { limit: intFromEnv('RATE_LIMIT_UNSUBSCRIBE', 20), ttl: ttlMs },
+    // ADR 018: redeeming a pairing code (guessing protection) and the agent's token refresh.
+    agentPair: { limit: intFromEnv('RATE_LIMIT_AGENT_PAIR', 10), ttl: ttlMs },
+    agentToken: { limit: intFromEnv('RATE_LIMIT_AGENT_TOKEN', 30), ttl: ttlMs },
   };
 }
