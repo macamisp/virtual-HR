@@ -367,6 +367,11 @@ export class ScheduledWorkService {
     });
   }
 
+  /** FR-NOTIF-004: emails held back by quiet hours whose window has ended. */
+  async deferredEmails(now: Date = new Date()): Promise<number> {
+    return await this.perOrg('deferred-emails', (org) => this.notifications.dispatchDue(org.id, now));
+  }
+
   /**
    * Once per org-local day: drop raw presence events and notifications older than the
    * organisation's retention settings (FR-ADM-004; presence defaults to the notice's 90 days).

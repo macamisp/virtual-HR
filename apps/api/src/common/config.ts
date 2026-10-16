@@ -79,5 +79,7 @@ export function getRateLimits() {
     // FR-DOC-005/006/010: re-authentication, document passwords, public share links.
     vault: { limit: intFromEnv('RATE_LIMIT_VAULT', 20), ttl: ttlMs },
     share: { limit: intFromEnv('RATE_LIMIT_SHARE', 30), ttl: ttlMs },
+    // FR-NOTIF-002: public one-click unsubscribe.
+    unsubscribe: { limit: intFromEnv('RATE_LIMIT_UNSUBSCRIBE', 20), ttl: ttlMs },
   };
 }

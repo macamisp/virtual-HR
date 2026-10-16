@@ -58,3 +58,83 @@ export const NotificationListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(30),
 });
 export type NotificationListQuery = z.infer<typeof NotificationListQuerySchema>;
+
+// ---------------------------------------------------------------- FR-NOTIF-002 / 004 preferences
+
+export type NotificationGroup = 'Tasks' | 'Timesheets' | 'Documents' | 'Security';
+
+/**
+ * Labels, groups and criticality. Critical types (security and data-safety events) are always
+ * delivered on both channels and ignore quiet hours; they cannot be unsubscribed (FR-NOTIF-002).
+ */
+export const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; group: NotificationGroup; critical?: boolean }> = {
+  TASK_ASSIGNED: { label: 'Task assigned to me', group: 'Tasks' },
+  TASK_ACCEPTANCE_REQUESTED: { label: 'Task waiting for my acceptance', group: 'Tasks' },
+  TASK_ACCEPTED: { label: 'My task was accepted', group: 'Tasks' },
+  TASK_DECLINED: { label: 'My task was declined', group: 'Tasks' },
+  TASK_MENTIONED: { label: 'Mentioned in a comment', group: 'Tasks' },
+  TASK_STATUS: { label: 'Task status changed', group: 'Tasks' },
+  TASK_DUE_SOON_24H: { label: 'Task due tomorrow', group: 'Tasks' },
+  TASK_DUE_SOON_1H: { label: 'Task due within the hour', group: 'Tasks' },
+  TASK_OVERDUE: { label: 'Task overdue', group: 'Tasks' },
+  TASK_ESCALATED: { label: 'Unaccepted task escalated to me', group: 'Tasks' },
+  WEEKLY_SUMMARY: { label: 'Weekly summary', group: 'Tasks' },
+  TIMESHEET_SUBMITTED: { label: 'Timesheet submitted for my approval', group: 'Timesheets' },
+  TIMESHEET_APPROVED: { label: 'My timesheet was approved', group: 'Timesheets' },
+  TIMESHEET_REJECTED: { label: 'My timesheet was rejected', group: 'Timesheets' },
+  TIMESHEET_REOPENED: { label: 'My timesheet was reopened', group: 'Timesheets' },
+  TIMESHEET_SUBMIT_REMINDER: { label: 'Reminder to submit my timesheet', group: 'Timesheets' },
+  TIMESHEET_OVERDUE: { label: 'My timesheet is overdue', group: 'Timesheets' },
+  TIMESHEET_APPROVAL_REMINDER: { label: 'Reminder to approve timesheets', group: 'Timesheets' },
+  TIMESHEET_VARIANCE: { label: 'Timesheet differs from attendance', group: 'Timesheets' },
+  DOCUMENT_REJECTED: { label: 'My upload was rejected', group: 'Documents' },
+  DOCUMENT_EXPIRING: { label: 'A document or contract is expiring', group: 'Documents' },
+  DOCUMENT_INFECTED: { label: 'Malware found in an upload', group: 'Security', critical: true },
+  DOCUMENT_PASSWORD_LOCKOUT: { label: 'Document password lockout', group: 'Security', critical: true },
+  DOCUMENT_PASSWORD_RECOVERED: { label: 'Document password recovered by HR', group: 'Security', critical: true },
+  SHARE_LINK_LOCKED: { label: 'Share link locked after wrong passwords', group: 'Security', critical: true },
+};
+
+export const NOTIFICATION_TYPES = Object.keys(NOTIFICATION_TYPE_META) as [NotificationType, ...NotificationType[]];
+export const CRITICAL_NOTIFICATION_TYPES: readonly NotificationType[] = NOTIFICATION_TYPES.filter((t) => NOTIFICATION_TYPE_META[t].critical);
+export const isCriticalNotification = (type: string): boolean => (CRITICAL_NOTIFICATION_TYPES as readonly string[]).includes(type);
+
+/** "HH:mm" in the user's own timezone. */
+const clock = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm');
+
+export const QuietHoursSchema = z.object({ start: clock, end: clock }).refine((q) => q.start !== q.end, { message: 'Start and end must differ' });
+export type QuietHours = z.infer<typeof QuietHoursSchema>;
+
+export const NotificationPreferenceItemSchema = z.object({
+  type: z.enum(NOTIFICATION_TYPES),
+  label: z.string(),
+  group: z.enum(['Tasks', 'Timesheets', 'Documents', 'Security']),
+  critical: z.boolean(),
+  inApp: z.boolean(),
+  email: z.boolean(),
+});
+export type NotificationPreferenceItem = z.infer<typeof NotificationPreferenceItemSchema>;
+
+export const NotificationPreferencesSchema = z.object({
+  /** null = the organisation's timezone applies. */
+  timezone: z.string().nullable(),
+  orgTimezone: z.string(),
+  quietHours: QuietHoursSchema.nullable(),
+  items: z.array(NotificationPreferenceItemSchema),
+});
+export type NotificationPreferences = z.infer<typeof NotificationPreferencesSchema>;
+
+export const NotificationPreferencesDtoSchema = z
+  .object({
+    timezone: z.string().trim().min(1).max(64).nullable(),
+    quietHours: QuietHoursSchema.nullable(),
+    items: z.array(z.object({ type: z.enum(NOTIFICATION_TYPES), inApp: z.boolean(), email: z.boolean() }).strict()).max(64),
+  })
+  .strict();
+export type NotificationPreferencesDto = z.infer<typeof NotificationPreferencesDtoSchema>;
+
+export const UnsubscribeDtoSchema = z.object({ token: z.string().trim().min(20).max(400) }).strict();
+export type UnsubscribeDto = z.infer<typeof UnsubscribeDtoSchema>;
+
+export const UnsubscribeResultSchema = z.object({ type: z.enum(NOTIFICATION_TYPES), label: z.string() });
+export type UnsubscribeResult = z.infer<typeof UnsubscribeResultSchema>;

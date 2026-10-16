@@ -1,7 +1,8 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { NotificationListSchema } from '@hrvo/shared';
+import { NotificationListSchema, NotificationPreferencesSchema, UnsubscribeResultSchema } from '@hrvo/shared';
+import type { NotificationPreferencesDto } from '@hrvo/shared';
 import { apiFetch } from './api';
 import { useAuthStore } from './auth-store';
 
@@ -25,5 +26,31 @@ export function useMarkNotifications() {
         ? apiFetch('/notifications/read-all', { method: 'POST', schema: NotificationListSchema })
         : apiFetch(`/notifications/${encodeURIComponent(v.id)}/read`, { method: 'POST', schema: NotificationListSchema }),
     onSuccess: (list) => qc.setQueryData(notificationKeys.list, list),
+  });
+}
+
+export const preferenceKeys = { prefs: ['notifications', 'preferences'] as const };
+
+/** FR-NOTIF-004 */
+export function useNotificationPreferences() {
+  return useQuery({
+    queryKey: preferenceKeys.prefs,
+    queryFn: () => apiFetch('/notifications/preferences', { schema: NotificationPreferencesSchema }),
+    enabled: useAuthStore((s) => s.status === 'authenticated'),
+  });
+}
+
+export function useSaveNotificationPreferences() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (dto: NotificationPreferencesDto) => apiFetch('/notifications/preferences', { method: 'PUT', body: dto, schema: NotificationPreferencesSchema }),
+    onSuccess: (p) => qc.setQueryData(preferenceKeys.prefs, p),
+  });
+}
+
+/** FR-NOTIF-002: public, from the link in an email. */
+export function useUnsubscribe() {
+  return useMutation({
+    mutationFn: (token: string) => apiFetch('/notifications/unsubscribe', { method: 'POST', body: { token }, auth: 'none', schema: UnsubscribeResultSchema }),
   });
 }

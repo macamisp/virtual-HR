@@ -65,6 +65,7 @@ model Organization {
   weeklyPlans                   WeeklyPlan[]
   taskSavedViews                TaskSavedView[]
   notifications                 Notification[]
+  notificationPreferences       NotificationPreference[]
   jobRuns                       JobRun[]
   subcontractorProfiles         SubcontractorProfile[]
   timesheets                    Timesheet[]
@@ -102,6 +103,11 @@ model User {
   failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
   lockedUntil         DateTime? @map("locked_until") @db.Timestamptz()
   status              String    @default("ACTIVE") @db.VarChar(20)
+  /// FR-NOTIF-004: IANA zone for quiet hours and reports; null = the organisation's zone.
+  timezone            String?   @db.VarChar(64)
+  /// FR-NOTIF-004: minutes after local midnight; both null = no quiet hours.
+  quietHoursStart     Int?      @map("quiet_hours_start") @db.SmallInt
+  quietHoursEnd       Int?      @map("quiet_hours_end") @db.SmallInt
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -111,40 +117,41 @@ model User {
   subordinates User[]       @relation("UserSubordinates")
   ledTeams     Team[]       @relation("TeamLead")
 
-  attendanceSessions    AttendanceSession[]
-  heartbeatNonces       HeartbeatNonce[]
-  deviceSequences       DeviceSequence[]
-  attendanceCorrections AttendanceCorrection[] @relation("UserCorrections")
-  reviewedCorrections   AttendanceCorrection[] @relation("ReviewerCorrections")
-  attendanceDaily       AttendanceDaily[]
-  draftTimesheets       DraftTimesheet[]
-  presenceEvents        PresenceEvent[]
-  auditLogs             AuditLog[]
-  monitoringConsents    MonitoringConsent[]
-  invitationsSent       Invitation[]           @relation("InvitedByUser")
-  authSessions          AuthSession[]
-  workSchedules         WorkSchedule[]
-  passwordResetTokens   PasswordResetToken[]
-  managedProjects       Project[]              @relation("ProjectManager")
-  projectMemberships    ProjectMember[]
-  assignedTasks         Task[]                 @relation("TaskAssignee")
-  reportedTasks         Task[]                 @relation("TaskReporter")
-  taskComments          TaskComment[]
-  taskAttachments       TaskAttachment[]
-  taskActivity          TaskActivity[]
-  dailyPlans            DailyPlan[]
-  weeklyPlans           WeeklyPlan[]
-  taskSavedViews        TaskSavedView[]
-  notifications         Notification[]
-  rateProfile           SubcontractorProfile?
-  timesheets            Timesheet[]
-  timesheetDays         TimesheetDay[]
-  timeEntries           TimeEntry[]
-  timesheetApprovals    TimesheetApproval[]
-  ownedDocuments        Document[]             @relation("DocumentOwner")
-  linkedDocuments       Document[]             @relation("DocumentLinkedUser")
-  uploadedVersions      DocumentVersion[]      @relation("DocumentVersionUploader")
-  contracts             Contract[]             @relation("UserContracts")
+  attendanceSessions      AttendanceSession[]
+  heartbeatNonces         HeartbeatNonce[]
+  deviceSequences         DeviceSequence[]
+  attendanceCorrections   AttendanceCorrection[]   @relation("UserCorrections")
+  reviewedCorrections     AttendanceCorrection[]   @relation("ReviewerCorrections")
+  attendanceDaily         AttendanceDaily[]
+  draftTimesheets         DraftTimesheet[]
+  presenceEvents          PresenceEvent[]
+  auditLogs               AuditLog[]
+  monitoringConsents      MonitoringConsent[]
+  invitationsSent         Invitation[]             @relation("InvitedByUser")
+  authSessions            AuthSession[]
+  workSchedules           WorkSchedule[]
+  passwordResetTokens     PasswordResetToken[]
+  managedProjects         Project[]                @relation("ProjectManager")
+  projectMemberships      ProjectMember[]
+  assignedTasks           Task[]                   @relation("TaskAssignee")
+  reportedTasks           Task[]                   @relation("TaskReporter")
+  taskComments            TaskComment[]
+  taskAttachments         TaskAttachment[]
+  taskActivity            TaskActivity[]
+  dailyPlans              DailyPlan[]
+  weeklyPlans             WeeklyPlan[]
+  taskSavedViews          TaskSavedView[]
+  notifications           Notification[]
+  notificationPreferences NotificationPreference[]
+  rateProfile             SubcontractorProfile?
+  timesheets              Timesheet[]
+  timesheetDays           TimesheetDay[]
+  timeEntries             TimeEntry[]
+  timesheetApprovals      TimesheetApproval[]
+  ownedDocuments          Document[]               @relation("DocumentOwner")
+  linkedDocuments         Document[]               @relation("DocumentLinkedUser")
+  uploadedVersions        DocumentVersion[]        @relation("DocumentVersionUploader")
+  contracts               Contract[]               @relation("UserContracts")
 
   @@map("users")
 }
@@ -736,16 +743,38 @@ model Notification {
   entityId   String?   @map("entity_id") @db.Uuid
   dedupeKey  String?   @map("dedupe_key") @db.VarChar(200)
   sendEmail  Boolean   @default(false) @map("send_email")
+  /// FR-NOTIF-004: false = email only; hidden from the notification centre.
+  inApp      Boolean   @default(true) @map("in_app")
   readAt     DateTime? @map("read_at") @db.Timestamptz()
   emailedAt  DateTime? @map("emailed_at") @db.Timestamptz()
+  /// FR-NOTIF-004: not before this instant (quiet hours); null = at once.
+  emailAfter DateTime? @map("email_after") @db.Timestamptz()
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, dedupeKey])
+  @@index([orgId, emailAfter])
   @@index([userId, readAt, createdAt])
   @@map("notifications")
+}
+
+/// FR-NOTIF-004: per user and event type; a missing row means both channels on.
+model NotificationPreference {
+  orgId     String   @map("org_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  type      String   @db.VarChar(40)
+  inApp     Boolean  @default(true) @map("in_app")
+  email     Boolean  @default(true)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, type])
+  @@index([orgId])
+  @@map("notification_preferences")
 }
 
 /// Once-per-period markers for scheduled jobs (daily close, retention, weekly summary).

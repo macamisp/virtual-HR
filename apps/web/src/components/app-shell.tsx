@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BadgeDollarSign, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Timer, Users } from 'lucide-react';
+import { Archive, BadgeDollarSign, BellRing, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Timer, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { NotificationBell } from '@/components/notification-bell';
@@ -223,6 +223,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <NavLink href="/timesheets/rates" icon={BadgeDollarSign}>Rates</NavLink>
               </li>
             ) : null}
+            <li>
+              <NavLink href="/account/notifications" icon={BellRing}>Notification settings</NavLink>
+            </li>
             <li>
               <NavLink href="/account/consents" icon={UserCheck}>My consents</NavLink>
             </li>

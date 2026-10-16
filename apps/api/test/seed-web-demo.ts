@@ -19,6 +19,7 @@ const USERS = [
   { id: '44440000-0000-4000-8000-000000000012', email: 'lead@acme.demo', name: 'Leo Lead', role: 'TEAM_LEAD', team: true },
   { id: '44440000-0000-4000-8000-000000000013', email: 'worker@acme.demo', name: 'Wendy Worker', role: 'EMPLOYEE', team: true },
   { id: '44440000-0000-4000-8000-000000000014', email: 'sam@acme.demo', name: 'Sam Subcontractor', role: 'SUBCONTRACTOR', team: true },
+  { id: '44440000-0000-4000-8000-000000000015', email: 'admin@acme.demo', name: 'Ada Admin', role: 'ADMIN', team: false },
 ];
 
 async function main(): Promise<void> {
