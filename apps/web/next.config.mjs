@@ -29,6 +29,8 @@ const csp = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Playwright builds into its own folder so it never overwrites a running dev server's .next.
+  distDir: process.env.NEXT_DIST_DIR || '.next',
   poweredByHeader: false,
   transpilePackages: ['@hrvo/shared'],
   // The image optimizer is unused and has had RCE/DoS advisories; keep it off.

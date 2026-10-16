@@ -60,7 +60,8 @@ export class MediaSession {
       dynacast: true,
       audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, deviceId: prefs.audioInput === 'default' ? undefined : prefs.audioInput },
       videoCaptureDefaults: { deviceId: prefs.videoInput === 'default' ? undefined : prefs.videoInput, resolution: { width: 640, height: 360, frameRate: 24 } },
-      publishDefaults: { simulcast: true, dtx: true, red: true },
+      // VP8 everywhere: with H.264 a screen share next to a camera could fail to reach others.
+      publishDefaults: { simulcast: true, dtx: true, red: true, videoCodec: 'vp8', backupCodec: false },
       audioOutput: prefs.audioOutput === 'default' ? undefined : { deviceId: prefs.audioOutput },
     });
     this.room = room;
@@ -155,7 +156,7 @@ export class MediaSession {
     this.changed();
   }
   /** FR-VO-009: screen share inside any room or meeting. */
-  async toggleShare(): Promise<void> { await this.room?.localParticipant.setScreenShareEnabled(!this.sharing, { audio: true }).catch((e: unknown) => this.fail(e)); this.changed(); }
+  async toggleShare(): Promise<void> { await this.room?.localParticipant.setScreenShareEnabled(!this.sharing, { audio: true }, { videoCodec: 'vp8', backupCodec: false }).catch((e: unknown) => this.fail(e)); this.changed(); }
 
   /** FR-MEET-010: audio-only fallback (automatic on a poor connection, or by choice). */
   async setAudioOnly(on: boolean): Promise<void> {

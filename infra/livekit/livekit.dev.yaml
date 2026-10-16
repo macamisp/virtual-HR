@@ -18,5 +18,11 @@ webhook:
 room:
   empty_timeout: 60
   max_participants: 50
+  # VP8 + Opus only (ADR 016): with H.264 offered, Chrome sent a screen share next to a camera as
+  # H.264 although it was announced as VP8, and nobody received it.
+  enabled_codecs:
+    - mime: audio/opus
+    - mime: audio/red
+    - mime: video/vp8
 logging:
   level: info

@@ -71,6 +71,13 @@ test.describe.serial('Meetings: instant call, device check, lobby', () => {
     await lead.getByRole('toolbar', { name: 'Call controls' }).getByRole('button', { name: 'Raise hand' }).click();
     await expect(host.getByTestId('tile-remote').getByLabel('Hand raised')).toBeVisible();
 
+    // Screen share next to a live camera reaches the other side (regression: H.264 negotiation).
+    await host.getByRole('button', { name: 'Share screen' }).click();
+    await expect(lead.getByTestId('screen-share')).toContainText(`${USERS.worker.name} is presenting`);
+    await expect.poll(() => lead.getByTestId('screen-share').locator('video').evaluate((v: HTMLVideoElement) => v.videoWidth), { timeout: 20_000 }).toBeGreaterThan(0);
+    await host.getByRole('button', { name: 'Stop sharing' }).click();
+    await expect(lead.getByTestId('screen-share')).toHaveCount(0);
+
     await lead.getByRole('button', { name: 'Leave' }).click();
     await expect(host.getByTestId('tile-remote')).toHaveCount(0);
     await host.getByRole('button', { name: 'Leave' }).click();

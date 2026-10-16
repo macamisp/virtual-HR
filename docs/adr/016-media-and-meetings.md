@@ -55,6 +55,7 @@ Client times are never used. **Attendance:** the browser sets `inCall` while any
 - Call view: tiles with speaking ring, mute and hand indicators; a shared screen takes the stage (presentation mode); controls for mic, camera, screen share, raise hand (LiveKit data, topic `hrvo`), audio-only, leave; host controls and the lobby panel.
 - **Office:** after the user turns media on, walking into a closed room joins its call, standing near people in the open area joins the group call (debounced 600 ms; one retry when the server's grouping lags a tick). Volume falls off with distance (1 → 0.15 at the edge of the radius). Room-only mode keeps proximity off.
 - **Broadcast** (FR-VO-010): `POST /office/broadcast` (`office.broadcast`: admins, HR, managers) pushes `office:broadcast` to the organisation; audited.
+- **Codecs: VP8 and Opus (with RED) only**, in the LiveKit `room.enabled_codecs` setting and on the client. With H.264 on offer, Chrome sent a screen share next to a running camera as H.264 although it was announced as VP8, and LiveKit dropped it (found in QA). Production LiveKit must use the same codec list.
 - Web hardening changed: `Permissions-Policy` now allows `camera`, `microphone`, `display-capture` and `speaker-selection` for the app's own origin (it had blocked them); CSP `connect-src` adds `NEXT_PUBLIC_LIVEKIT_URL` (ws and http).
 
 ## 7. Tests

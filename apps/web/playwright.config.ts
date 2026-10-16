@@ -76,6 +76,7 @@ export default defineConfig({
         NEXT_PUBLIC_STORAGE_URL: process.env.S3_PUBLIC_ENDPOINT ?? process.env.S3_ENDPOINT ?? '',
         NEXT_PUBLIC_LIVEKIT_URL: process.env.LIVEKIT_URL ?? 'ws://localhost:7880',
         NEXT_TELEMETRY_DISABLED: '1',
+        NEXT_DIST_DIR: '.next-e2e',
       } as Record<string, string>,
     },
   ],
