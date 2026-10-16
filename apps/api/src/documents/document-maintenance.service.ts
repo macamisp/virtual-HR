@@ -92,7 +92,7 @@ export class DocumentMaintenanceService {
    * key is destroyed, so every copy of the ciphertext (bucket, replicas, backups) is unreadable;
    * the objects are deleted as well. The row stays as a tombstone for the audit trail.
    */
-  async shred(orgId: string, documentId: string, reason: 'TRASH_EXPIRED' | 'RETENTION'): Promise<void> {
+  async shred(orgId: string, documentId: string, reason: 'TRASH_EXPIRED' | 'RETENTION' | 'ANONYMISATION'): Promise<void> {
     const objects = await this.prisma.runWithTenantContext(orgId, async (db) => {
       const d = await db.query<{ legal_hold: boolean; shredded_at: Date | null }>(`SELECT legal_hold, shredded_at FROM documents WHERE id = $1 FOR UPDATE`, [documentId]);
       if (!d.rows[0] || d.rows[0].legal_hold || d.rows[0].shredded_at) return [];

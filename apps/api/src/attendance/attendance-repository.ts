@@ -111,6 +111,8 @@ export interface IAttendanceRepository {
   findPresenceEventsByUser(orgId: string, userId: string, limit?: number): Promise<PresenceEventRecord[]>;
   cleanupOldPresenceEvents(orgId: string, olderThan: Date): Promise<number>;
   cleanupOldNotifications(orgId: string, olderThan: Date): Promise<number>;
+  /** FR-AUD-003: raw presence events and notifications of one person (retention role). */
+  deleteUserRetentionData(orgId: string, userId: string): Promise<{ presenceEvents: number; notifications: number }>;
 
   clearAll(): Promise<void>;
   close(): Promise<void>;
@@ -1152,6 +1154,23 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       const res = await client.query(`DELETE FROM notifications WHERE org_id = $1 AND created_at < $2`, [orgId, olderThan]);
       await client.query('COMMIT');
       return res.rowCount || 0;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async deleteUserRetentionData(orgId: string, userId: string): Promise<{ presenceEvents: number; notifications: number }> {
+    const client = await this.retentionPool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.org_id', $1, true)`, [orgId]);
+      const p = await client.query(`DELETE FROM presence_events WHERE org_id = $1 AND user_id = $2`, [orgId, userId]);
+      const n = await client.query(`DELETE FROM notifications WHERE org_id = $1 AND user_id = $2`, [orgId, userId]);
+      await client.query('COMMIT');
+      return { presenceEvents: p.rowCount || 0, notifications: n.rowCount || 0 };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
       throw err;

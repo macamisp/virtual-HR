@@ -84,6 +84,7 @@ model Organization {
   documentRetentionRules        DocumentRetentionRule[]
   orgRoles                      OrgRole[]
   requiredDocumentCategories    RequiredDocumentCategory[]
+  privacyRequests               PrivacyRequest[]
 
   @@map("organizations")
 }
@@ -109,6 +110,8 @@ model User {
   /// FR-NOTIF-004: minutes after local midnight; both null = no quiet hours.
   quietHoursStart     Int?      @map("quiet_hours_start") @db.SmallInt
   quietHoursEnd       Int?      @map("quiet_hours_end") @db.SmallInt
+  /// FR-AUD-003: set when the person's data was anonymised; the row stays as a pseudonymous key.
+  anonymisedAt        DateTime? @map("anonymised_at") @db.Timestamptz()
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -144,6 +147,8 @@ model User {
   taskSavedViews          TaskSavedView[]
   notifications           Notification[]
   notificationPreferences NotificationPreference[]
+  privacySubjectOf        PrivacyRequest[]         @relation("PrivacySubject")
+  privacyRequested        PrivacyRequest[]         @relation("PrivacyRequester")
   rateProfile             SubcontractorProfile?
   timesheets              Timesheet[]
   timesheetDays           TimesheetDay[]
@@ -788,6 +793,29 @@ model RequiredDocumentCategory {
 
   @@id([orgId, role, category])
   @@map("required_document_categories")
+}
+
+/// FR-AUD-002/003: the documented workflow of exports and anonymisations.
+model PrivacyRequest {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId         String    @map("org_id") @db.Uuid
+  subjectUserId String    @map("subject_user_id") @db.Uuid
+  type          String    @db.VarChar(12)
+  status        String    @default("PENDING") @db.VarChar(12)
+  requestedBy   String    @map("requested_by") @db.Uuid
+  reason        String    @default("") @db.Text
+  blockers      Json      @default("[]")
+  result        Json?
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+  completedAt   DateTime? @map("completed_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  subject      User         @relation("PrivacySubject", fields: [subjectUserId], references: [id], onDelete: Cascade)
+  requester    User         @relation("PrivacyRequester", fields: [requestedBy], references: [id], onDelete: Cascade)
+
+  @@index([orgId, subjectUserId])
+  @@map("privacy_requests")
 }
 
 /// Once-per-period markers for scheduled jobs (daily close, retention, weekly summary).

@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BadgeDollarSign, BellRing, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Timer, Users } from 'lucide-react';
+import { Archive, BadgeDollarSign, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, ListChecks, LogOut, Menu, Timer, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { NotificationBell } from '@/components/notification-bell';
@@ -88,6 +88,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canReportsAll = useCan(Permission.REPORTS_ALL);
   const canReports = canReportsTeam || canReportsAll;
   const canManageRoles = useCan(Permission.ROLES_MANAGE);
+  const canPrivacy = useCan(Permission.PRIVACY_MANAGE);
   const canApproveTimesheets = canApproveTeam || canApproveAll;
   const canRates = canManageRates || canReadAllTimesheets;
   const [navOpen, setNavOpen] = useState(false);
@@ -242,7 +243,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <li>
               <NavLink href="/account/consents" icon={UserCheck}>My consents</NavLink>
             </li>
-            {canManageOrg || canManageRoles || canAudit ? (
+            <li>
+              <NavLink href="/account/privacy" icon={FileLock2}>My data</NavLink>
+            </li>
+            {canManageOrg || canManageRoles || canAudit || canPrivacy ? (
               <li className="px-2 pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground" aria-hidden="true">Administration</li>
             ) : null}
             {canManageOrg ? (
@@ -263,6 +267,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {canAudit ? (
               <li>
                 <NavLink href="/admin/audit" icon={History}>Audit log</NavLink>
+              </li>
+            ) : null}
+            {canPrivacy ? (
+              <li>
+                <NavLink href="/admin/privacy" icon={ShieldCheck}>Privacy requests</NavLink>
               </li>
             ) : null}
           </ul>
