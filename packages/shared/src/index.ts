@@ -48,3 +48,4 @@ export type {
   MfaSetupResponse,
 } from './auth/types.ts';
 export * from './admin/types.ts';
+export * from './reports/types.ts';

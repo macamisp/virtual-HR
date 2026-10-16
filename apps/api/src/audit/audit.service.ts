@@ -98,8 +98,9 @@ export class AuditService {
       let checked = 0;
       for (;;) {
         const batch = await db.query<ChainRow>(
-          `SELECT id::text, org_id, actor_id, action, entity_type, entity_id, before, after, prev_hash, hash, created_at
-           FROM audit_logs WHERE id > $1::bigint ORDER BY id LIMIT ${VERIFY_BATCH}`,
+          // ORDER BY the table column: an output alias named "id" would sort the text, putting 100 before 59.
+          `SELECT a.id::text, a.org_id, a.actor_id, a.action, a.entity_type, a.entity_id, a.before, a.after, a.prev_hash, a.hash, a.created_at
+           FROM audit_logs a WHERE a.id > $1::bigint ORDER BY a.id LIMIT ${VERIFY_BATCH}`,
           [lastId],
         );
         for (const r of batch.rows) {

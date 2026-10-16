@@ -10,32 +10,32 @@ generator client {
 }
 
 model Organization {
-  id                            String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name                          String                    @db.VarChar(200)
-  slug                          String                    @unique @db.VarChar(80)
-  timezone                      String                    @default("Asia/Colombo") @db.VarChar(64)
+  id                            String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                          String                     @db.VarChar(200)
+  slug                          String                     @unique @db.VarChar(80)
+  timezone                      String                     @default("Asia/Colombo") @db.VarChar(64)
   /// FR-TASK-007: hours before an unaccepted task is escalated.
-  taskAcceptanceEscalationHours Int                       @default(24) @map("task_acceptance_escalation_hours")
+  taskAcceptanceEscalationHours Int                        @default(24) @map("task_acceptance_escalation_hours")
   /// FR-TS-002: WEEKLY, BIWEEKLY or MONTHLY; bi-weekly blocks count from the anchor Monday.
-  timesheetPeriod               String                    @default("WEEKLY") @map("timesheet_period") @db.VarChar(10)
-  timesheetPeriodAnchor         DateTime                  @default(dbgenerated("'2026-01-05'::date")) @map("timesheet_period_anchor") @db.Date
+  timesheetPeriod               String                     @default("WEEKLY") @map("timesheet_period") @db.VarChar(10)
+  timesheetPeriodAnchor         DateTime                   @default(dbgenerated("'2026-01-05'::date")) @map("timesheet_period_anchor") @db.Date
   /// FR-TS-004 / SRS 6.4: manual time per day before entries are flagged (0..480).
-  manualTimeLimitMinutes        Int                       @default(120) @map("manual_time_limit_minutes")
+  manualTimeLimitMinutes        Int                        @default(120) @map("manual_time_limit_minutes")
   /// FR-TS-005 / SRS 6.4: variance alert threshold in percent (5..50).
-  timesheetVariancePct          Int                       @default(15) @map("timesheet_variance_pct")
+  timesheetVariancePct          Int                        @default(15) @map("timesheet_variance_pct")
   /// FR-TS-012: days after the period end by which a timesheet should be submitted.
-  timesheetSubmitDueDays        Int                       @default(1) @map("timesheet_submit_due_days")
+  timesheetSubmitDueDays        Int                        @default(1) @map("timesheet_submit_due_days")
   /// FR-DOC-005 / SRS 6.4: minutes a re-authentication opens the vault (1..60).
-  vaultReauthMinutes            Int                       @default(10) @map("vault_reauth_minutes")
-  attMissedHeartbeatSeconds     Int                       @default(90) @map("att_missed_heartbeat_seconds")
-  attDisconnectGraceSeconds     Int                       @default(120) @map("att_disconnect_grace_seconds")
-  attIdleSeconds                Int                       @default(300) @map("att_idle_seconds")
-  attPauseSeconds               Int                       @default(900) @map("att_pause_seconds")
-  attMaxSessionSeconds          Int                       @default(50400) @map("att_max_session_seconds")
-  attPaidBreakMinutes           Int                       @default(60) @map("att_paid_break_minutes")
-  retentionPresenceDays         Int                       @default(90) @map("retention_presence_days")
-  retentionNotificationsDays    Int                       @default(365) @map("retention_notifications_days")
-  createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz()
+  vaultReauthMinutes            Int                        @default(10) @map("vault_reauth_minutes")
+  attMissedHeartbeatSeconds     Int                        @default(90) @map("att_missed_heartbeat_seconds")
+  attDisconnectGraceSeconds     Int                        @default(120) @map("att_disconnect_grace_seconds")
+  attIdleSeconds                Int                        @default(300) @map("att_idle_seconds")
+  attPauseSeconds               Int                        @default(900) @map("att_pause_seconds")
+  attMaxSessionSeconds          Int                        @default(50400) @map("att_max_session_seconds")
+  attPaidBreakMinutes           Int                        @default(60) @map("att_paid_break_minutes")
+  retentionPresenceDays         Int                        @default(90) @map("retention_presence_days")
+  retentionNotificationsDays    Int                        @default(365) @map("retention_notifications_days")
+  createdAt                     DateTime                   @default(now()) @map("created_at") @db.Timestamptz()
   users                         User[]
   teams                         Team[]
   workSchedules                 WorkSchedule[]
@@ -83,6 +83,7 @@ model Organization {
   documentShareLinks            DocumentShareLink[]
   documentRetentionRules        DocumentRetentionRule[]
   orgRoles                      OrgRole[]
+  requiredDocumentCategories    RequiredDocumentCategory[]
 
   @@map("organizations")
 }
@@ -775,6 +776,18 @@ model NotificationPreference {
   @@id([userId, type])
   @@index([orgId])
   @@map("notification_preferences")
+}
+
+/// FR-REP-005: document categories a role must have on file (compliance report).
+model RequiredDocumentCategory {
+  orgId    String @map("org_id") @db.Uuid
+  role     String @db.VarChar(50)
+  category String @db.VarChar(20)
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([orgId, role, category])
+  @@map("required_document_categories")
 }
 
 /// Once-per-period markers for scheduled jobs (daily close, retention, weekly summary).

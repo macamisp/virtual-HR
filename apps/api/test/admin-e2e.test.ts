@@ -76,6 +76,8 @@ describe('Administration (FR-ADM-001, 002, 004, 006; FR-AUD-004)', { concurrency
     adminPool = new pg.Pool({ ...conn, user: process.env.PGADMIN_USER || 'postgres', password: process.env.PGADMIN_PASSWORD || 'postgres' });
     appPool = new pg.Pool({ ...conn, user: process.env.PGUSER || 'hrvo_app', password: process.env.PGPASSWORD || 'hrvo_app_pass' });
     await adminPool.query(`DELETE FROM organizations WHERE id = ANY($1::uuid[])`, [[ORG, OTHER]]);
+    // Regression: ids crossing a digit boundary (99 -> 100) once broke chain verification (text ordering).
+    await adminPool.query(`SELECT setval('audit_logs_id_seq', GREATEST((SELECT last_value FROM audit_logs_id_seq), 95))`);
     await adminPool.query(`INSERT INTO organizations (id, name, slug) VALUES ($1, 'Admin Ltd', 'adm-e2e'), ($2, 'Other Ltd', 'adm-other-e2e')`, [ORG, OTHER]);
     const hash = await argon2.hash(PASSWORD, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 });
     for (const u of Object.values(U)) {
