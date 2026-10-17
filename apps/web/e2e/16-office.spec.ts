@@ -9,6 +9,9 @@ import { passNoticeGate, signIn } from './helpers';
  */
 test.describe.serial('Virtual office: map, movement, people, rooms, list view', () => {
   test('the map loads, WASD moves the avatar, and a colleague appears in the people list', async ({ page, browser }) => {
+    // A renderer that cannot start under the production CSP throws here (e.g. PixiJS needing eval).
+    const pageErrors: string[] = [];
+    page.on('pageerror', (e) => pageErrors.push(e.message));
     await signIn(page, USERS.worker.email);
     await passNoticeGate(page);
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Office' }).click();
@@ -16,6 +19,7 @@ test.describe.serial('Virtual office: map, movement, people, rooms, list view', 
     await expect(canvas.locator('canvas')).toBeVisible();
     await expect(canvas).toHaveAttribute('data-avatars', /\d+/);
     await expect(page.getByTestId('my-status')).toContainText('Active');
+    expect(pageErrors, 'no uncaught errors on the office page').toEqual([]);
 
     const ctx = await browser.newContext();
     const lead = await ctx.newPage();

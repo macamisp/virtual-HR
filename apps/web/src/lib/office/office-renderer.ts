@@ -5,6 +5,9 @@
  * shapes in code; there is no image asset. The static map is drawn once and cached as a texture;
  * avatars are reused containers whose status ring is redrawn only when the status changes.
  */
+// The CSP has no 'unsafe-eval' in production builds; this PixiJS module swaps its generated
+// shader/uniform code for eval-free versions (otherwise the canvas never starts: "0 fps").
+import 'pixi.js/unsafe-eval';
 import { Application, BitmapText, Container, Graphics } from 'pixi.js';
 import { objectLayer, prop, TILE_SIZE, tileLayer } from '@hrvo/shared';
 import type { OfficeMap, VoStatus } from '@hrvo/shared';
