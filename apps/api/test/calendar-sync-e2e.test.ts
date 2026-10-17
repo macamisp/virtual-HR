@@ -21,7 +21,7 @@ import { BusyListSchema, CalendarConnectionListSchema, MeetingSchema } from '../
 
 const ORG = 'aaaa0000-0000-4000-8000-000000000001';
 const PORT = 3082;
-const G_PORT = 3071;
+const G_PORT = 3073;
 const M_PORT = 3072;
 const PASSWORD = 'ComplexPassword123!';
 const SECRET = 'KVKFKRCPNZQUYMLXOVYDSQKJKZDTSRLD';

@@ -36,7 +36,7 @@ import { CONSENT_NOTICES } from '../../../packages/shared/src/admin/types.ts';
 
 const ORG = 'c7c70000-0000-4000-8000-000000000001';
 const OTHER = 'c7c70000-0000-4000-8000-000000000002';
-const PORT = 3089;
+const PORT = 3079;
 const PASSWORD = 'ComplexPassword123!';
 const SECRET = 'KVKFKRCPNZQUYMLXOVYDSQKJKZDTSRLD';
 const NOTICE = CONSENT_NOTICES.RECORDING.version;
