@@ -47,6 +47,21 @@ data "aws_iam_policy_document" "documents_key" {
   }
 }
 
+# SRS 10.1 step 5: password-recovery escrow under its own key, so access to one key does not imply
+# the other (separate grants and audit trail in CloudTrail). Same context-bound policy.
+resource "aws_kms_key" "recovery" {
+  description             = "${local.name} document recovery escrow"
+  enable_key_rotation     = true
+  deletion_window_in_days = 30
+  policy                  = data.aws_iam_policy_document.documents_key.json
+  tags                    = local.tags
+}
+
+resource "aws_kms_alias" "recovery" {
+  name          = "alias/${local.name}-recovery"
+  target_key_id = aws_kms_key.recovery.key_id
+}
+
 resource "aws_kms_key" "data" {
   description             = "${local.name} data at rest (RDS, Redis, S3, secrets, logs, backups)"
   enable_key_rotation     = true

@@ -5,12 +5,13 @@
  * copied to another document or tenant cannot be unwrapped. Plaintext DEKs live only in
  * memory for the duration of one operation.
  *
- * KeyProvider has one implementation today: LocalKeyProvider (keys from .env, dev/test).
- * An AWS KMS adapter (Encrypt/Decrypt with EncryptionContext) plugs in behind the same interface.
+ * Providers: LocalKeyProvider (keys from .env, development and tests) and KmsKeyProvider (AWS
+ * KMS Encrypt/Decrypt with EncryptionContext, staging and production; ADR 021).
  */
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import argon2 from 'argon2';
 import type { Transform } from 'node:stream';
+import { CompositeKeyProvider, KmsKeyProvider } from './kms-key-provider.ts';
 
 export type KeyPurpose = 'data' | 'metadata' | 'password' | 'recovery';
 
@@ -27,9 +28,8 @@ export interface WrappedKey {
 }
 
 /**
- * Wraps and unwraps keys with a key-encryption key (KEK) that never leaves the provider.
- * LocalKeyProvider (env keys, dev/test) today; an AWS KMS adapter (Encrypt/Decrypt with
- * EncryptionContext = the same fields) later. Plaintext keys are never logged or stored.
+ * Wraps and unwraps keys with a key-encryption key (KEK) that never leaves the provider
+ * (LocalKeyProvider or KmsKeyProvider). Plaintext keys are never logged or stored.
  */
 export interface KeyProvider {
   wrap(key: Buffer, context: KeyContext): Promise<WrappedKey>;
@@ -105,20 +105,43 @@ export class LocalKeyProvider implements KeyProvider {
   }
 }
 
-export function keyProviderFromEnv(env: Record<string, string | undefined> = process.env): KeyProvider {
-  const provider = env.DOCUMENT_KMS_PROVIDER ?? 'local';
-  if (provider !== 'local') throw new Error(`Unsupported DOCUMENT_KMS_PROVIDER "${provider}" (only "local" is implemented)`);
-  if (env.NODE_ENV === 'production') {
-    throw new Error('The local key provider must not be used in production: configure a managed KMS');
-  }
+function localFromEnv(env: Record<string, string | undefined>): LocalKeyProvider {
   if (!env.DOCUMENT_KMS_LOCAL_KEY) throw new Error('DOCUMENT_KMS_LOCAL_KEY is required (32 random bytes, base64)');
   if (!env.DOCUMENT_KMS_RECOVERY_KEY) throw new Error('DOCUMENT_KMS_RECOVERY_KEY is required (32 random bytes, base64, different from the data key)');
   return new LocalKeyProvider({
     dataKey: env.DOCUMENT_KMS_LOCAL_KEY,
     recoveryKey: env.DOCUMENT_KMS_RECOVERY_KEY,
     dataKeyId: env.DOCUMENT_KMS_LOCAL_KEY_ID,
-    recoveryKeyId: env.DOCUMENT_KMS_RECOVERY_KEY_ID,
+    recoveryKeyId: env.DOCUMENT_KMS_RECOVERY_KEY_ID_LOCAL ?? (env.DOCUMENT_KMS_PROVIDER === 'aws' ? undefined : env.DOCUMENT_KMS_RECOVERY_KEY_ID),
   });
+}
+
+/**
+ * DOCUMENT_KMS_PROVIDER=aws (staging, production): AWS KMS with DOCUMENT_KMS_KEY_ID and
+ * DOCUMENT_KMS_RECOVERY_KEY_ID (two keys, ADR 021). Outside production, local keys next to it give
+ * the migration provider. "local" (default) is for development and tests and refused in production.
+ */
+export function keyProviderFromEnv(env: Record<string, string | undefined> = process.env): KeyProvider {
+  const provider = env.DOCUMENT_KMS_PROVIDER ?? 'local';
+  const production = env.NODE_ENV === 'production';
+  if (provider === 'aws') {
+    const dataKeyId = env.DOCUMENT_KMS_KEY_ID;
+    const recoveryKeyId = env.DOCUMENT_KMS_RECOVERY_KEY_ID;
+    if (!dataKeyId) throw new Error('DOCUMENT_KMS_KEY_ID is required for DOCUMENT_KMS_PROVIDER=aws');
+    if (!recoveryKeyId) throw new Error('DOCUMENT_KMS_RECOVERY_KEY_ID is required for DOCUMENT_KMS_PROVIDER=aws');
+    if (dataKeyId === recoveryKeyId) throw new Error('The recovery key must be different from the data key');
+    if (production && env.DOCUMENT_KMS_ENDPOINT) throw new Error('DOCUMENT_KMS_ENDPOINT (a local KMS emulator) must not be used in production');
+    if (production && (env.DOCUMENT_KMS_LOCAL_KEY || env.DOCUMENT_KMS_RECOVERY_KEY)) {
+      throw new Error('Local document keys must not be configured in production (re-wrap first, then remove them)');
+    }
+    const kms = new KmsKeyProvider({ dataKeyId, recoveryKeyId, region: env.AWS_REGION, endpoint: env.DOCUMENT_KMS_ENDPOINT });
+    return env.DOCUMENT_KMS_LOCAL_KEY ? new CompositeKeyProvider(kms, localFromEnv(env)) : kms;
+  }
+  if (provider !== 'local') throw new Error(`Unsupported DOCUMENT_KMS_PROVIDER "${provider}" (use "aws" or "local")`);
+  if (production) {
+    throw new Error('The local key provider must not be used in production: configure a managed KMS');
+  }
+  return localFromEnv(env);
 }
 
 // ---- per-document password (FR-DOC-006, SRS 10.1 step 3)

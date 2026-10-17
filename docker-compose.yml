@@ -52,6 +52,14 @@ services:
     ports:
       - "3310:3310"
 
+  # ADR 021: a local AWS KMS emulator (moto) to try DOCUMENT_KMS_PROVIDER=aws without AWS.
+  kms:
+    image: motoserver/moto:5.2.3
+    container_name: hrvo-kms
+    restart: unless-stopped
+    ports:
+      - "4566:5000"
+
   # ADR 016: WebRTC SFU for meetings, rooms and proximity audio/video (local dev only).
   livekit:
     image: livekit/livekit-server:v1.9.1

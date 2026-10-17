@@ -117,7 +117,7 @@ resource "aws_iam_role_policy" "api_task" {
       # Bucket encryption uses the data key.
       { Effect = "Allow", Action = ["kms:GenerateDataKey", "kms:Decrypt"], Resource = aws_kms_key.data.arn },
       # Document envelope keys; the key policy additionally requires the org/document context.
-      { Effect = "Allow", Action = ["kms:GenerateDataKey", "kms:Decrypt", "kms:Encrypt"], Resource = aws_kms_key.documents.arn },
+      { Effect = "Allow", Action = ["kms:GenerateDataKey", "kms:Decrypt", "kms:Encrypt"], Resource = [aws_kms_key.documents.arn, aws_kms_key.recovery.arn] },
     ]
   })
 }
@@ -161,30 +161,32 @@ locals {
 
   # Configuration only; credentials arrive through `secrets` below (never as plain environment).
   api_env = [for k, v in {
-    NODE_ENV            = "production"
-    PORT                = "3001"
-    APP_WEB_URL         = "https://${local.web_host}"
-    CORS_ORIGINS        = "https://${local.web_host}"
-    PGHOST              = aws_db_instance.main.address
-    PGPORT              = "5432"
-    PGDATABASE          = "hrvo"
-    PGUSER              = "hrvo_app"
-    PGRETENTION_USER    = "hrvo_retention"
-    PGSSLMODE           = "verify-full"
-    REDIS_HOST          = aws_elasticache_replication_group.main.primary_endpoint_address
-    REDIS_PORT          = "6379"
-    REDIS_TLS           = "true"
-    COORDINATION        = "redis"
-    TRUST_PROXY         = "2" # Cloudflare, then the ALB
-    TRUST_PROXY_HEADERS = "cloudflare"
-    S3_BUCKET           = aws_s3_bucket.documents.id
-    S3_REGION           = data.aws_region.current.region
-    CLAMAV_HOST         = "clamav.${aws_service_discovery_private_dns_namespace.internal.name}"
-    CLAMAV_PORT         = "3310"
-    LIVEKIT_URL         = var.livekit_url
-    LIVEKIT_HTTP_URL    = local.livekit_http
-    MAIL_TRANSPORT      = "smtp"
-    DOCUMENT_KMS_KEY_ID = aws_kms_key.documents.arn
+    NODE_ENV                     = "production"
+    PORT                         = "3001"
+    APP_WEB_URL                  = "https://${local.web_host}"
+    CORS_ORIGINS                 = "https://${local.web_host}"
+    PGHOST                       = aws_db_instance.main.address
+    PGPORT                       = "5432"
+    PGDATABASE                   = "hrvo"
+    PGUSER                       = "hrvo_app"
+    PGRETENTION_USER             = "hrvo_retention"
+    PGSSLMODE                    = "verify-full"
+    REDIS_HOST                   = aws_elasticache_replication_group.main.primary_endpoint_address
+    REDIS_PORT                   = "6379"
+    REDIS_TLS                    = "true"
+    COORDINATION                 = "redis"
+    TRUST_PROXY                  = "2" # Cloudflare, then the ALB
+    TRUST_PROXY_HEADERS          = "cloudflare"
+    S3_BUCKET                    = aws_s3_bucket.documents.id
+    S3_REGION                    = data.aws_region.current.region
+    CLAMAV_HOST                  = "clamav.${aws_service_discovery_private_dns_namespace.internal.name}"
+    CLAMAV_PORT                  = "3310"
+    LIVEKIT_URL                  = var.livekit_url
+    LIVEKIT_HTTP_URL             = local.livekit_http
+    MAIL_TRANSPORT               = "smtp"
+    DOCUMENT_KMS_PROVIDER        = "aws"
+    DOCUMENT_KMS_KEY_ID          = aws_kms_key.documents.arn
+    DOCUMENT_KMS_RECOVERY_KEY_ID = aws_kms_key.recovery.arn
   } : { name = k, value = v }]
 
   api_secrets = [

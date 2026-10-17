@@ -26,6 +26,12 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      # ADR 021: AWS KMS emulator for the KMS key provider tests.
+      kms:
+        image: motoserver/moto:5.2.3
+        ports:
+          - 4566:5000
+
       redis:
         image: redis:7-alpine
         ports:
@@ -38,6 +44,7 @@ jobs:
 
     env:
       NODE_ENV: test
+      KMS_TEST_ENDPOINT: http://127.0.0.1:4566
       DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5433/hrvo_dev?schema=public
       DATABASE_URL: postgresql://hrvo_app:hrvo_app_ci_pass@localhost:5433/hrvo_dev?schema=public
       PGHOST: localhost

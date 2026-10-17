@@ -7,6 +7,7 @@ output "migrate_task_definition" { value = aws_ecs_task_definition.migrate.famil
 output "private_subnets" { value = aws_subnet.private[*].id }
 output "task_security_group" { value = aws_security_group.tasks.id }
 output "documents_kms_key_arn" { value = aws_kms_key.documents.arn }
+output "recovery_kms_key_arn" { value = aws_kms_key.recovery.arn }
 output "documents_bucket" { value = aws_s3_bucket.documents.id }
 output "db_identifier" { value = aws_db_instance.main.identifier }
 output "secrets_to_fill" {

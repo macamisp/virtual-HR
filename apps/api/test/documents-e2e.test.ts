@@ -189,7 +189,7 @@ describe('Documents API (FR-DOC-001..004, 007, 009, 012, 013, 015, 019)', { conc
       assert.equal(await objectExists(`${ORG}/_staging/${d.id}/${v.id}`), false);
       const row = await adminPool.query(`SELECT dek_wrapped_kms, file_name_enc, kms_key_id FROM document_versions WHERE id = $1`, [v.id]);
       assert.ok(!row.rows[0].file_name_enc.includes(Buffer.from('policy.pdf')), 'file names are stored encrypted');
-      assert.equal(row.rows[0].kms_key_id, process.env.DOCUMENT_KMS_LOCAL_KEY_ID || 'local-1');
+      assert.equal(row.rows[0].kms_key_id, process.env.DOCUMENT_KMS_PROVIDER === 'aws' ? process.env.DOCUMENT_KMS_KEY_ID : (process.env.DOCUMENT_KMS_LOCAL_KEY_ID || 'local-1'));
     });
 
     it('large files go in several parts and uploads can resume with fresh part URLs', async () => {
