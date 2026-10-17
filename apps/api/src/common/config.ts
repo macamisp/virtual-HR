@@ -12,6 +12,17 @@ export function isProduction(): boolean {
   return process.env.NODE_ENV === 'production';
 }
 
+/**
+ * FR-AUTH-004 escape hatch for local demos only: AUTH_MFA_ENFORCEMENT=off lets roles that need
+ * 2FA sign in without enrolling. People who enrolled are still asked for their code. Refused in
+ * production; startup logs a warning while it is off.
+ */
+export function mfaEnforced(env: Record<string, string | undefined> = process.env): boolean {
+  if (env.AUTH_MFA_ENFORCEMENT !== 'off') return true;
+  if (env.NODE_ENV === 'production') throw new Error('AUTH_MFA_ENFORCEMENT=off is not allowed in production');
+  return false;
+}
+
 export function getJwtSecret(): string {
   const secret = process.env.JWT_SECRET;
   if (isProduction()) {

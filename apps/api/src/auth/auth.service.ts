@@ -7,6 +7,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import argon2 from 'argon2';
+import { mfaEnforced } from '../common/config.ts';
 import { generateSecret, generateURI, verifySync } from 'otplib';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import type pg from 'pg';
@@ -311,7 +312,7 @@ export class AuthService {
       if (!isValidToken && !recoveryUsed) {
         await this.registerFailedAttempt(user, '2FA_FAILED', meta, 'Invalid 2FA code or recovery code');
       }
-    } else if (isMfaRequiredRole(user.role)) {
+    } else if (isMfaRequiredRole(user.role) && mfaEnforced()) {
       // FR-AUTH-004: no full access token until TOTP is enrolled and verified.
       await this.auditUser(user, '2FA_ENROLLMENT_REQUIRED', meta);
       return {

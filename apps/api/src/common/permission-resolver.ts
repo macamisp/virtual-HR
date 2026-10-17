@@ -6,6 +6,7 @@
  */
 import { Global, Injectable, Module, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from './prisma.service.ts';
+import { mfaEnforced } from './config.ts';
 import { effectivePermissions, requiresMfa } from '../../../../packages/shared/src/auth/types.ts';
 import type { Permission, UserRole } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
@@ -45,7 +46,7 @@ export class PermissionResolver {
     const permissions = effectivePermissions(row.role, row.added ?? [], row.removed ?? []);
     // A role change can make 2FA mandatory (FR-AUTH-004); until it is enrolled the old token
     // stops working and the next sign-in leads to enrolment.
-    if (requiresMfa(row.role, permissions) && !row.mfa_enabled) {
+    if (requiresMfa(row.role, permissions) && !row.mfa_enabled && mfaEnforced()) {
       this.cache.delete(key);
       throw new UnauthorizedException('Two-factor authentication is required for your role. Sign in again to set it up.');
     }
