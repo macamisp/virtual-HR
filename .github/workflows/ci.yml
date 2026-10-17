@@ -161,6 +161,12 @@ jobs:
         working-directory: apps/web
         run: npx playwright install --with-deps chromium
 
+      # Electron 43 has no install script: the binary is fetched on first require('electron'), but the
+      # agent spec (19) launches node_modules/electron/dist/electron directly. Fetch it here (checked
+      # against the package's checksums.json).
+      - name: Install the Electron binary for the desktop agent spec
+        run: node node_modules/electron/install.js
+
       - name: Web end-to-end tests (real API + Postgres)
         env:
           CI: 'true'
