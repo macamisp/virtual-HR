@@ -51,7 +51,7 @@ export const recordingKeys = {
 /** Where Egress uploads. A dedicated upload-only key in production (ADR 024); the dev store otherwise. */
 export function egressS3FromEnv(env: Record<string, string | undefined> = process.env): EgressS3 {
   const accessKey = env.RECORDING_S3_ACCESS_KEY || (isProduction() ? '' : env.S3_ACCESS_KEY || '');
-  const secret = env.RECORDING_S3_SECRET_KEY || (isProduction() ? '' : env.S3_SECRET_KEY || '');
+  const secret = env.RECORDING_S3_SECRET_KEY || (isProduction() ? '' : env.S3_SECRET_KEY || ''); // gitleaks:allow (reads env, no value)
   if (!accessKey || !secret) throw new ServiceUnavailableException('Recording storage is not configured');
   return {
     accessKey, secret, region: env.RECORDING_S3_REGION || env.S3_REGION || 'us-east-1', endpoint: env.RECORDING_S3_ENDPOINT || env.S3_ENDPOINT || undefined,

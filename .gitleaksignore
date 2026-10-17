@@ -1,2 +1,8 @@
 # Historic CI test secret (replaced by a per-run openssl rand value in the same file; never a production credential).
 420954eb6c5011f2ec419db8f9a6e25c680263f0:.github/workflows/ci.yml:generic-api-key:72
+# bb008cd (ADR 024): names, not values. gitleaks' generic-api-key rule matched the empty
+# RECORDING_S3_ACCESS_KEY= placeholder, the Secrets Manager slot names and an env lookup. The lines
+# now carry gitleaks:allow; these fingerprints cover the already-pushed commit.
+bb008cdf9eacd2f3c75bb0aea34f3ceaa17a7eb1:.env.example:generic-api-key:141
+bb008cdf9eacd2f3c75bb0aea34f3ceaa17a7eb1:infra/terraform/modules/platform/secrets.tf:generic-api-key:85
+bb008cdf9eacd2f3c75bb0aea34f3ceaa17a7eb1:apps/api/src/meetings/recordings.service.ts:generic-api-key:54

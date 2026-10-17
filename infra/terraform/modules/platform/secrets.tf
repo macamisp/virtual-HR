@@ -82,7 +82,7 @@ resource "aws_secretsmanager_secret" "oauth" {
 # ADR 024: the access key of the recording upload user, created by an operator in IAM and pasted
 # here (never through Terraform, so it is not in the state).
 resource "aws_secretsmanager_secret" "recording" {
-  for_each   = var.recording_enabled ? toset(["recording-s3-access-key", "recording-s3-secret-key"]) : toset([])
+  for_each   = var.recording_enabled ? toset(["recording-s3-access-key", "recording-s3-secret-key"]) : toset([]) # gitleaks:allow (secret names, no values)
   name       = "${local.name}/${each.key}"
   kms_key_id = aws_kms_key.data.arn
   tags       = local.tags
