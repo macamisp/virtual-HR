@@ -115,6 +115,9 @@ model Organization {
   calendarEventLinks  CalendarEventLink[]
   calendarBusy        CalendarBusy[]
 
+  signatureRequests SignatureRequest[]
+  signatureSigners  SignatureSigner[]
+
   @@map("organizations")
 }
 
@@ -212,6 +215,9 @@ model User {
   calendarOauthStates CalendarOauthState[]
   calendarEventLinks  CalendarEventLink[]
   calendarBusy        CalendarBusy[]
+
+  signatureRequests SignatureRequest[] @relation("SignatureRequester")
+  signatureSigners  SignatureSigner[]
 
   @@map("users")
 }
@@ -1125,6 +1131,8 @@ model Document {
   shareLinks       DocumentShareLink[]
   passwordAttempts DocumentPasswordAttempt[]
 
+  signatureRequests SignatureRequest[]
+
   @@index([orgId, folderId])
   @@index([orgId, ownerId])
   @@index([orgId, linkedUserId])
@@ -1734,4 +1742,57 @@ model CalendarBusy {
 
   @@index([orgId, userId, startAt])
   @@map("calendar_busy")
+}
+
+/// FR-DOC-014 (ADR 022): a request to sign one PDF version; completed into a new signed version.
+model SignatureRequest {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  documentId      String    @map("document_id") @db.Uuid
+  sourceVersionId String    @map("source_version_id") @db.Uuid
+  sourceSha256    String    @map("source_sha256") @db.Char(64)
+  requestedBy     String    @map("requested_by") @db.Uuid
+  message         String    @default("") @db.Text
+  status          String    @default("OPEN") @db.VarChar(10)
+  signedVersionId String?   @map("signed_version_id") @db.Uuid
+  signedSha256    String?   @map("signed_sha256") @db.Char(64)
+  keyWrapped      Bytes     @map("key_wrapped")
+  keyId           String    @map("key_id") @db.VarChar(100)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  completedAt     DateTime? @map("completed_at") @db.Timestamptz()
+
+  organization Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  document     Document          @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  requester    User              @relation("SignatureRequester", fields: [requestedBy], references: [id], onDelete: Cascade)
+  signers      SignatureSigner[]
+
+  @@index([orgId, documentId])
+  @@map("signature_requests")
+}
+
+/// One signer; the evidence of their signature (server time, IP, re-authentication, consent).
+model SignatureSigner {
+  requestId      String    @map("request_id") @db.Uuid
+  orgId          String    @map("org_id") @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  orderNo        Int       @map("order_no")
+  status         String    @default("PENDING") @db.VarChar(10)
+  method         String?   @db.VarChar(4)
+  typedName      String?   @map("typed_name") @db.VarChar(100)
+  /// Drawn signature (PNG), sealed with the request's data key.
+  imageSealed    Bytes?    @map("image_sealed")
+  signedAt       DateTime? @map("signed_at") @db.Timestamptz()
+  reauthAt       DateTime? @map("reauth_at") @db.Timestamptz()
+  consentVersion String?   @map("consent_version") @db.VarChar(20)
+  ip             String?   @db.VarChar(45)
+  userAgent      String?   @map("user_agent") @db.VarChar(300)
+  declineReason  String?   @map("decline_reason") @db.VarChar(500)
+
+  organization Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  request      SignatureRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([requestId, userId])
+  @@index([orgId, userId])
+  @@map("signature_signers")
 }

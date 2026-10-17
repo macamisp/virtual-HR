@@ -95,6 +95,12 @@ export class VaultService {
     throw vaultError('REAUTH_REQUIRED', `Confirm it is you to open confidential documents (valid for ${s?.window ?? 10} minutes)`);
   }
 
+  /** FR-DOC-014: when this login last re-authenticated, if still inside the window (else null). */
+  async recentReauth(db: Db, user: AuthenticatedUser): Promise<Date | null> {
+    const s = await this.sessionFacts(db, user);
+    return s?.reauthenticated_at && reauthValid(s.reauthenticated_at, new Date(), s.window) ? s.reauthenticated_at : null;
+  }
+
   private async sessionFacts(db: Db, user: AuthenticatedUser) {
     if (!user.sessionId) return null;
     const res = await db.query<{ family_id: string; reauthenticated_at: Date | null; window: number; password_hash: string | null; mfa_enabled: boolean; mfa_secret: string | null }>(

@@ -17,11 +17,13 @@ import { ShareLinksService } from './share-links.service.ts';
 import { PublicShareController, VaultController } from './vault.controller.ts';
 import { OBJECT_STORE, objectStoreFromEnv } from './object-store.ts';
 import { SCAN_DISPATCHER } from './scan-dispatcher.ts';
+import { EsignService } from './esign.service.ts';
+import { EsignController } from './esign.controller.ts';
 
-/** FR-DOC-001..004, 007, 009, 012, 013, 015, 019 and minimal contracts (ADR 009). */
+/** FR-DOC-001..004, 007, 009, 012, 013, 014, 015, 019 and minimal contracts (ADR 009). */
 @Module({
   imports: [NotificationsModule],
-  controllers: [DocumentsController, ContractsController, VaultController, PublicShareController],
+  controllers: [DocumentsController, ContractsController, VaultController, PublicShareController, EsignController],
   providers: [
     PrismaService,
     DocumentsService,
@@ -33,6 +35,7 @@ import { SCAN_DISPATCHER } from './scan-dispatcher.ts';
     DocumentContent,
     VaultService,
     ShareLinksService,
+    EsignService,
     clamdOptionsProvider(),
     { provide: KEY_PROVIDER, useFactory: () => keyProviderFromEnv() },
     { provide: OBJECT_STORE, useFactory: () => objectStoreFromEnv() },

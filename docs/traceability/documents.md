@@ -26,3 +26,9 @@ Decisions and known gaps: ADR 009.
 | FR-DOC-010 secure share links | `share-links.service.ts`, `PublicShareController`, `fn_share_link_lookup` | vault-rules share tokens, vault-e2e "Share links", Playwright 11 |
 | FR-DOC-011 view-only watermark | `watermark.ts`, `document-content.service.ts` | vault-rules watermark, vault-e2e "VIEW gets only the watermarked rendering", Playwright 11 |
 | FR-DOC-017 trash, crypto-shredding, legal hold, retention | `document-maintenance.service.ts` shred / shredDue, `vault.service.ts` | vault-rules retention/trash, vault-e2e "Trash, crypto-shredding…" |
+
+## Electronic signatures (ADR 022)
+
+| Requirement | Implementation | Tests |
+| --- | --- | --- |
+| FR-DOC-014 request, draw or type, re-authentication, consent, audit certificate (time, IP, hash) | `esign.service.ts`, `esign.controller.ts`, `signature_requests` / `signature_signers`, web `/signatures`, `signatures-card.tsx` | esign-e2e (8 tests incl. RLS, changed-document refusal, decline, verification), Playwright 21 |

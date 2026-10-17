@@ -22,6 +22,7 @@ import { saveBlob } from '@/lib/api';
 import { useVaultOpen } from '@/components/documents/vault-gate';
 import type { ContentMode, OpenedContent } from '@/components/documents/vault-gate';
 import { LegalHoldCard, PasswordCard, ShareLinksCard } from '@/components/documents/vault-cards';
+import { SignaturesCard } from '@/components/documents/signatures-card';
 import { useAccessLog, useDeleteDocument, useDocument, useRestoreVersion, useUpdateDocument } from '@/lib/document-queries';
 import { formatDateTime, formatWorkDate } from '@/lib/format';
 
@@ -247,6 +248,7 @@ export default function DocumentPage({ params }: { params: Promise<{ id: string 
           <DetailsCard doc={d} />
           <LegalHoldCard doc={d} />
           <PasswordCard doc={d} />
+          <SignaturesCard doc={d} />
           {d.abilities.canManage ? <SharingCard target={{ documentId: d.id }} title="Sharing" /> : null}
           {d.abilities.canManage ? <ShareLinksCard doc={d} /> : null}
           {d.abilities.canManage ? <AccessLogCard docId={d.id} /> : null}

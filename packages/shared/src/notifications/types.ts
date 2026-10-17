@@ -28,6 +28,10 @@ export const NotificationType = {
   // FR-DOC-013 / FR-DOC-015
   DOCUMENT_INFECTED: 'DOCUMENT_INFECTED',
   DOCUMENT_REJECTED: 'DOCUMENT_REJECTED',
+  // FR-DOC-014 (ADR 022)
+  SIGNATURE_REQUESTED: 'SIGNATURE_REQUESTED',
+  SIGNATURE_COMPLETED: 'SIGNATURE_COMPLETED',
+  SIGNATURE_DECLINED: 'SIGNATURE_DECLINED',
   DOCUMENT_EXPIRING: 'DOCUMENT_EXPIRING',
   // AC-16 / FR-ORG: contract end date approaching
   CONTRACT_EXPIRING: 'CONTRACT_EXPIRING',
@@ -97,6 +101,9 @@ export const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; g
   TIMESHEET_APPROVAL_REMINDER: { label: 'Reminder to approve timesheets', group: 'Timesheets' },
   TIMESHEET_VARIANCE: { label: 'Timesheet differs from attendance', group: 'Timesheets' },
   DOCUMENT_REJECTED: { label: 'My upload was rejected', group: 'Documents' },
+  SIGNATURE_REQUESTED: { label: 'Signature requested from you', group: 'Documents' },
+  SIGNATURE_COMPLETED: { label: 'A document was signed by everyone', group: 'Documents' },
+  SIGNATURE_DECLINED: { label: 'Someone declined to sign', group: 'Documents' },
   DOCUMENT_EXPIRING: { label: 'A document is expiring', group: 'Documents' },
   CONTRACT_EXPIRING: { label: 'A contract is ending soon', group: 'Documents' },
   CHAT_MENTION: { label: 'Mentioned in chat', group: 'Tasks' },

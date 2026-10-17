@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BadgeDollarSign, Building2, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, CalendarCheck, Laptop, ListChecks, ShieldAlert, LogOut, Menu, MessagesSquare, Video, Timer, Users } from 'lucide-react';
+import { Archive, BadgeDollarSign, Building2, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, PenLine, ScrollText, ClipboardCheck, Clock, Eye, FolderKanban, CalendarCheck, Laptop, ListChecks, ShieldAlert, LogOut, Menu, MessagesSquare, Video, Timer, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { NotificationBell } from '@/components/notification-bell';
@@ -238,6 +238,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {canDocuments ? (
               <li>
                 <NavLink href="/documents" icon={FileText}>Documents</NavLink>
+              </li>
+            ) : null}
+            {canDocuments ? (
+              <li>
+                <NavLink href="/signatures" icon={PenLine}>Signatures</NavLink>
               </li>
             ) : null}
             {canDocuments && canAudit ? (
