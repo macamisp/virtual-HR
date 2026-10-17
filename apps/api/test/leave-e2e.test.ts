@@ -1,3 +1,4 @@
+import { AttendanceStateMachine } from '../src/attendance/attendance-state-machine.ts';
 import { PgLeaveProvider, PgHolidayProvider } from '../src/attendance/leave-providers.ts';
 import { PrismaService } from '../src/common/prisma.service.ts';
 /**
@@ -123,8 +124,10 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
     assert.equal((await ok(await api('lead2', '/leave/requests?scope=team'), 200, LeaveRequestListSchema)).items.length, 0);
     assert.equal((await ok(await api('hr', '/leave/requests?scope=team'), 200, LeaveRequestListSchema)).items.length, 1, 'HR sees the organisation');
     assert.equal((await api('lead', `/leave/requests/${future.id}/decide`, { method: 'POST', body: { approved: false } })).status, 400, 'a rejection needs a note');
+    await attendance.recomputeDailySummaryForUser(ORG, U.emp.id, dayPlus(10));
     const decided = await ok(await api('lead', `/leave/requests/${future.id}/decide`, { method: 'POST', body: { approved: true, note: 'Enjoy' } }), 200, LeaveRequestSchema);
     assert.equal(decided.status, 'APPROVED');
+    assert.equal((await adminPool.query(`SELECT expected_seconds FROM attendance_daily WHERE org_id = $1 AND user_id = $2 AND work_date = $3`, [ORG, U.emp.id, dayPlus(10)])).rows[0].expected_seconds, 0, 'approval refreshes existing daily expectations immediately');
     assert.equal(decided.decidedBy?.id, U.lead.id);
     assert.equal((await notes('emp', 'LEAVE_APPROVED')).length, 1);
     assert.equal((await api('lead', `/leave/requests/${future.id}/decide`, { method: 'POST', body: { approved: false, note: 'changed my mind' } })).status, 409, 'decided once');
@@ -137,6 +140,14 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
     assert.equal(daily.dayStatus, 'LEAVE');
     assert.equal(daily.expectedSeconds, 0);
     assert.equal(daily.lateMinutes, 0);
+    const late = new AttendanceStateMachine({ orgTimezone: TZ }).handleHeartbeat(null, {
+      orgId: ORG, userId: U.emp.id, sessionId: 'leave-late', deviceId: 'test', sequenceNumber: 1, nonce: 'test', signature: 'test',
+      activeSeconds: 30, idleSeconds: 0, inCall: false, tabVisible: true, windowFocused: true,
+    }, new Date(`${day}T06:00:00Z`), '127.0.0.1').session;
+    const compliance = await attendance.computeScheduleCompliance({ orgId: ORG, userId: U.emp.id, workDate: day, sessions: [late] });
+    assert.equal(compliance.lateArrivalMinutes, 0);
+    assert.equal(compliance.isAbsent, false);
+    assert.deepEqual(compliance.flags, ['ON_LEAVE']);
     const other = await attendance.computeDailySummary(ORG, U.emp.id, dayPlus(13));
     assert.equal(other.dayStatus, 'ABSENT', 'a scheduled day without leave or sessions is absent');
     assert.equal(other.expectedSeconds, 8 * 3600);
@@ -173,6 +184,17 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
     assert.equal((await attendance.computeDailySummary(ORG, U.emp.id, dayPlus(20))).dayStatus, 'ABSENT', 'rejected leave changes nothing');
   });
 
+  it('other leave follows manager approval and cancellation restores expected hours', async () => {
+    const day = dayPlus(30);
+    const request = await ok(await api('emp', '/leave/requests', { method: 'POST', body: { type: 'OTHER', startDate: day, endDate: day } }), 201, LeaveRequestSchema);
+    const decision = await ok(await api('lead', `/leave/requests/${request.id}/decide`, { method: 'POST', body: { approved: true } }), 200, LeaveRequestSchema);
+    assert.equal(decision.type, 'OTHER');
+    await attendance.recomputeDailySummaryForUser(ORG, U.emp.id, day);
+    await ok(await api('emp', `/leave/requests/${request.id}/cancel`, { method: 'POST' }), 200, LeaveRequestSchema);
+    const row = (await adminPool.query(`SELECT expected_seconds FROM attendance_daily WHERE org_id = $1 AND user_id = $2 AND work_date = $3`, [ORG, U.emp.id, day])).rows[0];
+    assert.equal(row.expected_seconds, 8 * 3600, 'cancellation refreshes persisted expectations');
+  });
+
   it('HR keeps the public holiday calendar; Sri Lanka 2026 defaults load in one step', async () => {
     const empty = await ok(await api('emp', '/holidays?year=2026'), 200, HolidayListSchema);
     assert.equal(empty.items.length, 25, 'new organisations receive Sri Lanka defaults without HR intervention');
@@ -187,8 +209,10 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
     assert.equal((await api('hr', '/holidays/defaults', { method: 'POST', body: { year: 2031 } })).status, 404, 'no built-in calendar for that year');
     const otherProcess = new PgHolidayProvider(app.get(PrismaService));
     assert.equal(await otherProcess.isHoliday(ORG, '2026-12-31'), false);
+    await attendance.recomputeDailySummaryForUser(ORG, U.emp.id, '2026-12-31');
     const added = await ok(await api('hr', '/holidays', { method: 'POST', body: { date: '2026-12-31', name: 'Company day' } }), 201, HolidayListSchema);
     assert.equal(added.items.length, 26);
+    assert.equal((await adminPool.query(`SELECT expected_seconds FROM attendance_daily WHERE org_id = $1 AND user_id = $2 AND work_date = '2026-12-31'`, [ORG, U.emp.id])).rows[0].expected_seconds, 0, 'HR calendar edits refresh persisted expectations');
     assert.equal(await otherProcess.isHoliday(ORG, '2026-12-31'), true, 'HR changes reach every API process immediately');
     const renamed = await ok(await api('hr', '/holidays', { method: 'POST', body: { date: '2026-12-31', name: 'Company closure' } }), 201, HolidayListSchema);
     assert.equal(renamed.items.length, 26, 'one row per date');

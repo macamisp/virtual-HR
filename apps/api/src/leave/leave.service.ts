@@ -1,3 +1,4 @@
+import { AttendanceService } from '../attendance/attendance.service.ts';
 /**
  * Leave requests and the public holiday calendar (FR-ORG-010, FR-ORG-011; FR-ATT-022; ADR 027).
  *
@@ -37,7 +38,22 @@ export class LeaveService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly attendance: AttendanceService,
   ) {}
+
+  /** FR-ATT-022: refresh saved reports as well as live provider answers after a decision. */
+  private async refreshExpectations(orgId: string, dates: string[], userId?: string): Promise<void> {
+    const rows = await this.prisma.runWithTenantContext(orgId, async (db) =>
+      (await db.query<{ user_id: string; work_date: string }>(`SELECT user_id, work_date FROM attendance_daily
+        WHERE work_date = ANY($1::text[]) AND ($2::uuid IS NULL OR user_id = $2::uuid)`, [dates, userId ?? null])).rows);
+    for (const row of rows) await this.attendance.recomputeDailySummaryForUser(orgId, row.user_id, row.work_date);
+  }
+
+  private dateRange(start: string, end: string): string[] {
+    const dates: string[] = [];
+    for (let day = start; day <= end; day = addDaysIso(day, 1)) dates.push(day);
+    return dates;
+  }
 
   private async today(db: pg.PoolClient, orgId: string): Promise<string> {
     const tz = (await db.query<{ timezone: string }>(`SELECT timezone FROM organizations WHERE id = $1`, [orgId])).rows[0]?.timezone ?? 'UTC';
@@ -144,6 +160,7 @@ export class LeaveService {
         before: { status: r.status }, after: { status, note: dto.note || null, userId: r.user_id, startDate: r.start_date, endDate: r.end_date }, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
       return r;
     });
+    if (dto.approved) await this.refreshExpectations(user.orgId, this.dateRange(out.start_date, out.end_date), out.user_id);
     await this.notifications.notify(user.orgId, [{
       userId: out.user_id, type: dto.approved ? NotificationType.LEAVE_APPROVED : NotificationType.LEAVE_REJECTED,
       title: dto.approved ? `Your ${LEAVE_TYPE_LABEL[out.type].toLowerCase()} (${out.start_date} to ${out.end_date}) was approved` : `Your ${LEAVE_TYPE_LABEL[out.type].toLowerCase()} (${out.start_date} to ${out.end_date}) was rejected`,
@@ -162,6 +179,7 @@ export class LeaveService {
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'LEAVE_CANCELLED', entityType: 'LEAVE_REQUEST', entityId: id, before: { status: r.status }, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
       return r;
     });
+    if (out.status === 'APPROVED') await this.refreshExpectations(user.orgId, this.dateRange(out.start_date, out.end_date), out.user_id);
     if (out.status === 'APPROVED' && out.decided_by) {
       await this.notifications.notify(user.orgId, [{ userId: out.decided_by, type: NotificationType.LEAVE_REQUESTED, title: `${user.displayName ?? user.email} cancelled approved leave (${out.start_date} to ${out.end_date})`, body: 'No action is needed.', link: '/attendance/leave/review', entityType: 'LEAVE_REQUEST', entityId: id, dedupeKey: `leave-cancelled:${id}` }]);
     }
@@ -187,6 +205,7 @@ export class LeaveService {
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'HOLIDAY_ADDED', entityType: 'ORGANIZATION', entityId: user.orgId, after: { date: dto.date, name: dto.name }, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
       return await this.holidayList(db, year);
     });
+    await this.refreshExpectations(user.orgId, [dto.date]);
     return out;
   }
 
@@ -195,9 +214,10 @@ export class LeaveService {
       const gone = (await db.query<{ date: string; name: string }>(`DELETE FROM public_holidays WHERE id = $1 RETURNING to_char(date, 'YYYY-MM-DD') AS date, name`, [id])).rows[0];
       if (!gone) throw new NotFoundException('Holiday not found');
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'HOLIDAY_REMOVED', entityType: 'ORGANIZATION', entityId: user.orgId, before: gone, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
-      return await this.holidayList(db, Number(gone.date.slice(0, 4)));
+      return { date: gone.date, list: await this.holidayList(db, Number(gone.date.slice(0, 4))) };
     });
-    return out;
+    await this.refreshExpectations(user.orgId, [out.date]);
+    return out.list;
   }
 
   /** Loads the built-in national calendar for a year; existing dates are kept as HR left them. */
@@ -213,6 +233,7 @@ export class LeaveService {
       if (added) await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'HOLIDAYS_DEFAULTS_LOADED', entityType: 'ORGANIZATION', entityId: user.orgId, after: { year, calendar: 'Sri Lanka', added }, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
       return await this.holidayList(db, year);
     });
+    await this.refreshExpectations(user.orgId, defaults.map((h) => h.date));
     return out;
   }
 }

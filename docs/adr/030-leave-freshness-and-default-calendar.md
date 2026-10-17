@@ -22,3 +22,10 @@ Attendance > Leave, approve as the worker's manager under Leave requests, sign t
 out, and check On leave on the live board. Add a date under Admin > Public holidays. The
 API suite checks zero expected hours, suppressed reminders/absence/late flags, cross-process
 freshness, tenant isolation, permissions and audit entries.
+
+Further test-first finding: an existing daily row still showed 28,800 expected seconds after
+leave approval or an HR holiday edit; cancellation left zero hours behind. After committing
+an approval, cancellation or calendar edit, recompute affected existing attendance_daily rows
+and their draft timesheet expectations before returning. Do not create future absence rows.
+The regression checks all four leave types and the persisted before/after values, as well as
+late-arrival suppression for a real late session on an approved leave day.
