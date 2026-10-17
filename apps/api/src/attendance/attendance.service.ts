@@ -509,7 +509,10 @@ export class AttendanceService {
   }
 
   /**
-   * Explicit user logout -> Immediate clock-out
+   * Explicit logout (FR-ATT-002, Section 6.2 row 14; ADR 025): the session closes at once, at the
+   * last valid heartbeat, like rows 12 and 13. Nothing after that heartbeat is credited, because
+   * nothing after it was observed. Called when every login of the person is revoked (logout,
+   * password reset, administrative revocation) and no other login is still heartbeating.
    */
   public async onExplicitLogout(
     userId: string,
@@ -521,7 +524,8 @@ export class AttendanceService {
       const session = await this.getSession(userId, targetOrgId);
       if (!session || session.status !== SessionStatus.OPEN) return null;
 
-      const result = (await this.policy(targetOrgId)).machine.handleExplicitLogout(session, serverTime);
+      const closeAt = session.lastHeartbeatAt.getTime() < serverTime.getTime() ? session.lastHeartbeatAt : serverTime;
+      const result = (await this.policy(targetOrgId)).machine.handleExplicitLogout(session, closeAt);
       if (this.repository) {
         await this.repository.saveSession(result.session);
       }

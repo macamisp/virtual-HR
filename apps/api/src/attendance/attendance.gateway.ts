@@ -391,8 +391,34 @@ export class AttendanceGateway
   handleAuthEvent(event: AuthEvent): void {
     if (event.type === 'session_revoked') {
       this.disconnectRoom(`family:${event.familyId}`, event.reason);
+      void this.closeAttendanceOnRevocation(event.orgId, event.userId, event.familyId);
     } else if (event.type === 'user_deactivated') {
       this.disconnectRoom(`user:${event.userId}`, `USER_${event.status}`);
+      void this.closeAttendanceOnRevocation(event.orgId, event.userId, null);
+    }
+  }
+
+  /**
+   * FR-ATT-002 (ADR 025): a revoked login (logout, password reset, role change, deactivation) ends
+   * the attendance session at once, at the last valid heartbeat, unless another still-valid login
+   * of the same person keeps an attendance socket open (a second device, or the desktop agent).
+   * Runs on every API task that hears the notification; the second one finds the session closed.
+   */
+  private async closeAttendanceOnRevocation(orgId: string, userId: string, revokedFamilyId: string | null): Promise<void> {
+    try {
+      if (this.server && revokedFamilyId) {
+        const sockets = await this.server.in(`user:${userId}`).fetchSockets();
+        const otherLogin = sockets.some((s) => {
+          const auth = s.data?.auth as SocketAuth | undefined;
+          return s.data?.purpose !== 'office' && !!auth && auth.familyId !== revokedFamilyId;
+        });
+        if (otherLogin) return;
+      }
+      const result = await this.attendanceService.onExplicitLogout(userId, undefined, orgId);
+      if (result) this.broadcastTransition(orgId, userId, result);
+    } catch (err) {
+      // The session then closes through the grace window or the reconciler as before.
+      console.error('Attendance close on revocation failed:', err instanceof Error ? err.message : 'unknown error');
     }
   }
 
