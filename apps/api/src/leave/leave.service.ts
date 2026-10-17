@@ -4,7 +4,7 @@
  * Whole days in the organisation's calendar. A request is decided once, by the requester's
  * manager (or the leads and managers of their team when they have no manager) or by HR; never by
  * the requester. Approved leave and holidays reach attendance through PgLeaveProvider and
- * PgHolidayProvider, whose caches are cleared here on every change.
+ * PgHolidayProvider, which read the committed database on every evaluation.
  */
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import type pg from 'pg';
@@ -14,7 +14,6 @@ import type { RequestContext } from '../common/decorators/request-context.decora
 import { NotificationsService } from '../notifications/notifications.service.ts';
 import { approversFor } from '../timesheets/timesheets.service.ts';
 import { addDaysIso } from '../planning/planning-rules.ts';
-import { PgHolidayProvider, PgLeaveProvider } from '../attendance/leave-providers.ts';
 import { defaultHolidaysFor } from './sri-lanka-holidays.ts';
 import { LEAVE_MAX_DAYS, LEAVE_MAX_PAST_DAYS, LEAVE_TYPE_LABEL, NotificationType, Permission, userCan } from '../../../../packages/shared/src/index.ts';
 import type { AuthenticatedUser, HolidayDto, HolidayList, LeaveDecisionDto, LeaveListQuery, LeaveRequest, LeaveRequestDto, LeaveStatus, LeaveType } from '../../../../packages/shared/src/index.ts';
@@ -38,8 +37,6 @@ export class LeaveService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
-    private readonly holidayProvider: PgHolidayProvider,
-    private readonly leaveProvider: PgLeaveProvider,
   ) {}
 
   private async today(db: pg.PoolClient, orgId: string): Promise<string> {
@@ -147,7 +144,6 @@ export class LeaveService {
         before: { status: r.status }, after: { status, note: dto.note || null, userId: r.user_id, startDate: r.start_date, endDate: r.end_date }, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
       return r;
     });
-    this.leaveProvider.invalidate(user.orgId);
     await this.notifications.notify(user.orgId, [{
       userId: out.user_id, type: dto.approved ? NotificationType.LEAVE_APPROVED : NotificationType.LEAVE_REJECTED,
       title: dto.approved ? `Your ${LEAVE_TYPE_LABEL[out.type].toLowerCase()} (${out.start_date} to ${out.end_date}) was approved` : `Your ${LEAVE_TYPE_LABEL[out.type].toLowerCase()} (${out.start_date} to ${out.end_date}) was rejected`,
@@ -166,7 +162,6 @@ export class LeaveService {
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'LEAVE_CANCELLED', entityType: 'LEAVE_REQUEST', entityId: id, before: { status: r.status }, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
       return r;
     });
-    this.leaveProvider.invalidate(user.orgId);
     if (out.status === 'APPROVED' && out.decided_by) {
       await this.notifications.notify(user.orgId, [{ userId: out.decided_by, type: NotificationType.LEAVE_REQUESTED, title: `${user.displayName ?? user.email} cancelled approved leave (${out.start_date} to ${out.end_date})`, body: 'No action is needed.', link: '/attendance/leave/review', entityType: 'LEAVE_REQUEST', entityId: id, dedupeKey: `leave-cancelled:${id}` }]);
     }
@@ -192,7 +187,6 @@ export class LeaveService {
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'HOLIDAY_ADDED', entityType: 'ORGANIZATION', entityId: user.orgId, after: { date: dto.date, name: dto.name }, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
       return await this.holidayList(db, year);
     });
-    this.holidayProvider.invalidate(user.orgId);
     return out;
   }
 
@@ -203,7 +197,6 @@ export class LeaveService {
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'HOLIDAY_REMOVED', entityType: 'ORGANIZATION', entityId: user.orgId, before: gone, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
       return await this.holidayList(db, Number(gone.date.slice(0, 4)));
     });
-    this.holidayProvider.invalidate(user.orgId);
     return out;
   }
 
@@ -220,7 +213,6 @@ export class LeaveService {
       if (added) await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'HOLIDAYS_DEFAULTS_LOADED', entityType: 'ORGANIZATION', entityId: user.orgId, after: { year, calendar: 'Sri Lanka', added }, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
       return await this.holidayList(db, year);
     });
-    this.holidayProvider.invalidate(user.orgId);
     return out;
   }
 }

@@ -1,3 +1,5 @@
+import { PgLeaveProvider, PgHolidayProvider } from '../src/attendance/leave-providers.ts';
+import { PrismaService } from '../src/common/prisma.service.ts';
 /**
  * Leave requests and the public holiday calendar (FR-ORG-010, FR-ORG-011, FR-ATT-022; ADR 027),
  * written before the implementation. Employees request leave (annual, sick, unpaid, other);
@@ -144,8 +146,11 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
 
   it('leave today shows as "On leave" on the live board; cancelling it removes it at once', async () => {
     const today = dayPlus(0);
+    const otherProcess = new PgLeaveProvider(app.get(PrismaService));
+    assert.equal(await otherProcess.isUserOnApprovedLeave(ORG, U.emp.id, today), false);
     const sick = await ok(await api('emp', '/leave/requests', { method: 'POST', body: { type: 'SICK', startDate: today, endDate: today, reason: 'Flu' } }), 201, LeaveRequestSchema);
     await ok(await api('hr', `/leave/requests/${sick.id}/decide`, { method: 'POST', body: { approved: true } }), 200, LeaveRequestSchema);
+    assert.equal(await otherProcess.isUserOnApprovedLeave(ORG, U.emp.id, today), true, 'approval is immediately visible on another API process');
     let board = await ok(await api('lead', '/attendance/live'), 200, LiveBoardSchema);
     assert.equal(board.find((r) => r.userId === U.emp.id)?.status, 'ON_LEAVE');
     const mine = await ok(await api('emp', '/leave/requests?scope=mine'), 200, LeaveRequestListSchema);
@@ -153,6 +158,7 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
     assert.equal((await api('lead', `/leave/requests/${sick.id}/cancel`, { method: 'POST' })).status, 403, 'only the requester cancels');
     const cancelled = await ok(await api('emp', `/leave/requests/${sick.id}/cancel`, { method: 'POST' }), 200, LeaveRequestSchema);
     assert.equal(cancelled.status, 'CANCELLED');
+    assert.equal(await otherProcess.isUserOnApprovedLeave(ORG, U.emp.id, today), false, 'cancellation is immediately visible on another API process');
     board = await ok(await api('lead', '/attendance/live'), 200, LiveBoardSchema);
     assert.equal(board.find((r) => r.userId === U.emp.id)?.status, 'OFFLINE');
     assert.equal(await audits('LEAVE_CANCELLED'), 1);
@@ -169,7 +175,7 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
 
   it('HR keeps the public holiday calendar; Sri Lanka 2026 defaults load in one step', async () => {
     const empty = await ok(await api('emp', '/holidays?year=2026'), 200, HolidayListSchema);
-    assert.equal(empty.items.length, 0);
+    assert.equal(empty.items.length, 25, 'new organisations receive Sri Lanka defaults without HR intervention');
     assert.equal(empty.defaultsAvailable, true);
     assert.equal((await api('emp', '/holidays', { method: 'POST', body: { date: '2026-12-31', name: 'Company day' } })).status, 403);
     assert.equal((await api('lead', '/holidays/defaults', { method: 'POST', body: { year: 2026 } })).status, 403);
@@ -179,8 +185,11 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
     assert.ok(loaded.items.some((h) => h.date === '2026-05-01' && /Vesak/.test(h.name)));
     assert.equal((await ok(await api('hr', '/holidays/defaults', { method: 'POST', body: { year: 2026 } }), 200, HolidayListSchema)).items.length, 25, 'loading again adds nothing');
     assert.equal((await api('hr', '/holidays/defaults', { method: 'POST', body: { year: 2031 } })).status, 404, 'no built-in calendar for that year');
+    const otherProcess = new PgHolidayProvider(app.get(PrismaService));
+    assert.equal(await otherProcess.isHoliday(ORG, '2026-12-31'), false);
     const added = await ok(await api('hr', '/holidays', { method: 'POST', body: { date: '2026-12-31', name: 'Company day' } }), 201, HolidayListSchema);
     assert.equal(added.items.length, 26);
+    assert.equal(await otherProcess.isHoliday(ORG, '2026-12-31'), true, 'HR changes reach every API process immediately');
     const renamed = await ok(await api('hr', '/holidays', { method: 'POST', body: { date: '2026-12-31', name: 'Company closure' } }), 201, HolidayListSchema);
     assert.equal(renamed.items.length, 26, 'one row per date');
     assert.equal(renamed.items.find((h) => h.date === '2026-12-31')?.name, 'Company closure');
@@ -188,7 +197,7 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
     assert.equal((await ok(await api('hr', `/holidays/${id}`, { method: 'DELETE' }), 200, HolidayListSchema)).items.length, 25);
     assert.equal(await audits('HOLIDAY_ADDED'), 2);
     assert.equal(await audits('HOLIDAY_REMOVED'), 1);
-    assert.equal(await audits('HOLIDAYS_DEFAULTS_LOADED'), 1);
+    assert.equal(await audits('HOLIDAYS_DEFAULTS_LOADED'), 0, 'already provisioned defaults do not produce a duplicate audit');
     assert.equal((await ok(await api('emp', '/holidays?year=2027'), 200, HolidayListSchema)).defaultsAvailable, false);
   });
 
@@ -207,7 +216,8 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
       await c.query('BEGIN');
       await c.query(`SELECT set_config('app.org_id', $1, true)`, [OTHER]);
       assert.equal((await c.query(`SELECT 1 FROM leave_requests`)).rowCount, 0);
-      assert.equal((await c.query(`SELECT 1 FROM public_holidays`)).rowCount, 0);
+      assert.equal((await c.query(`SELECT 1 FROM public_holidays WHERE org_id = $1`, [ORG])).rowCount, 0);
+      assert.equal((await c.query(`SELECT 1 FROM public_holidays`)).rowCount, 25, 'only this tenant’s default calendar is visible');
       await c.query('ROLLBACK');
       await c.query('BEGIN');
       await c.query(`SELECT set_config('app.org_id', $1, true)`, [ORG]);
