@@ -15,10 +15,10 @@ import type { RecordingDispatcher } from '../meetings/recording-dispatcher.ts';
 
 export const JOBS_QUEUE = 'hrvo-jobs';
 
-type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attendance-reconcile' | 'attendance-daily-close' | 'presence-retention' | 'timesheet-reminders' | 'document-maintenance' | 'deferred-emails' | 'attendance-alerts' | 'calendar-sync' | 'recording-maintenance';
+type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attendance-reconcile' | 'attendance-daily-close' | 'presence-retention' | 'timesheet-reminders' | 'document-maintenance' | 'deferred-emails' | 'attendance-alerts' | 'calendar-sync' | 'recording-maintenance' | 'attendance-replay';
 
 /** Repeatable jobs. BullMQ job schedulers are de-duplicated in Redis, so N API instances run each tick once. */
-export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs: number }> = [
+export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs?: number; pattern?: string }> = [
   // AC-02: a dropped client must be closed within 30 s of its grace window ending.
   { name: 'attendance-reconcile', everyMs: 15_000 },
   { name: 'task-reminders', everyMs: 5 * 60_000 },
@@ -35,6 +35,8 @@ export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs: number }> =
   { name: 'calendar-sync', everyMs: 5 * 60_000 },
   // ADR 024: unanswered recording requests, stuck processing, retention shredding.
   { name: 'recording-maintenance', everyMs: 5 * 60_000 },
+  // ADR 026 (NFR-ACC-004): yesterday's daily totals recomputed and compared, every night at 02:30 UTC.
+  { name: 'attendance-replay', pattern: '30 2 * * *' },
 ];
 
 export function jobsEnabled(): boolean {
@@ -59,6 +61,7 @@ function redisConnection(): ConnectionOptions {
 export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatcher, ScanDispatcher, RecordingDispatcher {
   private queue: Queue | null = null;
   private worker: Worker | null = null;
+  private inlineReconcile: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly moduleRef: ModuleRef,
@@ -66,14 +69,26 @@ export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatch
   ) {}
 
   async onModuleInit(): Promise<void> {
-    if (!jobsEnabled()) return;
+    if (!jobsEnabled()) {
+      // Without Redis nothing would ever close a dropped session (FR-ATT-002). Opt-in for local
+      // development and the browser tests: ATTENDANCE_RECONCILE_INLINE_MS runs the reconciler here.
+      const everyMs = Number.parseInt(process.env.ATTENDANCE_RECONCILE_INLINE_MS ?? '', 10);
+      if (everyMs > 0) {
+        this.inlineReconcile = setInterval(() => {
+          this.moduleRef.get(ScheduledWorkService, { strict: false }).attendanceReconcile(new Date())
+            .catch((err: unknown) => console.error('Inline attendance reconcile failed:', err instanceof Error ? err.message : 'unknown error'));
+        }, everyMs);
+        this.inlineReconcile.unref();
+      }
+      return;
+    }
     const connection = redisConnection();
     this.queue = new Queue(JOBS_QUEUE, {
       connection,
       defaultJobOptions: { removeOnComplete: 1000, removeOnFail: 5000 },
     });
     for (const s of SCHEDULES) {
-      await this.queue.upsertJobScheduler(s.name, { every: s.everyMs }, { name: s.name });
+      await this.queue.upsertJobScheduler(s.name, s.pattern ? { pattern: s.pattern, tz: 'UTC' } : { every: s.everyMs! }, { name: s.name });
     }
     this.worker = new Worker(JOBS_QUEUE, (job) => this.process(job), { connection, concurrency: 4 });
     this.worker.on('failed', (job, err) => {
@@ -82,6 +97,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatch
   }
 
   async onModuleDestroy(): Promise<void> {
+    if (this.inlineReconcile) clearInterval(this.inlineReconcile);
     await this.worker?.close();
     await this.queue?.close();
   }
@@ -107,6 +123,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatch
       case 'attendance-alerts': return await work.attendanceAlerts(now);
       case 'calendar-sync': return await this.moduleRef.get(CalendarService, { strict: false }).syncAll();
       case 'document-maintenance': return await this.moduleRef.get(DocumentMaintenanceService, { strict: false }).run(now);
+      case 'attendance-replay': return await work.attendanceReplay(now);
       case 'recording-maintenance': return await this.moduleRef.get(RecordingsService, { strict: false }).maintenance(now);
       case 'recording-process': {
         const data = job.data as { orgId: string; recordingId: string };

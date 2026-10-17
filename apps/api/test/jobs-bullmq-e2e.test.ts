@@ -77,7 +77,8 @@ describe('BullMQ jobs (scheduler + email delivery)', { concurrency: false }, () 
     assert.deepEqual(new Set(schedulers.map((s) => s.key ?? s.name)), new Set(SCHEDULES.map((s) => s.name)));
     for (const s of SCHEDULES) {
       const found = schedulers.find((x) => (x.key ?? x.name) === s.name);
-      assert.equal(Number(found?.every), s.everyMs, s.name);
+      if (s.pattern) assert.equal(found?.pattern, s.pattern, s.name);
+      else assert.equal(Number(found?.every), s.everyMs, s.name);
     }
   });
 

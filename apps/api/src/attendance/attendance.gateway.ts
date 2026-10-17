@@ -401,19 +401,13 @@ export class AttendanceGateway
   /**
    * FR-ATT-002 (ADR 025): a revoked login (logout, password reset, role change, deactivation) ends
    * the attendance session at once, at the last valid heartbeat, unless another still-valid login
-   * of the same person keeps an attendance socket open (a second device, or the desktop agent).
-   * Runs on every API task that hears the notification; the second one finds the session closed.
+   * of the same person has heartbeated within the missed-heartbeat window (a second device, or the
+   * desktop agent). That is a database fact, so every API task that hears the notification decides
+   * the same way; the second one finds the session closed.
    */
   private async closeAttendanceOnRevocation(orgId: string, userId: string, revokedFamilyId: string | null): Promise<void> {
     try {
-      if (this.server && revokedFamilyId) {
-        const sockets = await this.server.in(`user:${userId}`).fetchSockets();
-        const otherLogin = sockets.some((s) => {
-          const auth = s.data?.auth as SocketAuth | undefined;
-          return s.data?.purpose !== 'office' && !!auth && auth.familyId !== revokedFamilyId;
-        });
-        if (otherLogin) return;
-      }
+      if (revokedFamilyId && await this.attendanceService.hasOtherLiveLogin(orgId, userId, revokedFamilyId)) return;
       const result = await this.attendanceService.onExplicitLogout(userId, undefined, orgId);
       if (result) this.broadcastTransition(orgId, userId, result);
     } catch (err) {

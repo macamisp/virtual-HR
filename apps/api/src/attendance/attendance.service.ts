@@ -1,4 +1,6 @@
 /** FR-ATT-021: a session the server closed itself (timeout, lost connection, maximum length). */
+/** NFR-ACC-004: one field of one person's day that does not recompute to its stored value. */
+export interface ReplayMismatch { userId: string; field: string; stored: string | number | null; recomputed: string | number | null }
 export interface AutoClosed { userId: string; sessionId: string; source: string; clockOutAt: Date; workDate: string }
 
 /**
@@ -311,6 +313,8 @@ export class AttendanceService {
     if (!validation.valid) {
       throw new Error(`Heartbeat rejected: ${validation.reason}`);
     }
+    // ADR 025: a valid heartbeat proves this login is live (used when another login logs out).
+    if (this.repository) await this.repository.touchSessionSecret(payload.orgId, payload.sessionId, serverTime);
 
     return await this.withSessionLock(payload.orgId, payload.userId, async () => {
       // Ingest into state machine
@@ -506,6 +510,17 @@ export class AttendanceService {
       this.sessions.set(userId, result.session);
       return result;
     });
+  }
+
+  /**
+   * ADR 025: another still-valid login of this person has heartbeated within the organisation's
+   * missed-heartbeat window (a second device, or the desktop agent), so a logout elsewhere must
+   * not end the session. The excluded family is the login being revoked.
+   */
+  public async hasOtherLiveLogin(orgId: string, userId: string, excludeFamilyId: string | null, now: Date = this.clock.now()): Promise<boolean> {
+    if (!this.repository) return false;
+    const windowSeconds = (await this.policy(orgId)).config.missedHeartbeatTimeoutSeconds;
+    return await this.repository.hasOtherLiveLogin(orgId, userId, excludeFamilyId, new Date(now.getTime() - windowSeconds * 1000));
   }
 
   /**
@@ -1162,15 +1177,15 @@ export class AttendanceService {
   // FR-ATT-015 & Section 6.3: Daily Close Job & Draft Timesheets
   // -------------------------------------------------------------
 
-  public async recomputeDailySummaryForUser(
-    orgId: string,
-    userId: string,
-    workDate: string,
-  ): Promise<AttendanceDaily | null> {
+  /**
+   * The day's totals for one person from the stored sessions and schedule, without writing
+   * anything. The daily close saves this; the nightly replay (NFR-ACC-004) recomputes it and
+   * compares. Deterministic: the same sessions always give the same row.
+   */
+  public async computeDailySummary(orgId: string, userId: string, workDate: string): Promise<AttendanceDaily> {
     if (!this.repository) {
-      throw new Error('Repository is required for recomputeDailySummaryForUser');
+      throw new Error('Repository is required for computeDailySummary');
     }
-
     const allSessions = await this.repository.findSessionsByDate(orgId, workDate);
     const userSessions = allSessions.filter(
       (s: AttendanceSession) => s.userId === userId && s.status !== SessionStatus.CANCELLED && s.status !== SessionStatus.ADJUSTED,
@@ -1206,7 +1221,7 @@ export class AttendanceService {
       dayStatus = DayStatus.EARLY_LEAVE;
     }
 
-    const daily: AttendanceDaily = {
+    return {
       orgId,
       userId,
       workDate,
@@ -1223,13 +1238,59 @@ export class AttendanceService {
       overtimeMinutes: compliance.overtimeMinutes,
       dayStatus,
     };
+  }
 
+  public async recomputeDailySummaryForUser(
+    orgId: string,
+    userId: string,
+    workDate: string,
+  ): Promise<AttendanceDaily | null> {
+    if (!this.repository) {
+      throw new Error('Repository is required for recomputeDailySummaryForUser');
+    }
+    const daily = await this.computeDailySummary(orgId, userId, workDate);
     await this.repository.saveDailyAttendance(daily);
 
     // FR-TS-001: the daily timesheet draft (attendance vs logged time, variance).
     await this.repository.refreshTimesheetDay(orgId, userId, workDate);
 
     return daily;
+  }
+
+  /**
+   * NFR-ACC-004 (ADR 026): recompute every person's day from the stored sessions and compare with
+   * the stored attendance_daily row, field by field. Reports only; never rewrites a row. A person
+   * with sessions but no row is a difference too (the daily close has not covered them).
+   */
+  public async replayDay(orgId: string, workDate: string): Promise<{ users: number; mismatches: ReplayMismatch[] }> {
+    if (!this.repository) {
+      throw new Error('Repository is required for replayDay');
+    }
+    const stored = await this.repository.findDailyAttendanceInRange(orgId, { startDate: workDate, endDate: workDate });
+    const byUser = new Map(stored.map((d) => [d.userId, d]));
+    const withSessions = new Set(
+      (await this.repository.findSessionsByDate(orgId, workDate))
+        .filter((s) => s.status !== SessionStatus.CANCELLED && s.status !== SessionStatus.ADJUSTED)
+        .map((s) => s.userId),
+    );
+    const users = new Set([...byUser.keys(), ...withSessions]);
+    const mismatches: ReplayMismatch[] = [];
+    const fields: Array<keyof AttendanceDaily> = ['firstIn', 'lastOut', 'activeSeconds', 'idleSeconds', 'breakSeconds', 'meetingSeconds', 'netSeconds', 'expectedSeconds', 'lateMinutes', 'earlyLeaveMinutes', 'overtimeMinutes', 'dayStatus'];
+    const norm = (v: unknown): string | number | null => (v instanceof Date ? v.toISOString() : v === undefined ? null : (v as string | number | null));
+    for (const userId of users) {
+      const row = byUser.get(userId);
+      if (!row) {
+        mismatches.push({ userId, field: 'row', stored: 'missing', recomputed: 'present' });
+        continue;
+      }
+      const again = await this.computeDailySummary(orgId, userId, workDate);
+      for (const f of fields) {
+        const a = norm(row[f]);
+        const b = norm(again[f]);
+        if (a !== b) mismatches.push({ userId, field: f, stored: a, recomputed: b });
+      }
+    }
+    return { users: users.size, mismatches };
   }
 
   public async runDailyCloseJob(orgId: string, workDate: string): Promise<AttendanceDaily[]> {

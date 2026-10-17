@@ -61,8 +61,10 @@ export default defineConfig({
         RATE_LIMIT_HEARTBEAT: '500',
         BREACHED_PASSWORD_CHECK: 'local',
         MAIL_TRANSPORT: 'memory',
-        // No Redis needed: notification emails are sent inline and no schedulers run.
+        // No Redis needed: notification emails are sent inline and no schedulers run, except the
+        // attendance reconciler, which the accuracy spec (23) needs for tab-close and network-loss.
         JOBS_ENABLED: 'false',
+        ATTENDANCE_RECONCILE_INLINE_MS: '5000',
       } as Record<string, string>,
     },
     {

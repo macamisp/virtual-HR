@@ -8,7 +8,9 @@ export default async function globalSetup(): Promise<void> {
   const pool = adminPool();
   try {
     await pool.query(`DELETE FROM organizations WHERE id = $1 OR slug = $2`, [ORG_ID, ORG_SLUG]);
-    await pool.query(`INSERT INTO organizations (id, name, slug, timezone) VALUES ($1, 'Web E2E Ltd', $2, 'Asia/Colombo')`, [ORG_ID, ORG_SLUG]);
+    // The shortest grace and silence windows SRS 6.4 allows, so the accuracy spec (23) can watch a
+    // tab close and a network loss end a session within the test's time budget.
+    await pool.query(`INSERT INTO organizations (id, name, slug, timezone, att_disconnect_grace_seconds, att_missed_heartbeat_seconds) VALUES ($1, 'Web E2E Ltd', $2, 'Asia/Colombo', 30, 60)`, [ORG_ID, ORG_SLUG]);
     await pool.query(`INSERT INTO teams (id, org_id, name) VALUES ($1, $2, 'Support')`, [TEAM_ID, ORG_ID]);
     const hash = await argon2.hash(PASSWORD, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 });
     for (const u of Object.values(USERS)) {

@@ -148,6 +148,23 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
     await closeAll();
   });
 
+  it('a second login that stopped heartbeating long ago does not keep the person clocked in', async () => {
+    const a = await login('worker');
+    const b = await login('worker');
+    const sa = await connect(a.accessToken);
+    const sb = await connect(b.accessToken);
+    await heartbeat(sa, 'worker', a, 'laptop-a');
+    await heartbeat(sb, 'worker', b, 'phone-b');
+    sb.disconnect();
+    // The phone went quiet two minutes ago (longer than the 90 s missed-heartbeat window).
+    await adminPool.query(`UPDATE session_secrets SET last_used_at = now() - interval '120 seconds' WHERE session_id = $1`, [b.sessionId]);
+    assert.equal((await logout(a)).status, 200);
+    const { row } = await closedWithin('worker', 1000);
+    assert.equal(row.clock_out_source, 'LOGOUT');
+    await closeAll();
+    await logout(b);
+  });
+
   it('two tabs of the same login: logout in one revokes the login, so the other tab cannot keep the session alive', async () => {
     const l = await login('worker');
     const tab1 = await connect(l.accessToken);

@@ -14,6 +14,7 @@ import { mechanicalPatterns } from '../attendance/anti-spoofing.ts';
 import type { IntervalSample } from '../attendance/anti-spoofing.ts';
 import { readAttendanceGuards } from '../admin/policy-store.ts';
 import { NotificationType } from '../../../../packages/shared/src/notifications/types.ts';
+import { appendAuditEntry } from '../common/audit-chain.ts';
 
 /** FR-ATT-021: why the server closed a session, in plain words. */
 const AUTO_CLOSE_REASON: Partial<Record<string, string>> = {
@@ -382,6 +383,39 @@ export class ScheduledWorkService {
       }));
       if (told.length) await this.notifications.notify(org.id, told);
       return r.closedCount + r.splitCount;
+    });
+  }
+
+  /**
+   * NFR-ACC-004 (ADR 026), nightly: yesterday's daily totals are recomputed from the stored
+   * sessions and compared with the stored rows. Any difference alerts HR (critical notification,
+   * once per day) and is written to the audit log. Nothing is rewritten.
+   */
+  async attendanceReplay(now: Date = new Date()): Promise<number> {
+    return await this.perOrg('attendance-replay', async (org) => {
+      const workDate = addDaysIso(localDate(now, org.timezone), -1);
+      const r = await this.attendance.replayDay(org.id, workDate);
+      if (r.mismatches.length === 0) return 0;
+      const people = new Set(r.mismatches.map((m) => m.userId)).size;
+      const first = r.mismatches[0]!;
+      console.error(`Attendance replay: ${r.mismatches.length} differences across ${people} people on ${workDate} (org ${org.id})`);
+      const hr = await this.prisma.runWithTenantContext(org.id, async (db) => {
+        const rows = (await db.query<{ id: string }>(
+          `SELECT id FROM users WHERE status = 'ACTIVE' AND role IN ('SUPER_ADMIN', 'ADMIN', 'HR_MANAGER', 'HR')
+           ORDER BY array_position(ARRAY['HR', 'HR_MANAGER', 'ADMIN', 'SUPER_ADMIN']::text[], role::text), created_at`)).rows;
+        if (rows[0] && await this.onceFor(db, org.id, 'attendance-replay', workDate)) {
+          await appendAuditEntry(db, { orgId: org.id, actorId: rows[0].id, action: 'ATTENDANCE_REPLAY_MISMATCH', entityType: 'ORGANIZATION', entityId: org.id,
+            after: { workDate, differences: r.mismatches.length, people, sample: r.mismatches.slice(0, 20), system: true } });
+        }
+        return rows;
+      });
+      await this.notifications.notify(org.id, hr.map((u) => ({
+        userId: u.id, type: NotificationType.ATTENDANCE_REPLAY_MISMATCH,
+        title: `Attendance totals for ${workDate} do not replay`,
+        body: `${r.mismatches.length} difference(s) across ${people} people, for example ${first.field}: stored ${first.stored}, recomputed ${first.recomputed}. Nothing was changed. Review the day and run the daily close again.`,
+        link: '/reports', entityType: 'ORGANIZATION', entityId: org.id, dedupeKey: `replay:${workDate}`,
+      })));
+      return r.mismatches.length;
     });
   }
 

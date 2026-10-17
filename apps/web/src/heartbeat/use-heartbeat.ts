@@ -92,6 +92,13 @@ export function useHeartbeat(enabled: boolean): void {
     const send = (msg: MainToWorker) => worker.postMessage(msg);
     const presence = usePresenceStore.getState();
 
+    // The first "today" request of a page can still be in flight when the first heartbeat is
+    // acknowledged. Invalidating alone would not restart that initial request, so its stale
+    // "not clocked in" answer would stick for a minute; cancel it, then fetch again.
+    const refreshToday = async () => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.today });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.today });
+    };
     worker.onmessage = (event: MessageEvent<WorkerToMain>) => {
       const msg = event.data;
       switch (msg.type) {
@@ -101,10 +108,10 @@ export function useHeartbeat(enabled: boolean): void {
         case 'heartbeat':
           if (msg.seq) writeSeqFloor(device, msg.seq);
           usePresenceStore.getState().heartbeat(msg.ok, msg.at, msg.error);
-          if (msg.ok) void queryClient.invalidateQueries({ queryKey: queryKeys.today });
+          if (msg.ok) void refreshToday();
           break;
         case 'attendance':
-          void queryClient.invalidateQueries({ queryKey: queryKeys.today });
+          void refreshToday();
           void queryClient.invalidateQueries({ queryKey: ['attendance', 'days'] });
           break;
         case 'presence': {

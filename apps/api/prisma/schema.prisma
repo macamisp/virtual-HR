@@ -362,6 +362,8 @@ model SessionSecret {
   orgId     String   @map("org_id") @db.Uuid
   secret    String   @db.VarChar(256)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  /// ADR 025: when this login last sent a valid heartbeat (decides whether another login keeps a person clocked in).
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
@@ -1864,3 +1866,4 @@ model RecordingConsent {
   @@index([recordingId, userId, at])
   @@map("recording_consents")
 }
+

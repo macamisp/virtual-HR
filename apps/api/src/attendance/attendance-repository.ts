@@ -69,6 +69,8 @@ export interface IAttendanceRepository {
   setDeviceSequence(orgId: string, userId: string, deviceId: string, seq: number): Promise<void>;
   saveSessionSecret(orgId: string, sessionId: string, secret: string): Promise<void>;
   findSessionSecret(orgId: string, sessionId: string): Promise<string | null>;
+  touchSessionSecret(orgId: string, sessionId: string, at: Date): Promise<void>;
+  hasOtherLiveLogin(orgId: string, userId: string, excludeFamilyId: string | null, since: Date): Promise<boolean>;
   revokeSessionSecret(orgId: string, sessionId: string): Promise<void>;
   cleanupExpiredNonces(orgId: string, olderThan: Date): Promise<number>;
   cleanupStaleDeviceSequences(orgId: string, olderThan: Date): Promise<number>;
@@ -494,6 +496,26 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       [orgId, sessionId],
     );
     return res.rows.length > 0 ? res.rows[0].secret : null;
+  }
+
+  /** ADR 025: a valid heartbeat marks its login as live. */
+  public async touchSessionSecret(orgId: string, sessionId: string, at: Date): Promise<void> {
+    await this.queryWithRls(orgId, `UPDATE session_secrets SET last_used_at = $3 WHERE org_id = $1 AND session_id = $2`, [orgId, sessionId, at]);
+  }
+
+  /**
+   * ADR 025: does another, still-valid login of this person (not the given family) have a heartbeat
+   * within `since`? Decided from the database, so every API task answers the same.
+   */
+  public async hasOtherLiveLogin(orgId: string, userId: string, excludeFamilyId: string | null, since: Date): Promise<boolean> {
+    const res = await this.queryWithRls(
+      orgId,
+      `SELECT 1 FROM session_secrets ss JOIN auth_sessions a ON a.id::text = ss.session_id AND a.org_id = ss.org_id
+       WHERE ss.org_id = $1 AND a.user_id = $2 AND NOT a.is_revoked AND ($3::uuid IS NULL OR a.family_id <> $3::uuid) AND ss.last_used_at >= $4
+       LIMIT 1`,
+      [orgId, userId, excludeFamilyId, since],
+    );
+    return res.rows.length > 0;
   }
 
   public async revokeSessionSecret(orgId: string, sessionId: string): Promise<void> {

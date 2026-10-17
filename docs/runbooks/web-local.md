@@ -18,7 +18,9 @@ npm install                   # first time only
 
 Background jobs (task reminders, carry-over, weekly summary, attendance close) run on BullMQ in
 Redis when `JOBS_ENABLED=true` (the default). Set `JOBS_ENABLED=false` to run the API without
-Redis; notification emails are then sent inline and nothing is scheduled. Emails land in Mailhog.
+Redis; notification emails are then sent inline and nothing is scheduled. Without jobs nothing
+closes a dropped attendance session, so also set `ATTENDANCE_RECONCILE_INLINE_MS=15000` to run the
+reconciler inside the API (ADR 026). Emails land in Mailhog.
 
 Documents (ADR 009) need three more things in `.env`: a KMS key for encryption at rest
 (`DOCUMENT_KMS_LOCAL_KEY=$(openssl rand -base64 32)`; the API will not start without it),
