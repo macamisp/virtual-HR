@@ -27,6 +27,7 @@ Generated 2026-10-16 from `pg_class` / `pg_policy` on a database at the current 
 | `heartbeat_nonces` | yes | yes | 1 | yes | DELETE, INSERT, SELECT, UPDATE |
 | `invitations` | yes | yes | 1 | yes | DELETE, INSERT, SELECT, UPDATE |
 | `job_runs` | yes | yes | 1 | yes | INSERT, SELECT, UPDATE |
+| `leave_requests` | yes | yes | 1 | yes | INSERT, SELECT, UPDATE |
 | `monitoring_consents` | yes | yes | 1 | yes | INSERT, SELECT |
 | `notification_preferences` | yes | yes | 1 | yes | DELETE, INSERT, SELECT, UPDATE |
 | `notifications` | yes | yes | 1 | yes | INSERT, SELECT, UPDATE |
@@ -37,6 +38,7 @@ Generated 2026-10-16 from `pg_class` / `pg_policy` on a database at the current 
 | `privacy_requests` | yes | yes | 1 | yes | DELETE, INSERT, SELECT, UPDATE |
 | `project_members` | yes | yes | 1 | yes | DELETE, INSERT, SELECT, UPDATE |
 | `projects` | yes | yes | 1 | yes | DELETE, INSERT, SELECT, UPDATE |
+| `public_holidays` | yes | yes | 1 | yes | DELETE, INSERT, SELECT, UPDATE |
 | `required_document_categories` | yes | yes | 1 | yes | DELETE, INSERT, SELECT, UPDATE |
 | `session_secrets` | yes | yes | 1 | yes | DELETE, INSERT, SELECT, UPDATE |
 | `subcontractor_profiles` | yes | yes | 1 | yes | INSERT, SELECT, UPDATE |

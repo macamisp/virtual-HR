@@ -123,6 +123,8 @@ model Organization {
   signatureSigners  SignatureSigner[]
   meetingRecordings MeetingRecording[]
   recordingConsents RecordingConsent[]
+  leaveRequests     LeaveRequest[]
+  publicHolidays    PublicHoliday[]
 
   @@map("organizations")
 }
@@ -226,6 +228,9 @@ model User {
   signatureSigners  SignatureSigner[]
   meetingRecordings MeetingRecording[] @relation("RecordingStarter")
   recordingConsents RecordingConsent[]
+  leaveRequests     LeaveRequest[]     @relation("LeaveRequester")
+  leaveDecisions    LeaveRequest[]     @relation("LeaveDecider")
+  holidaysCreated   PublicHoliday[]
 
   @@map("users")
 }
@@ -1867,3 +1872,45 @@ model RecordingConsent {
   @@map("recording_consents")
 }
 
+/// FR-ORG-010 (ADR 027): a leave request for whole days; the manager or HR decides.
+model LeaveRequest {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        String    @map("org_id") @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  /// ANNUAL, SICK, UNPAID, OTHER
+  type         String    @db.VarChar(10)
+  startDate    DateTime  @map("start_date") @db.Date
+  endDate      DateTime  @map("end_date") @db.Date
+  reason       String    @default("") @db.Text
+  /// PENDING, APPROVED, REJECTED, CANCELLED
+  status       String    @default("PENDING") @db.VarChar(10)
+  decidedBy    String?   @map("decided_by") @db.Uuid
+  decidedAt    DateTime? @map("decided_at") @db.Timestamptz()
+  decisionNote String?   @map("decision_note") @db.Text
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation("LeaveRequester", fields: [userId], references: [id], onDelete: Cascade)
+  decider      User?        @relation("LeaveDecider", fields: [decidedBy], references: [id], onDelete: SetNull)
+
+  @@index([orgId, userId, startDate])
+  @@index([orgId, status])
+  @@map("leave_requests")
+}
+
+/// FR-ORG-011 (ADR 027): the organisation's public holiday calendar (Sri Lanka defaults; HR edits).
+model PublicHoliday {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId     String   @map("org_id") @db.Uuid
+  date      DateTime @db.Date
+  name      String   @db.VarChar(100)
+  createdBy String?  @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  creator      User?        @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@unique([orgId, date])
+  @@map("public_holidays")
+}

@@ -44,6 +44,10 @@ export const NotificationType = {
   ATTENDANCE_FLAGS_TO_REVIEW: 'ATTENDANCE_FLAGS_TO_REVIEW',
   /** NFR-ACC-004 (ADR 026): the nightly replay found stored daily totals that do not recompute. */
   ATTENDANCE_REPLAY_MISMATCH: 'ATTENDANCE_REPLAY_MISMATCH',
+  // FR-ORG-010 (ADR 027)
+  LEAVE_REQUESTED: 'LEAVE_REQUESTED',
+  LEAVE_APPROVED: 'LEAVE_APPROVED',
+  LEAVE_REJECTED: 'LEAVE_REJECTED',
   // FR-DOC-006 / FR-DOC-010
   DOCUMENT_PASSWORD_LOCKOUT: 'DOCUMENT_PASSWORD_LOCKOUT',
   DOCUMENT_PASSWORD_RECOVERED: 'DOCUMENT_PASSWORD_RECOVERED',
@@ -114,6 +118,9 @@ export const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; g
   ATTENDANCE_LONG_IDLE: { label: 'Someone in your team is idle for long', group: 'Attendance' },
   ATTENDANCE_FLAGS_TO_REVIEW: { label: 'Attendance items to review', group: 'Attendance' },
   ATTENDANCE_REPLAY_MISMATCH: { label: 'Attendance totals did not replay (data check)', group: 'Attendance', critical: true },
+  LEAVE_REQUESTED: { label: 'Leave request waiting for my decision', group: 'Attendance' },
+  LEAVE_APPROVED: { label: 'My leave was approved', group: 'Attendance' },
+  LEAVE_REJECTED: { label: 'My leave was rejected', group: 'Attendance' },
   DOCUMENT_INFECTED: { label: 'Malware found in an upload', group: 'Security', critical: true },
   DOCUMENT_PASSWORD_LOCKOUT: { label: 'Document password lockout', group: 'Security', critical: true },
   DOCUMENT_PASSWORD_RECOVERED: { label: 'Document password recovered by HR', group: 'Security', critical: true },

@@ -56,5 +56,6 @@ export * from './meetings/recording.ts';
 export * from './chat/types.ts';
 export * from './agent/types.ts';
 export * from './attendance/flags.ts';
+export * from './attendance/leave.ts';
 export * from './calendar/types.ts';
 export * from './documents/esign.ts';
