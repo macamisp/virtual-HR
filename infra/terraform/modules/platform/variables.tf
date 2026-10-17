@@ -80,3 +80,15 @@ variable "manage_zone_settings" {
   type        = bool
   default     = false
 }
+
+variable "google_oauth_client_id" {
+  description = "Google OAuth client id for calendar sync (ADR 023); empty = Google sync off. The client secret goes in Secrets Manager."
+  type        = string
+  default     = ""
+}
+
+variable "microsoft_oauth_client_id" {
+  description = "Microsoft (Entra) app id for Outlook calendar sync (ADR 023); empty = Outlook sync off."
+  type        = string
+  default     = ""
+}

@@ -16,6 +16,7 @@ import { NativeSelect } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { formatDateTime } from '@/lib/format';
 import { useCreateMeeting, useMeetings } from '@/lib/meeting-queries';
+import { useBusy } from '@/lib/calendar-queries';
 import { Permission, useCan } from '@/lib/permissions';
 import { useAuthStore } from '@/lib/auth-store';
 
@@ -27,6 +28,16 @@ function nextSlot(offsetMin = 0): string {
   const d = new Date(Date.now() + offsetMin * 60_000);
   d.setMinutes(d.getMinutes() < 30 ? 30 : 60, 0, 0);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** FR-MEET-006: who is busy in the chosen slot, from their connected calendars (times only). */
+function BusyHint({ people, start, minutes }: { people: PickedPerson[]; start: string; minutes: number }) {
+  const from = start ? new Date(start) : null;
+  const valid = from && !Number.isNaN(from.getTime());
+  const busy = useBusy(people.map((p) => p.id), valid ? from.toISOString() : null, valid ? new Date(from.getTime() + minutes * 60_000).toISOString() : null);
+  const names = [...new Set((busy.data?.items ?? []).map((b) => people.find((p) => p.id === b.userId)?.name).filter(Boolean))];
+  if (!names.length) return null;
+  return <p role="status" className="text-sm text-amber-700 dark:text-amber-400" data-testid="busy-hint">Busy at this time (from their calendar): {names.join(', ')}.</p>;
 }
 
 /** FR-MEET-002/003: schedule a meeting with attendees, co-hosts, recurrence and a lobby. */
@@ -66,6 +77,7 @@ function ScheduleForm({ onDone }: { onDone: (id: string) => void }) {
         {freq ? <div className="space-y-1"><Label htmlFor={ids.c}>Occurrences</Label><Input id={ids.c} type="number" min={1} max={100} className="w-24" value={count} onChange={(e) => setCount(e.target.value)} /></div> : null}
       </div>
       <PeoplePicker label="Attendees" value={attendees} onChange={setAttendees} excludeId={me} />
+      <BusyHint people={[...attendees, ...cohosts]} start={start} minutes={Number(minutes)} />
       <PeoplePicker label="Co-hosts" value={cohosts} onChange={setCohosts} excludeId={me} max={10} />
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={lobby} onChange={(e) => setLobby(e.target.checked)} /> Lobby: people who were not invited wait until a host lets them in</label>
       <p className="text-xs text-muted-foreground">Attendees receive an email with a calendar invite (.ics).</p>

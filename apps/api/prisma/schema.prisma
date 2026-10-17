@@ -110,6 +110,11 @@ model Organization {
 
   attendanceFlags AttendanceFlag[]
 
+  calendarConnections CalendarConnection[]
+  calendarOauthStates CalendarOauthState[]
+  calendarEventLinks  CalendarEventLink[]
+  calendarBusy        CalendarBusy[]
+
   @@map("organizations")
 }
 
@@ -202,6 +207,11 @@ model User {
 
   attendanceFlags AttendanceFlag[] @relation("FlagSubject")
   resolvedFlags   AttendanceFlag[] @relation("FlagResolver")
+
+  calendarConnections CalendarConnection[]
+  calendarOauthStates CalendarOauthState[]
+  calendarEventLinks  CalendarEventLink[]
+  calendarBusy        CalendarBusy[]
 
   @@map("users")
 }
@@ -1412,6 +1422,8 @@ model Meeting {
   lobbyEntries MeetingLobby[]
   actionItems  MeetingActionItem[]
 
+  calendarEventLinks CalendarEventLink[]
+
   @@unique([livekitRoomName])
   @@index([orgId, status])
   @@index([orgId, scheduledStart])
@@ -1644,4 +1656,82 @@ model AttendanceFlag {
   @@index([orgId, status, createdAt])
   @@index([orgId, userId, createdAt])
   @@map("attendance_flags")
+}
+
+/// FR-MEET-006 (ADR 023): a person's link to Google Calendar or Outlook. Tokens are encrypted with
+/// a data key wrapped by the document key provider (KMS in AWS); never stored in plain text.
+model CalendarConnection {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        String    @map("org_id") @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  provider     String    @db.VarChar(10)
+  accountEmail String?   @map("account_email") @db.VarChar(320)
+  tokensEnc    Bytes     @map("tokens_enc")
+  keyWrapped   Bytes     @map("key_wrapped")
+  keyId        String    @map("key_id") @db.VarChar(100)
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz()
+  status       String    @default("ACTIVE") @db.VarChar(10)
+  lastSyncAt   DateTime? @map("last_sync_at") @db.Timestamptz()
+  lastError    String?   @map("last_error") @db.VarChar(300)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId, provider])
+  @@map("calendar_connections")
+}
+
+/// OAuth `state` (hashed) with the PKCE verifier; single use, 10 minutes.
+model CalendarOauthState {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId     String   @map("org_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  provider  String   @db.VarChar(10)
+  stateHash String   @unique @map("state_hash") @db.VarChar(64)
+  verifier  String   @db.VarChar(100)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz()
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("calendar_oauth_states")
+}
+
+/// Our meeting in a person's external calendar.
+model CalendarEventLink {
+  orgId          String   @map("org_id") @db.Uuid
+  meetingId      String   @map("meeting_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  provider       String   @db.VarChar(10)
+  externalId     String   @map("external_id") @db.VarChar(1024)
+  syncedSequence Int      @map("synced_sequence")
+  lastResponse   String?  @map("last_response") @db.VarChar(12)
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  meeting      Meeting      @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([meetingId, userId, provider])
+  @@index([orgId, userId])
+  @@map("calendar_event_links")
+}
+
+/// Busy blocks from the external calendar (times only, never titles), next 14 days.
+model CalendarBusy {
+  id       String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId    String   @map("org_id") @db.Uuid
+  userId   String   @map("user_id") @db.Uuid
+  provider String   @db.VarChar(10)
+  startAt  DateTime @map("start_at") @db.Timestamptz()
+  endAt    DateTime @map("end_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, userId, startAt])
+  @@map("calendar_busy")
 }

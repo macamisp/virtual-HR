@@ -16,13 +16,14 @@ import { OfficeModule } from './office/office.module.ts';
 import { MeetingsModule } from './meetings/meetings.module.ts';
 import { AgentModule } from './agent/agent.module.ts';
 import { HealthModule } from './health/health.module.ts';
+import { CalendarModule } from './calendar/calendar.module.ts';
 import { ChatModule } from './chat/chat.module.ts';
 import { RlsInterceptor } from './common/interceptors/rls.interceptor.ts';
 import { rateLimitModule } from './common/rate-limit.ts';
 import { PermissionsModule } from './common/permission-resolver.ts';
 
 @Module({
-  imports: [rateLimitModule(), PermissionsModule, AuthModule, UsersModule, AttendanceModule, AuditModule, TasksModule, PlanningModule, TimesheetsModule, NotificationsModule, DocumentsModule, AdminModule, ReportsModule, PrivacyModule, OfficeModule, MeetingsModule, ChatModule, AgentModule, HealthModule],
+  imports: [rateLimitModule(), PermissionsModule, AuthModule, UsersModule, AttendanceModule, AuditModule, TasksModule, PlanningModule, TimesheetsModule, NotificationsModule, DocumentsModule, AdminModule, ReportsModule, PrivacyModule, OfficeModule, MeetingsModule, ChatModule, AgentModule, HealthModule, CalendarModule],
   providers: [
     {
       provide: APP_INTERCEPTOR,

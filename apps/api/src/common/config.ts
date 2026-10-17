@@ -84,5 +84,7 @@ export function getRateLimits() {
     // ADR 018: redeeming a pairing code (guessing protection) and the agent's token refresh.
     agentPair: { limit: intFromEnv('RATE_LIMIT_AGENT_PAIR', 10), ttl: ttlMs },
     agentToken: { limit: intFromEnv('RATE_LIMIT_AGENT_TOKEN', 30), ttl: ttlMs },
+    // ADR 023: OAuth redirects back from Google/Microsoft.
+    oauth: { limit: intFromEnv('RATE_LIMIT_OAUTH', 30), ttl: ttlMs },
   };
 }

@@ -23,6 +23,8 @@ const PUBLIC_BY_DESIGN = new Set([
   'GET /agent/notice', 'POST /agent/pair', 'POST /agent/token',
   // ADR 020: load-balancer health check (ok/unavailable only).
   'GET /health',
+  // ADR 023: OAuth redirect from Google/Microsoft; the single-use state identifies the person.
+  'GET /calendar/oauth/callback',
 ]);
 /** Signed-in routes whose scope is "the caller's own data" and need no extra permission. */
 const SELF_SERVICE = new Set([

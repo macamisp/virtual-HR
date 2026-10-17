@@ -8,11 +8,12 @@ import { ScheduledWorkService } from './scheduled-work.service.ts';
 import { redisOptions } from '../common/coordination.ts';
 import { DocumentScannerService } from '../documents/document-scanner.service.ts';
 import { DocumentMaintenanceService } from '../documents/document-maintenance.service.ts';
+import { CalendarService } from '../calendar/calendar.service.ts';
 import type { ScanDispatcher } from '../documents/scan-dispatcher.ts';
 
 export const JOBS_QUEUE = 'hrvo-jobs';
 
-type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attendance-reconcile' | 'attendance-daily-close' | 'presence-retention' | 'timesheet-reminders' | 'document-maintenance' | 'deferred-emails' | 'attendance-alerts';
+type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attendance-reconcile' | 'attendance-daily-close' | 'presence-retention' | 'timesheet-reminders' | 'document-maintenance' | 'deferred-emails' | 'attendance-alerts' | 'calendar-sync';
 
 /** Repeatable jobs. BullMQ job schedulers are de-duplicated in Redis, so N API instances run each tick once. */
 export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs: number }> = [
@@ -28,6 +29,8 @@ export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs: number }> =
   { name: 'deferred-emails', everyMs: 60_000 },
   // ADR 019: no-clock-in reminders, manager alerts, mechanical-input scan.
   { name: 'attendance-alerts', everyMs: 5 * 60_000 },
+  // ADR 023: Google/Outlook two-way sync.
+  { name: 'calendar-sync', everyMs: 5 * 60_000 },
 ];
 
 export function jobsEnabled(): boolean {
@@ -98,6 +101,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatch
       case 'timesheet-reminders': return await work.timesheetReminders(now);
       case 'deferred-emails': return await work.deferredEmails(now);
       case 'attendance-alerts': return await work.attendanceAlerts(now);
+      case 'calendar-sync': return await this.moduleRef.get(CalendarService, { strict: false }).syncAll();
       case 'document-maintenance': return await this.moduleRef.get(DocumentMaintenanceService, { strict: false }).run(now);
       case 'document-scan': {
         const data = job.data as { orgId: string; versionId: string };

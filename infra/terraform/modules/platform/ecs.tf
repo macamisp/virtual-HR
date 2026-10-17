@@ -86,6 +86,7 @@ locals {
     [aws_secretsmanager_secret.jwt.arn, aws_secretsmanager_secret.db_app.arn, aws_secretsmanager_secret.db_retention.arn, aws_secretsmanager_secret.redis.arn],
     [for s in aws_secretsmanager_secret.external : s.arn],
     [aws_db_instance.main.master_user_secret[0].secret_arn],
+    [for s in aws_secretsmanager_secret.oauth : s.arn],
   )
 }
 
@@ -184,19 +185,24 @@ locals {
     LIVEKIT_URL                  = var.livekit_url
     LIVEKIT_HTTP_URL             = local.livekit_http
     MAIL_TRANSPORT               = "smtp"
+    API_PUBLIC_URL               = "https://${local.api_host}"
+    CALENDAR_OAUTH_REDIRECT_URL  = "https://${local.api_host}/calendar/oauth/callback"
+    GOOGLE_OAUTH_CLIENT_ID       = var.google_oauth_client_id
+    MICROSOFT_OAUTH_CLIENT_ID    = var.microsoft_oauth_client_id
     DOCUMENT_KMS_PROVIDER        = "aws"
     DOCUMENT_KMS_KEY_ID          = aws_kms_key.documents.arn
     DOCUMENT_KMS_RECOVERY_KEY_ID = aws_kms_key.recovery.arn
   } : { name = k, value = v }]
 
-  api_secrets = [
+  api_secrets = concat([
     { name = "JWT_SECRET", valueFrom = aws_secretsmanager_secret.jwt.arn },
     { name = "PGPASSWORD", valueFrom = aws_secretsmanager_secret.db_app.arn },
     { name = "PGRETENTION_PASSWORD", valueFrom = aws_secretsmanager_secret.db_retention.arn },
     { name = "REDIS_PASSWORD", valueFrom = aws_secretsmanager_secret.redis.arn },
     { name = "LIVEKIT_API_KEY", valueFrom = aws_secretsmanager_secret.external["livekit-api-key"].arn },
     { name = "LIVEKIT_API_SECRET", valueFrom = aws_secretsmanager_secret.external["livekit-api-secret"].arn },
-  ]
+    ], [for k, s in aws_secretsmanager_secret.oauth : { name = "${upper(k)}_OAUTH_CLIENT_SECRET", valueFrom = s.arn }],
+  )
 }
 
 resource "aws_ecs_task_definition" "api" {

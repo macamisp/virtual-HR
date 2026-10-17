@@ -65,3 +65,16 @@ resource "aws_secretsmanager_secret" "external" {
   kms_key_id = aws_kms_key.data.arn
   tags       = local.tags
 }
+
+# ADR 023: OAuth client secrets, only for the calendar providers that are switched on (an empty
+# secret would stop the tasks from starting).
+locals {
+  calendar_providers = { for k, v in { google = var.google_oauth_client_id, microsoft = var.microsoft_oauth_client_id } : k => v if v != "" }
+}
+
+resource "aws_secretsmanager_secret" "oauth" {
+  for_each   = local.calendar_providers
+  name       = "${local.name}/${each.key}-oauth-client-secret"
+  kms_key_id = aws_kms_key.data.arn
+  tags       = local.tags
+}
