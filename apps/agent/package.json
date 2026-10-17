@@ -4,6 +4,7 @@
   "private": true,
   "description": "HRVO desktop agent: OS idle time, tray status, offline buffering (FR-ATT-011, FR-ATT-012; ADR 018).",
   "author": "HRVO",
+  "homepage": "https://github.com/macamisp/virtual-HR",
   "type": "module",
   "main": "dist/apps/agent/src/main.js",
   "scripts": {
@@ -50,6 +51,9 @@
           "StartupWMClass": "hrvo-agent"
         }
       }
+    },
+    "deb": {
+      "artifactName": "hrvo-agent_${version}_${arch}.${ext}"
     },
     "win": {
       "target": [
