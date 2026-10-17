@@ -5,6 +5,7 @@ import {
   BadRequestException,
   ForbiddenException,
   ServiceUnavailableException,
+  NotFoundException,
 } from '@nestjs/common';
 import { AttendanceGateway } from '../attendance/attendance.gateway.ts';
 import argon2 from 'argon2';
@@ -25,6 +26,7 @@ import type { BreachedPasswordChecker } from './breached-password.ts';
 import { signAccessToken, signMfaEnrollmentToken } from './tokens.ts';
 import {
   hasPermission,
+  userCan,
   isMfaRequiredRole,
   Permission,
 } from '../../../../packages/shared/src/auth/types.ts';
@@ -52,7 +54,7 @@ const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000; // FR-AUTH-003
 export const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000; // FR-AUTH-008
 
 /** Why an auth_sessions row was revoked. ROTATED is a normal refresh and does not end the login. */
-export type RevokeReason = 'ROTATED' | 'LOGOUT' | 'FAMILY_REUSE' | 'PASSWORD_RESET' | 'USER_DEACTIVATED' | 'DEVICE_REVOKED';
+export type RevokeReason = 'ROTATED' | 'LOGOUT' | 'FAMILY_REUSE' | 'PASSWORD_RESET' | 'USER_DEACTIVATED' | 'DEVICE_REVOKED' | 'ADMIN_REVOKED';
 
 interface AuthUserRow {
   id: string;
@@ -769,6 +771,22 @@ export class AuthService {
       }
       return result;
     });
+  }
+
+  /** FR-ATT-002: administrative session revocation has the same attendance guarantee as logout. */
+  async revokeSession(user: AuthenticatedUser, sessionId: string, ip?: string, userAgent?: string) {
+    if (!userCan(user, Permission.USERS_MANAGE)) throw new ForbiddenException('Cannot revoke sessions');
+    const target = await this.prisma.runWithTenantContext(user.orgId, async (client) => {
+      const row = (await client.query<{ user_id: string; family_id: string }>(
+        `SELECT user_id, family_id FROM auth_sessions WHERE org_id = $1 AND id = $2`, [user.orgId, sessionId])).rows[0];
+      if (!row) throw new NotFoundException('Session not found');
+      await this.revokeSessions(client, user.orgId, { familyId: row.family_id }, 'ADMIN_REVOKED');
+      await this.recordAudit(client, { orgId: user.orgId, actorId: user.id, action: 'SESSION_REVOKED', entityType: 'SESSION', entityId: sessionId,
+        after: { userId: row.user_id }, ip, userAgent });
+      return row;
+    });
+    await this.attendance.closeAttendanceOnRevocation(user.orgId, target.user_id, target.family_id);
+    return { success: true };
   }
 
   /**

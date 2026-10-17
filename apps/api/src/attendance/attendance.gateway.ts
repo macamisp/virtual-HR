@@ -230,6 +230,11 @@ export class AttendanceGateway
       return { success: false, error: 'Unauthorized' };
     }
     const user = auth.user;
+    // FR-ATT-002: a missed NOTIFY must never let a revoked socket reopen attendance.
+    // Bind the signed heartbeat to this socket's authenticated login on every ingestion.
+    if (!await this.liveFamilyId(user.orgId, user.sub, auth.sessionId)) {
+      return { success: false, error: 'Unauthorized' };
+    }
 
     const { limit, ttl } = this.heartbeatLimit;
     const record = await this.throttlerStorage.increment(`heartbeat:${user.orgId}:${user.sub}`, ttl, limit, ttl, 'heartbeat');
@@ -238,6 +243,8 @@ export class AttendanceGateway
       void this.flags.rejected(user.orgId, user.sub, 'FLOOD', new Date(), await this.attendanceService.timeZoneOf(user.orgId)).catch(() => undefined);
       return { success: false, error: 'Rate limit exceeded' };
     }
+
+    if (!payload || payload.sessionId !== auth.sessionId) return { success: false, error: 'Unauthorized' };
 
     // Ensure payload user and org match authenticated socket
     payload.userId = user.sub;

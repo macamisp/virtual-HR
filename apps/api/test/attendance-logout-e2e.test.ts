@@ -16,6 +16,7 @@ import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
+import { generateSync } from 'otplib';
 import { io, type Socket } from 'socket.io-client';
 import { AttendanceGateway } from '../src/attendance/attendance.gateway.ts';
 import { AppModule } from '../src/app.module.ts';
@@ -26,7 +27,9 @@ import { HeartbeatValidator } from '../src/attendance/heartbeat-validator.ts';
 const ORG = 'e2e10000-0000-4000-8000-000000000001';
 const PORT = 3056;
 const PASSWORD = 'ComplexPassword123!';
+const MFA = 'KVKFKRCPNZQUYMLXOVYDSQKJKZDTSRLD'; // test fixture only
 const U = {
+  admin: { id: 'e2e10000-0000-4000-8000-000000000013', email: 'admin@logout.test', role: 'ADMIN' },
   worker: { id: 'e2e10000-0000-4000-8000-000000000011', email: 'worker@logout.test', role: 'EMPLOYEE' },
   other: { id: 'e2e10000-0000-4000-8000-000000000012', email: 'other@logout.test', role: 'EMPLOYEE' },
 } as const;
@@ -46,7 +49,7 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
   const seqs = new Map<string, number>();
 
   async function login(who: Who, password = PASSWORD): Promise<Login> {
-    const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password }) });
+    const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password, ...(who === 'admin' ? { totpCode: generateSync({ secret: MFA }) } : {}) }) });
     const body = (await res.json()) as Login & { message?: string };
     assert.equal(res.status, 200, `login ${who}: ${body.message}`);
     return { accessToken: body.accessToken, sessionId: body.sessionId, sessionSecret: body.sessionSecret };
@@ -58,12 +61,12 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
     return s;
   }
   /** One signed, active heartbeat from this login on this device; returns the server's ack. */
-  async function heartbeat(s: Socket, who: Who, l: Login, deviceId: string, activeSeconds = 30) {
+  async function heartbeat(s: Socket, who: Who, l: Login, deviceId: string, activeSeconds = 30, expected = true) {
     const sequenceNumber = (seqs.get(deviceId) ?? 0) + 1;
     seqs.set(deviceId, sequenceNumber);
     const data = { orgId: ORG, userId: U[who].id, deviceId, sessionId: l.sessionId, sequenceNumber, nonce: randomBytes(16).toString('hex'), activeSeconds, idleSeconds: 0, tabVisible: true, windowFocused: true, inCall: false };
     const ack = (await s.emitWithAck('presence:heartbeat', { ...data, signature: validator.signHeartbeat(data, l.sessionSecret) })) as { success: boolean; error?: string };
-    assert.equal(ack.success, true, ack.error ?? 'heartbeat refused');
+    assert.equal(ack.success, expected, ack.error ?? 'unexpected heartbeat result');
     return ack;
   }
   const session = async (who: Who): Promise<SessionRow | null> =>
@@ -95,6 +98,7 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
       await adminPool.query(`INSERT INTO users (id, org_id, email, display_name, role, password_hash, status) VALUES ($1, $2, $3, $3, $4, $5, 'ACTIVE')`, [u.id, ORG, u.email, u.role, hash]);
       await adminPool.query(`INSERT INTO monitoring_consents (org_id, user_id, notice_version, consent_type, granted, accepted_at) VALUES ($1, $2, 'v1.0.0', 'MONITORING', true, now())`, [ORG, u.id]);
     }
+    await adminPool.query(`UPDATE users SET mfa_enabled = true, mfa_secret = $2 WHERE id = $1`, [U.admin.id, MFA]);
     app = await NestFactory.create(AppModule, { logger: false });
     configureApp(app);
     await app.listen(PORT);
@@ -149,6 +153,8 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
       assert.ok(latency < 1000, `logout took ${latency} ms`);
       assert.equal(row.clock_out_source, 'LOGOUT');
       assert.equal(row.clock_out_at?.getTime(), row.last_heartbeat_at.getTime());
+      await heartbeat(socket, 'worker', l, 'listener-outage', 30, false);
+      assert.equal((await session('worker'))?.status, 'CLOSED', 'a revoked socket cannot reopen attendance');
     } finally {
       await listener.query('LISTEN hrvo_auth_events');
       await closeAll();
@@ -222,22 +228,36 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
     await logout(l);
   });
 
-  it('a password reset revokes every login and closes the session within 1 s', async () => {
-    const l = await login('worker');
-    const s = await connect(l.accessToken);
-    await heartbeat(s, 'worker', l, 'laptop-a');
+  it('a password reset revokes every login and closes the session within 1 s, even without notifications', async () => {
+    const a = await login('worker');
+    const b = await login('worker');
+    const sa = await connect(a.accessToken);
+    const sb = await connect(b.accessToken);
+    await heartbeat(sa, 'worker', a, 'reset-laptop');
+    await heartbeat(sb, 'worker', b, 'reset-phone');
     assert.equal((await fetch(`${base}/auth/password/forgot`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U.worker.email }) })).status, 202);
     const token = outbox.outbox.at(-1)!.text.match(/#token=([0-9a-f]{64})/)![1];
-    const t0 = Date.now();
-    const reset = await fetch(`${base}/auth/password/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, newPassword: 'AnotherLongPassword456!' }) });
-    assert.equal(reset.status, 200, await reset.text());
-    const { row } = await closedWithin('worker', 1000);
-    assert.ok(Date.now() - t0 < 1000);
-    console.log(`# NFR-ACC-002 password reset: session closed ${Date.now() - t0} ms after the reset`);
-    assert.equal(row.clock_out_source, 'LOGOUT');
-    assert.equal(row.clock_out_at!.getTime(), row.last_heartbeat_at.getTime());
-    await closeAll();
-    await adminPool.query(`UPDATE users SET password_hash = $2 WHERE id = $1`, [U.worker.id, await argon2.hash(PASSWORD, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 })]);
+    const listener = app.get(AttendanceGateway)['listener'];
+    assert.ok(listener);
+    await listener.query('UNLISTEN hrvo_auth_events');
+    try {
+      const t0 = performance.now();
+      const reset = await fetch(`${base}/auth/password/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, newPassword: 'AnotherLongPassword456!' }) });
+      assert.equal(reset.status, 200, await reset.text());
+      const { row } = await closedWithin('worker', 900);
+      const latency = performance.now() - t0;
+      assert.ok(latency < 1000);
+      console.log(`# NFR-ACC-002 password reset without NOTIFY, two logins: ${latency.toFixed(1)} ms`);
+      assert.equal(row.clock_out_source, 'LOGOUT');
+      assert.equal(row.clock_out_at!.getTime(), row.last_heartbeat_at.getTime());
+      assert.equal((await adminPool.query(`SELECT count(*)::int AS n FROM auth_sessions WHERE org_id = $1 AND user_id = $2 AND NOT is_revoked`, [ORG, U.worker.id])).rows[0].n, 0);
+      await heartbeat(sa, 'worker', a, 'reset-laptop', 30, false);
+      await heartbeat(sb, 'worker', b, 'reset-phone', 30, false);
+    } finally {
+      await listener.query('LISTEN hrvo_auth_events');
+      await closeAll();
+      await adminPool.query(`UPDATE users SET password_hash = $2 WHERE id = $1`, [U.worker.id, await argon2.hash(PASSWORD, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 })]);
+    }
   });
 
   it('an administrative revocation (role change, deactivation) closes the session within 1 s', async () => {
@@ -253,4 +273,42 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
     assert.equal(row.clock_out_source, 'LOGOUT');
     await closeAll();
   });
+  it('admin DELETE /auth/sessions/:id closes attendance within 1 s; permissions, input and tenant scope are enforced', async () => {
+    const l = await login('worker');
+    const admin = await login('admin');
+    const socket = await connect(l.accessToken);
+    await heartbeat(socket, 'worker', l, 'admin-revoke');
+    const revoke = (token: string, id: string) => fetch(`${base}/auth/sessions/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    assert.equal((await revoke(l.accessToken, l.sessionId)).status, 403, 'administrative revocation needs users.manage');
+    assert.equal((await revoke(admin.accessToken, 'invalid')).status, 400);
+    assert.equal((await revoke(admin.accessToken, 'e2e10000-0000-4000-8000-000000000099')).status, 404);
+    // A known auth session of another tenant is also invisible under RLS.
+    const foreign = 'e2e10000-0000-4000-8000-000000000099';
+    await adminPool.query(`INSERT INTO organizations (id, name, slug) VALUES ($1, 'Foreign revoke', 'foreign-revoke') ON CONFLICT DO NOTHING`, [foreign]);
+    await adminPool.query(`INSERT INTO users (id, org_id, email, role, status) VALUES ($1, $1, 'foreign@revoke.test', 'EMPLOYEE', 'ACTIVE')`, [foreign]);
+    await adminPool.query(`INSERT INTO auth_sessions (id, org_id, user_id, refresh_token_hash, family_id, expires_at) VALUES ($1, $1, $1, $2, $1, now() + interval '1 day')`, [foreign, randomBytes(32).toString('hex')]);
+    try {
+      assert.equal((await revoke(admin.accessToken, foreign)).status, 404);
+      const listener = app.get(AttendanceGateway)['listener'];
+      assert.ok(listener);
+      await listener.query('UNLISTEN hrvo_auth_events');
+      try {
+        const start = performance.now();
+        const response = await revoke(admin.accessToken, l.sessionId);
+        assert.equal(response.status, 200, await response.text());
+        const { row } = await closedWithin('worker', 900);
+        const latency = performance.now() - start;
+        assert.ok(latency < 1000);
+        assert.equal(row.clock_out_source, 'LOGOUT');
+        assert.equal(row.clock_out_at?.getTime(), row.last_heartbeat_at.getTime());
+        assert.equal((await adminPool.query(`SELECT count(*)::int AS n FROM audit_logs WHERE org_id = $1 AND action = 'SESSION_REVOKED'`, [ORG])).rows[0].n, 1);
+        console.log(`# FR-ATT-002 admin session revoke without NOTIFY: ${latency.toFixed(1)} ms`);
+      } finally { await listener.query('LISTEN hrvo_auth_events'); }
+    } finally {
+      await adminPool.query(`DELETE FROM organizations WHERE id = $1`, [foreign]);
+      await closeAll();
+      await logout(admin);
+    }
+  });
+
 });

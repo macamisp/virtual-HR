@@ -1,5 +1,8 @@
+import { z } from 'zod';
 import {
   Controller,
+  Delete,
+  Param,
   Post,
   Body,
   Req,
@@ -171,6 +174,17 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     return moveRefreshTokenToCookie(res, await this.authService.verifyAndEnable2fa(user, dto.code, ...requestMeta(req)));
+  }
+
+  @Delete('sessions/:id')
+  @RequirePermissions(Permission.USERS_MANAGE)
+  @HttpCode(HttpStatus.OK)
+  async revokeSession(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', new ZodValidationPipe(z.uuid())) id: string,
+    @Req() req: Request,
+  ) {
+    return await this.authService.revokeSession(user, id, ...requestMeta(req));
   }
 
   @Post('logout')
