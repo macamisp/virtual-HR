@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { AttendanceGateway } from '../attendance/attendance.gateway.ts';
 import argon2 from 'argon2';
 import { mfaEnforced } from '../common/config.ts';
 import { generateSecret, generateURI, verifySync } from 'otplib';
@@ -82,6 +83,7 @@ export class AuthService {
     private prisma: PrismaService,
     @Inject(BREACHED_PASSWORD_CHECKER) private breachChecker: BreachedPasswordChecker,
     @Inject(MAIL_TRANSPORT) private mailer: MailTransport,
+    private readonly attendance: AttendanceGateway,
   ) {}
 
   /**
@@ -782,7 +784,7 @@ export class AuthService {
     if (!user.sessionId) {
       throw new UnauthorizedException('Access token has no session');
     }
-    return await this.prisma.runWithTenantContext(user.orgId, async (client) => {
+    const familyId = await this.prisma.runWithTenantContext(user.orgId, async (client) => {
       const fam = await client.query<{ family_id: string }>(
         `SELECT family_id FROM auth_sessions WHERE id = $1 AND org_id = $2 AND user_id = $3`,
         [user.sessionId, user.orgId, user.id],
@@ -802,8 +804,10 @@ export class AuthService {
         userAgent,
       });
 
-      return { success: true };
+      return fam.rows[0].family_id;
     });
+    await this.attendance.closeAttendanceOnRevocation(user.orgId, user.id, familyId);
+    return { success: true };
   }
 
   /**
@@ -915,6 +919,7 @@ export class AuthService {
     });
 
     if (!ok) throw invalid();
+    await this.attendance.closeAttendanceOnRevocation(row.org_id, row.user_id, null);
     return { success: true };
   }
 

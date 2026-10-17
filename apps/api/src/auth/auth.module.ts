@@ -1,3 +1,4 @@
+import { AttendanceModule } from '../attendance/attendance.module.ts';
 import { Module } from '@nestjs/common';
 import { AuthService } from './auth.service.ts';
 import { AuthController } from './auth.controller.ts';
@@ -5,7 +6,7 @@ import { BREACHED_PASSWORD_CHECKER, createBreachedPasswordChecker } from './brea
 import { MailModule } from '../common/mail.module.ts';
 
 @Module({
-  imports: [MailModule],
+  imports: [MailModule, AttendanceModule],
   controllers: [AuthController],
   providers: [
     AuthService,

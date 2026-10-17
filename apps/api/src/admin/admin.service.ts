@@ -1,3 +1,4 @@
+import { AttendanceGateway } from '../attendance/attendance.gateway.ts';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service.ts';
 import { PermissionResolver } from '../common/permission-resolver.ts';
@@ -79,6 +80,7 @@ export class AdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly attendance: AttendanceService,
+    private readonly gateway: AttendanceGateway,
     private readonly resolver: PermissionResolver,
   ) {}
 
@@ -207,6 +209,7 @@ export class AdminService {
 
   async updateRole(user: AuthenticatedUser, id: string, dto: CustomRoleDto): Promise<CustomRole> {
     const def = this.normalise(user, dto);
+    const revokedUsers: string[] = [];
     const updated = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const current = (await db.query<RoleRow>(`${ROLE_SELECT} WHERE r.id = $1 FOR UPDATE OF r`, [id])).rows[0];
       if (!current) throw new NotFoundException('Role not found');
@@ -225,7 +228,7 @@ export class AdminService {
       // A user's built-in role always equals their custom role's base (ADR 011).
       if (def.baseRole !== current.base_role) {
         const moved = await db.query<{ id: string }>(`UPDATE users SET role = $2 WHERE custom_role_id = $1 RETURNING id`, [id, def.baseRole]);
-        if (isMfaRequiredRole(def.baseRole)) for (const u of moved.rows) await this.revokeSessions(db, u.id);
+        if (isMfaRequiredRole(def.baseRole)) for (const u of moved.rows) { await this.revokeSessions(db, u.id); revokedUsers.push(u.id); }
       }
       await appendAuditEntry(db, {
         orgId: user.orgId, actorId: user.id, action: 'ROLE_UPDATED', entityType: 'ORG_ROLE', entityId: id,
@@ -235,6 +238,7 @@ export class AdminService {
       return (await db.query<RoleRow>(`${ROLE_SELECT} WHERE r.id = $1`, [id])).rows[0]!;
     });
     this.resolver.invalidateOrg(user.orgId);
+    for (const userId of revokedUsers) await this.gateway.closeAttendanceOnRevocation(user.orgId, userId, null);
     return mapRole(updated);
   }
 
@@ -267,6 +271,7 @@ export class AdminService {
 
   async assignRole(user: AuthenticatedUser, targetId: string, dto: AssignRoleDto): Promise<AdminUserRow> {
     if (targetId === user.id) throw new ForbiddenException('You cannot change your own role');
+    let revoked = false;
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const target = (await db.query<{ role: UserRole; custom_role_id: string | null; added: Permission[] | null; removed: Permission[] | null; mfa_enabled: boolean }>(
         `SELECT u.role, u.custom_role_id, r.added_permissions AS added, r.removed_permissions AS removed, u.mfa_enabled
@@ -295,13 +300,14 @@ export class AdminService {
       if (problem) throw new ForbiddenException(problem);
       await db.query(`UPDATE users SET role = $2, custom_role_id = $3 WHERE id = $1`, [targetId, role, customRoleId]);
       // Sessions issued without 2FA must not carry a role that requires it.
-      if (isMfaRequiredRole(role) && !isMfaRequiredRole(target.role) && !target.mfa_enabled) await this.revokeSessions(db, targetId);
+      if (isMfaRequiredRole(role) && !isMfaRequiredRole(target.role) && !target.mfa_enabled) { await this.revokeSessions(db, targetId); revoked = true; }
       await appendAuditEntry(db, {
         orgId: user.orgId, actorId: user.id, action: 'USER_ROLE_CHANGED', entityType: 'USER', entityId: targetId,
         before: { role: target.role, customRoleId: target.custom_role_id }, after: { role, customRoleId },
       });
     });
     this.resolver.invalidateOrg(user.orgId);
+    if (revoked) await this.gateway.closeAttendanceOnRevocation(user.orgId, targetId, null);
     const row = (await this.users(user)).find((u) => u.id === targetId);
     if (!row) throw new NotFoundException('User not found');
     return row;

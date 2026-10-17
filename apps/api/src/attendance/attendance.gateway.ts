@@ -391,10 +391,10 @@ export class AttendanceGateway
   handleAuthEvent(event: AuthEvent): void {
     if (event.type === 'session_revoked') {
       this.disconnectRoom(`family:${event.familyId}`, event.reason);
-      void this.closeAttendanceOnRevocation(event.orgId, event.userId, event.familyId);
+      void this.closeAttendanceOnRevocation(event.orgId, event.userId, event.familyId).catch(() => console.error('Attendance close on revocation failed'));
     } else if (event.type === 'user_deactivated') {
       this.disconnectRoom(`user:${event.userId}`, `USER_${event.status}`);
-      void this.closeAttendanceOnRevocation(event.orgId, event.userId, null);
+      void this.closeAttendanceOnRevocation(event.orgId, event.userId, null).catch(() => console.error('Attendance close on revocation failed'));
     }
   }
 
@@ -405,15 +405,10 @@ export class AttendanceGateway
    * desktop agent). That is a database fact, so every API task that hears the notification decides
    * the same way; the second one finds the session closed.
    */
-  private async closeAttendanceOnRevocation(orgId: string, userId: string, revokedFamilyId: string | null): Promise<void> {
-    try {
-      if (revokedFamilyId && await this.attendanceService.hasOtherLiveLogin(orgId, userId, revokedFamilyId)) return;
-      const result = await this.attendanceService.onExplicitLogout(userId, undefined, orgId);
-      if (result) this.broadcastTransition(orgId, userId, result);
-    } catch (err) {
-      // The session then closes through the grace window or the reconciler as before.
-      console.error('Attendance close on revocation failed:', err instanceof Error ? err.message : 'unknown error');
-    }
+  async closeAttendanceOnRevocation(orgId: string, userId: string, revokedFamilyId: string | null): Promise<void> {
+    if (revokedFamilyId && await this.attendanceService.hasOtherLiveLogin(orgId, userId, revokedFamilyId)) return;
+    const result = await this.attendanceService.onExplicitLogout(userId, undefined, orgId);
+    if (result) this.broadcastTransition(orgId, userId, result);
   }
 
   private async startListener(): Promise<void> {

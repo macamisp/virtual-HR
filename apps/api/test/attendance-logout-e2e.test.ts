@@ -6,8 +6,7 @@
  * that merely closes still goes through the grace window.
  *
  * Measured numbers (logout -> session closed) are printed for the accuracy report (NFR-ACC-002).
- * The first test holds the 1 s target; the other cases allow 3 s, because the whole API suite runs
- * several API processes in parallel on one machine and notification delivery then lags.
+ * Every close holds the 1 s target, including notification loss.
  */
 import 'reflect-metadata';
 import { describe, it, before, after } from 'node:test';
@@ -18,6 +17,7 @@ import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
 import { io, type Socket } from 'socket.io-client';
+import { AttendanceGateway } from '../src/attendance/attendance.gateway.ts';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
 import { MAIL_TRANSPORT, InMemoryMailTransport } from '../src/common/mailer.ts';
@@ -85,6 +85,7 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
     process.env.BREACHED_PASSWORD_CHECK = 'local';
     process.env.MAIL_TRANSPORT = 'memory';
     process.env.RATE_LIMIT_LOGIN = '1000';
+    process.env.RATE_LIMIT_HEARTBEAT = '1000';
     process.env.JOBS_ENABLED = 'false';
     adminPool = new pg.Pool({ host: process.env.PGHOST || 'localhost', port: Number(process.env.PGPORT || 5433), database: process.env.PGDATABASE || 'hrvo_dev', user: process.env.PGADMIN_USER || 'postgres', password: process.env.PGADMIN_PASSWORD || 'postgres' });
     await adminPool.query(`DELETE FROM organizations WHERE id = $1`, [ORG]);
@@ -116,7 +117,8 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
     await sleep(1500); // real time passes after the last heartbeat; none of it may be credited
     const t0 = Date.now();
     assert.equal((await logout(l)).status, 200);
-    const { row, latencyMs } = await closedWithin('worker', 1000);
+    const { row, latencyMs } = await closedWithin('worker', Math.max(0, 1000 - (Date.now() - t0)));
+    assert.ok(Date.now() - t0 < 1000);
     console.log(`# NFR-ACC-002 logout: session closed ${Date.now() - t0} ms after the logout request (poll latency ${latencyMs} ms)`);
     assert.equal(row.clock_out_source, 'LOGOUT');
     assert.equal(row.clock_out_at!.getTime(), row.last_heartbeat_at.getTime(), 'clock-out is the last valid heartbeat, not the logout time');
@@ -129,6 +131,28 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
     const l = await login('other');
     assert.equal((await logout(l)).status, 200);
     assert.equal(await session('other'), null);
+  });
+
+  it('logout still closes within 1 s when the Postgres notification listener misses the revocation', async () => {
+    const l = await login('worker');
+    const socket = await connect(l.accessToken);
+    await heartbeat(socket, 'worker', l, 'listener-outage');
+    const listener = app.get(AttendanceGateway)['listener'];
+    assert.ok(listener);
+    await listener.query('UNLISTEN hrvo_auth_events');
+    try {
+      const start = performance.now();
+      assert.equal((await logout(l)).status, 200);
+      const { row } = await closedWithin('worker', 900);
+      const latency = performance.now() - start;
+      console.log(`# FR-ATT-002 missed notification logout: ${latency.toFixed(1)} ms`);
+      assert.ok(latency < 1000, `logout took ${latency} ms`);
+      assert.equal(row.clock_out_source, 'LOGOUT');
+      assert.equal(row.clock_out_at?.getTime(), row.last_heartbeat_at.getTime());
+    } finally {
+      await listener.query('LISTEN hrvo_auth_events');
+      await closeAll();
+    }
   });
 
   it('two logins (two devices): logging out of one keeps the person clocked in while the other still heartbeats; the last logout closes', async () => {
@@ -149,7 +173,7 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
     await heartbeat(sb, 'worker', b, 'phone-b');
     assert.equal(sb.connected, true, 'the second login is unaffected by the first logout');
     assert.equal((await logout(b)).status, 200);
-    ({ row } = await closedWithin('worker', 3000));
+    ({ row } = await closedWithin('worker', 1000));
     assert.equal(row.clock_out_source, 'LOGOUT');
     await closeAll();
   });
@@ -165,7 +189,7 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
     // The phone went quiet two minutes ago (longer than the 90 s missed-heartbeat window).
     await adminPool.query(`UPDATE session_secrets SET last_used_at = now() - interval '120 seconds' WHERE session_id = $1`, [b.sessionId]);
     assert.equal((await logout(a)).status, 200);
-    const { row } = await closedWithin('worker', 3000);
+    const { row } = await closedWithin('worker', 1000);
     assert.equal(row.clock_out_source, 'LOGOUT');
     await closeAll();
     await logout(b);
@@ -179,7 +203,7 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
     const revoked = new Promise<string>((res) => tab2.once('auth:revoked', (p: { reason: string }) => res(p.reason)));
     assert.equal((await logout(l)).status, 200);
     assert.equal(await revoked, 'LOGOUT', 'the other tab is told its login ended');
-    const { row } = await closedWithin('worker', 3000);
+    const { row } = await closedWithin('worker', 1000);
     assert.equal(row.clock_out_source, 'LOGOUT');
     await closeAll();
   });
@@ -207,7 +231,8 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
     const t0 = Date.now();
     const reset = await fetch(`${base}/auth/password/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, newPassword: 'AnotherLongPassword456!' }) });
     assert.equal(reset.status, 200, await reset.text());
-    const { row } = await closedWithin('worker', 3000);
+    const { row } = await closedWithin('worker', 1000);
+    assert.ok(Date.now() - t0 < 1000);
     console.log(`# NFR-ACC-002 password reset: session closed ${Date.now() - t0} ms after the reset`);
     assert.equal(row.clock_out_source, 'LOGOUT');
     assert.equal(row.clock_out_at!.getTime(), row.last_heartbeat_at.getTime());
@@ -222,7 +247,8 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
     const t0 = Date.now();
     // What admin.service does when a role change requires a fresh sign-in (the trigger notifies).
     await adminPool.query(`UPDATE auth_sessions SET is_revoked = true, revoked_reason = 'ROLE_CHANGED', updated_at = now() WHERE org_id = $1 AND user_id = $2 AND NOT is_revoked`, [ORG, U.worker.id]);
-    const { row } = await closedWithin('worker', 3000);
+    const { row } = await closedWithin('worker', 1000);
+    assert.ok(Date.now() - t0 < 1000);
     console.log(`# NFR-ACC-002 admin revoke: session closed ${Date.now() - t0} ms after the revocation`);
     assert.equal(row.clock_out_source, 'LOGOUT');
     await closeAll();
