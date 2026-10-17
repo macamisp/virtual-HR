@@ -1,6 +1,6 @@
 # HRVO project status
 
-**As of:** 17 October 2026. Section 7 records the three gaps fixed after the first report; the counts in section 2 include them.
+**As of:** 17 October 2026. Sections 7 and 8 record the attendance fixes. Section 2 retains the prior audit counts; section 8 links the follow-up evidence.
 **Prepared for:** the product owner.
 **Method:**
 - Every requirement ID in `docs/SRS.md` was checked against the code and the automated tests, not against documentation claims.
@@ -298,3 +298,25 @@ Tests: `apps/web/e2e/23-accuracy.spec.ts` (3, numbers printed in CI output), `ap
 | Live board | "On leave" never shown | Shows "On leave" for a person on approved leave without an open session |
 
 Tests: `apps/api/test/leave-e2e.test.ts` (8, including RLS), `apps/web/e2e/24-leave.spec.ts` (3). Design: ADR 027. Not done: half days and balances; planner capacity still counts leave and holiday days; built-in calendars for years other than 2026.
+
+
+## 8. Follow-up regression fixes (17 October 2026)
+
+The original implementations in section 7 were present at starting revision `8871b30`.
+New regressions found notification-loss logout/revocation failures, weak timing/union proofs,
+a replay that trusted aggregate counters, stale cross-process leave/calendar reads, missing
+calendar defaults on new organisations, and stale persisted attendance expectations.
+See [the before/after report](attendance-gap-report.md) for the current evidence, demo commands,
+and the pending shared-auth-session clarification. Section 1's remote CI result belongs to
+its named historical commit; it is not a CI result for these follow-up changes.
+
+
+Follow-up local validation: 710/710 in the full API run, 28/28 in the final replay/agent
+regression set (including the added mixed offline-counter case), and 6/6 Playwright accuracy/
+leave checks. Lint and API/shared/web types are clean. Clock-in: 100/100 within 5 s, p99 2,447 ms,
+maximum 2,858 ms. Clock-out timestamp errors: logout 4.8 s, tab close 4.7 s, network loss 4.9 s.
+Two devices: 62 s union = 62 s net; zero double counting. API logout took 136 ms; reset across
+two logins with NOTIFY suppressed took 189.3 ms; admin session revoke without NOTIFY took
+51.2 ms. These are local results; CI wiring now preserves measurement logs but remote CI
+has not been run for the follow-up commits. Shared-auth-session logout scope remains pending
+owner clarification, as explained in the linked report.
