@@ -56,10 +56,12 @@ describe('RedisLock', () => {
   });
 
   it('a long critical section keeps its lock by renewal', async () => {
-    const holder = new RedisLock(a, { ttlMs: 200, waitMs: 2000 });
-    const other = new RedisLock(b, { ttlMs: 200, waitMs: 100 });
-    const long = holder.run('k3', () => wait(700));
-    await wait(450); // well past one TTL
+    // Renewal runs every ttl/3. A 2-CPU CI runner with four test files in parallel can stall the event
+    // loop for more than the 133 ms margin a 200 ms TTL leaves, so the TTL is 1 s here (margin 667 ms).
+    const holder = new RedisLock(a, { ttlMs: 1000, waitMs: 2000 });
+    const other = new RedisLock(b, { ttlMs: 1000, waitMs: 100 });
+    const long = holder.run('k3', () => wait(3000));
+    await wait(2200); // well past two TTLs
     await assert.rejects(other.run('k3', async () => undefined), LockTimeoutError);
     await long;
   });
