@@ -9,8 +9,8 @@
 
 ## 1. CI pipeline
 
-**Result: green.** Run 39004215115 on `f30ad7a`: every job succeeded.
-- **test:** 677/677 API tests, 10/10 desktop-agent tests, Playwright 56 passed and 2 skipped (the real-Egress recording spec, which needs `LIVEKIT_EGRESS=1` and passes locally).
+**Result: green.** Run 39016661861 on `2f07a7a` (after the section 7 fixes): every job succeeded.
+- **test:** 700/700 API tests (coverage 97.0 % lines, 80.8 % branches, 95.3 % functions), 10/10 desktop-agent tests, Playwright 62 passed and 2 skipped (the real-Egress recording spec, which needs `LIVEKIT_EGRESS=1` and passes locally). The run before it, 39016184013 on `53d6c44`, failed one pre-existing timing test (`RedisLock` › "a long critical section keeps its lock by renewal": a 200 ms lock TTL left a 133 ms renewal margin that the 2-CPU runner missed under four parallel test files); the test now uses a 1 s TTL (`2f07a7a`), the lock code is unchanged.
 - **Other jobs:** Terraform, container images, and the Linux, macOS and Windows agent installers.
 
 The CI Pipeline went red from commit `bb008cd` (run 38992234570) onwards. Each failure was hiding the next, because the job stops at its first failing step. That push carried every commit after `28f74ea`, the last green run, so the meetings, chat, office, desktop-agent and recording slices had never been through the later CI steps.
