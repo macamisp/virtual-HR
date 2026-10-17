@@ -113,6 +113,15 @@ jobs:
             server -ip=127.0.0.1 -ip.bind=0.0.0.0 -dir=/data -s3 -s3.port=8333 -s3.config=/etc/s3.json
           docker run -d --name clamav -p 3310:3310 clamav/clamav:1.4
 
+      # ADR 016: test/meetings-e2e.test.ts checks that a real LiveKit accepts the tokens the API issues.
+      # Same dev config as docker-compose (dev key only; LiveKit reaches the redis service on 6379).
+      - name: Start LiveKit
+        run: |
+          docker run -d --name livekit --network host -v "$GITHUB_WORKSPACE/infra/livekit/livekit.dev.yaml:/etc/livekit.yaml:ro" \
+            livekit/livekit-server:v1.9.1 --config /etc/livekit.yaml
+          for i in $(seq 1 30); do curl -sf http://localhost:7880 >/dev/null && exit 0; sleep 2; done
+          docker logs livekit; exit 1
+
       - name: Validate Prisma schema and generate client
         run: |
           npx prisma validate --schema apps/api/prisma/schema.prisma
