@@ -6,8 +6,8 @@ import { RequireAnyPermission, RequirePermissions } from '../common/decorators/p
 import { ReqContext } from '../common/decorators/request-context.decorator.ts';
 import type { RequestContext } from '../common/decorators/request-context.decorator.ts';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.ts';
-import { Permission } from '../../../../packages/shared/src/index.ts';
-import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
+import { Permission, RecordingSettingsSchema } from '../../../../packages/shared/src/index.ts';
+import type { AuthenticatedUser, RecordingSettings } from '../../../../packages/shared/src/index.ts';
 import {
   AssignRoleDtoSchema,
   ConsentDtoSchema,
@@ -65,6 +65,18 @@ export class AdminController {
   @RequirePermissions(Permission.ORG_MANAGE)
   updateRetention(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(RetentionSettingsSchema)) dto: RetentionSettings) {
     return this.admin.updateRetention(user, dto);
+  }
+
+  @Get('admin/recording')
+  @RequirePermissions(Permission.ORG_MANAGE)
+  recording(@CurrentUser() user: AuthenticatedUser) {
+    return this.admin.recordingSettings(user);
+  }
+
+  @Put('admin/recording')
+  @RequirePermissions(Permission.ORG_MANAGE)
+  updateRecording(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(RecordingSettingsSchema)) dto: RecordingSettings) {
+    return this.admin.updateRecordingSettings(user, dto);
   }
 
   @Get('admin/roles')

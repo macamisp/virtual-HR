@@ -160,7 +160,8 @@ describe('Administration (FR-ADM-001, 002, 004, 006; FR-AUD-004)', { concurrency
     it('shows each data type, refuses out-of-range values and audits changes', async () => {
       const r = await ok<RetentionOverview>(await api('admin', '/admin/retention'), 200);
       assert.equal(r.presenceDays, 45);
-      assert.ok(r.notAvailable.length >= 2, 'recordings and chat are listed as not available');
+      assert.deepEqual(r.notAvailable, ['Chat messages'], 'recordings have their own retention now (ADR 024); chat is not yet available');
+      assert.equal(r.recordingsDays, 90);
       assert.equal((await api('admin', '/admin/retention', { method: 'PUT', body: { presenceDays: 5, notificationsDays: 365 } })).status, 400);
       assert.equal((await api('hr', '/admin/retention')).status, 200, 'HR holds org.manage');
       assert.equal((await api('lead', '/admin/retention')).status, 403);

@@ -5,7 +5,8 @@ import { OfficeRegistry } from '../office/office-registry.ts';
 import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import type { MediaToken } from '../../../../packages/shared/src/meetings/types.ts';
-import { accessToken, liveKitConfig, orgOfRoomName, roomNames } from './livekit.ts';
+import { accessToken, liveKitConfig, orgOfRoomName, parseEgressInfo, roomNames } from './livekit.ts';
+import { RecordingsService } from '../meetings/recordings.service.ts';
 import type { VideoGrant } from './livekit.ts';
 
 const PUBLISH: VideoGrant['canPublishSources'] = ['camera', 'microphone', 'screen_share', 'screen_share_audio'];
@@ -15,6 +16,7 @@ export interface WebhookEvent {
   id?: string;
   room?: { name?: string; sid?: string };
   participant?: { identity?: string; sid?: string };
+  egressInfo?: unknown;
 }
 
 /**
@@ -30,6 +32,7 @@ export class MediaService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly registry: OfficeRegistry,
+    private readonly recordings: RecordingsService,
   ) {}
 
   private sign(user: AuthenticatedUser, name: string, room: string, label: string, canModerate: boolean, meetingId: string | null): MediaToken {
@@ -76,12 +79,22 @@ export class MediaService {
   // ---------------------------------------------------------------- webhooks (FR-MEET-009)
 
   async handleWebhook(e: WebhookEvent): Promise<void> {
+    // FR-MEET-007 (ADR 024): Egress reports on recordings; the room name carries the organisation.
+    if (e.event.startsWith('egress_')) {
+      const info = parseEgressInfo(e.egressInfo);
+      const owner = info ? orgOfRoomName(info.roomName) : null;
+      if (!info || owner?.kind !== 'meeting') return;
+      const done = await this.prisma.runWithTenantContext(owner.orgId, (db) => this.recordings.onEgress(db, owner.orgId, info));
+      if (done) await this.recordings.afterEgress(owner.orgId, done);
+      return;
+    }
     const roomName = e.room?.name;
     if (!roomName) return;
     const owner = orgOfRoomName(roomName);
     if (!owner || owner.kind === 'proximity') return; // proximity talk is credited through inCall only
     const userId = e.participant?.identity;
     const sid = e.participant?.sid;
+    let joined: string | null = null;
     await this.prisma.runWithTenantContext(owner.orgId, async (db) => {
       const meetingId = owner.kind === 'office'
         ? await this.liveRoomMeeting(db, owner.orgId, roomName, e.event === 'participant_joined' ? userId : undefined)
@@ -95,6 +108,7 @@ export class MediaService {
           `INSERT INTO meeting_participants (org_id, meeting_id, user_id, livekit_sid, joined_at) VALUES ($1, $2, $3, $4, now()) ON CONFLICT (meeting_id, livekit_sid) DO NOTHING`,
           [owner.orgId, meetingId, userId, sid],
         );
+        if (owner.kind === 'meeting') joined = meetingId;
       } else if (e.event === 'participant_left' && sid) {
         await db.query(
           `UPDATE meeting_participants SET left_at = now(), duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM (now() - joined_at)))::int
@@ -114,6 +128,8 @@ export class MediaService {
         );
       }
     });
+    // Someone in the call who has not agreed to a running recording is removed (ADR 024).
+    if (joined && userId) await this.recordings.enforceOnJoin(owner.orgId, joined, userId, roomName);
   }
 
   /** The live ROOM meeting of an office room, created on the first join. */

@@ -10,7 +10,7 @@ import {
   ROLE_PERMISSIONS,
   UserRole,
 } from '../../../../packages/shared/src/auth/types.ts';
-import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
+import type { AuthenticatedUser, RecordingSettings } from '../../../../packages/shared/src/index.ts';
 import type {
   AdminUserRow,
   AssignRoleDto,
@@ -68,7 +68,7 @@ function withoutTimezone(p: OrgPolicy & { timezone: string; presenceRetentionDay
 }
 
 /** Data types in FR-ADM-004 that this release does not store yet. */
-const NOT_AVAILABLE = ['Meeting recordings', 'Chat messages'];
+const NOT_AVAILABLE = ['Chat messages'];
 
 /**
  * FR-ADM-001 policy, FR-ADM-002 roles and permissions, FR-ADM-004 retention (ADR 011). Every
@@ -124,14 +124,15 @@ export class AdminService {
 
   async retention(user: AuthenticatedUser): Promise<RetentionOverview> {
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      const org = await db.query<{ retention_presence_days: number; retention_notifications_days: number }>(
-        `SELECT retention_presence_days, retention_notifications_days FROM organizations WHERE id = $1`,
+      const org = await db.query<{ retention_presence_days: number; retention_notifications_days: number; retention_recordings_days: number }>(
+        `SELECT retention_presence_days, retention_notifications_days, retention_recordings_days FROM organizations WHERE id = $1`,
         [user.orgId],
       );
       const rules = await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM document_retention_rules`);
       return {
         presenceDays: org.rows[0]!.retention_presence_days,
         notificationsDays: org.rows[0]!.retention_notifications_days,
+        recordingsDays: org.rows[0]!.retention_recordings_days,
         documentRules: rules.rows[0]!.n,
         notAvailable: NOT_AVAILABLE,
       };
@@ -141,14 +142,32 @@ export class AdminService {
   async updateRetention(user: AuthenticatedUser, dto: RetentionSettings): Promise<RetentionOverview> {
     const before = await this.retention(user);
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      await db.query(`UPDATE organizations SET retention_presence_days = $2, retention_notifications_days = $3 WHERE id = $1`, [user.orgId, dto.presenceDays, dto.notificationsDays]);
+      await db.query(`UPDATE organizations SET retention_presence_days = $2, retention_notifications_days = $3, retention_recordings_days = COALESCE($4, retention_recordings_days) WHERE id = $1`,
+        [user.orgId, dto.presenceDays, dto.notificationsDays, dto.recordingsDays ?? null]);
       await appendAuditEntry(db, {
         orgId: user.orgId, actorId: user.id, action: 'RETENTION_SETTINGS_UPDATED', entityType: 'ORGANIZATION', entityId: user.orgId,
-        before: { presenceDays: before.presenceDays, notificationsDays: before.notificationsDays }, after: dto,
+        before: { presenceDays: before.presenceDays, notificationsDays: before.notificationsDays, recordingsDays: before.recordingsDays }, after: dto,
       });
     });
     this.attendance.invalidatePolicy(user.orgId);
     return await this.retention(user);
+  }
+
+  // ---------------------------------------------------------------- FR-MEET-007 recording switch (ADR 024)
+
+  async recordingSettings(user: AuthenticatedUser): Promise<RecordingSettings> {
+    return await this.prisma.runWithTenantContext(user.orgId, async (db) => ({
+      enabled: (await db.query<{ recording_enabled: boolean }>(`SELECT recording_enabled FROM organizations WHERE id = $1`, [user.orgId])).rows[0]!.recording_enabled,
+    }));
+  }
+
+  async updateRecordingSettings(user: AuthenticatedUser, dto: RecordingSettings): Promise<RecordingSettings> {
+    const before = await this.recordingSettings(user);
+    await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      await db.query(`UPDATE organizations SET recording_enabled = $2 WHERE id = $1`, [user.orgId, dto.enabled]);
+      await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'RECORDING_SETTINGS_UPDATED', entityType: 'ORGANIZATION', entityId: user.orgId, before, after: dto });
+    });
+    return await this.recordingSettings(user);
   }
 
   // ---------------------------------------------------------------- FR-ADM-002

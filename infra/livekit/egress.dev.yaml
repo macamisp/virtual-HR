@@ -1,0 +1,11 @@
+# Local development LiveKit Egress (ADR 024): composite meeting recordings. Started only with
+# `docker compose --profile recording up -d`. Never used in production (LiveKit Cloud Egress is).
+# The upload target and its credentials come with each request from the API (a staging prefix only).
+api_key: hrvo-dev
+api_secret: hrvo-dev-secret-change-me-0123456789abcdef  # gitleaks:allow (local dev key)
+ws_url: ws://127.0.0.1:7880
+redis:
+  address: 127.0.0.1:6379
+  db: 5
+health_port: 9091
+log_level: info

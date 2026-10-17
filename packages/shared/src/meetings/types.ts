@@ -3,6 +3,7 @@
  * ADR 016.
  */
 import { z } from 'zod';
+import { RecordingSchema } from './recording.ts';
 
 const isoDate = z.string().datetime({ offset: true });
 
@@ -128,6 +129,10 @@ export const MeetingSchema = z.object({
   myRole: z.enum(['HOST', 'COHOST', 'ATTENDEE', 'NONE']),
   canEdit: z.boolean(),
   version: z.number().int(),
+  /** FR-MEET-007: the recording being asked for, running or processing, if any (drives the banner). */
+  recording: RecordingSchema.nullable(),
+  /** The organisation allows recording and this viewer may start one. */
+  canRecord: z.boolean(),
 });
 export type Meeting = z.infer<typeof MeetingSchema>;
 
@@ -149,6 +154,8 @@ export const JoinResultSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('READY'), token: MediaTokenSchema }),
   z.object({ status: z.literal('WAITING'), message: z.string() }),
   z.object({ status: z.literal('DENIED'), message: z.string() }),
+  /** FR-MEET-007: the meeting is being recorded (or about to be); answer before joining. */
+  z.object({ status: z.literal('CONSENT_REQUIRED'), recordingId: z.string(), message: z.string() }),
 ]);
 export type JoinResult = z.infer<typeof JoinResultSchema>;
 

@@ -42,6 +42,39 @@ resource "aws_s3_bucket_lifecycle_configuration" "documents" {
     noncurrent_version_expiration { noncurrent_days = 90 }
     abort_incomplete_multipart_upload { days_after_initiation = 2 }
   }
+  # ADR 024: plaintext recordings from Egress live here only until the API has encrypted them.
+  # Leftovers and their old versions disappear quickly.
+  rule {
+    id     = "recording-staging"
+    status = "Enabled"
+    filter { prefix = "_recordings_staging/" }
+    expiration { days = 2 }
+    noncurrent_version_expiration { noncurrent_days = 1 }
+    abort_incomplete_multipart_upload { days_after_initiation = 1 }
+  }
+}
+
+# ADR 024: LiveKit Cloud Egress uploads with this user's key. It can only put objects under the
+# staging prefix (no read, list or delete) and encrypt them with the bucket key through S3.
+resource "aws_iam_user" "recording_egress" {
+  count = var.recording_enabled ? 1 : 0
+  name  = "${local.name}-recording-egress"
+  tags  = local.tags
+}
+
+resource "aws_iam_user_policy" "recording_egress" {
+  count = var.recording_enabled ? 1 : 0
+  user  = aws_iam_user.recording_egress[0].name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Sid = "PutStagingOnly", Effect = "Allow", Action = ["s3:PutObject", "s3:AbortMultipartUpload"], Resource = "${aws_s3_bucket.documents.arn}/_recordings_staging/*" },
+      {
+        Sid       = "EncryptViaS3", Effect = "Allow", Action = ["kms:GenerateDataKey", "kms:Encrypt"], Resource = aws_kms_key.data.arn,
+        Condition = { StringEquals = { "kms:ViaService" = "s3.${data.aws_region.current.region}.amazonaws.com" } }
+      },
+    ]
+  })
 }
 
 # Browsers upload straight to S3 with presigned URLs (ADR 009): only from the web app's origin.

@@ -8,6 +8,7 @@ import { CalendarPlus, ListTodo, MicOff, UserMinus, Users } from 'lucide-react';
 import type { Meeting } from '@hrvo/shared';
 import { CallView, useSession } from '@/components/media/call-view';
 import { PreJoin } from '@/components/media/prejoin';
+import { ConsentNotice, InCallConsent, RecordControls, RecordingBanner, RecordingsCard } from '@/components/media/recording-ui';
 import { AccessDenied, EmptyState, ErrorState, LoadingState } from '@/components/state-views';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -28,8 +29,9 @@ import {
 } from '@/lib/meeting-queries';
 import { Permission, useCan } from '@/lib/permissions';
 import { onUiEvent } from '@/lib/ui-socket';
+import { answerRecording, recordingKeys } from '@/lib/recording-queries';
 
-type Phase = 'idle' | 'prejoin' | 'joining' | 'waiting' | 'denied' | 'call';
+type Phase = 'idle' | 'prejoin' | 'joining' | 'waiting' | 'denied' | 'consent' | 'call';
 const name = (p: { displayName: string | null; email: string }) => p.displayName ?? p.email;
 
 /** FR-MEET-005: hosts and co-hosts admit or decline people waiting in the lobby. */
@@ -58,8 +60,8 @@ function LobbyPanel({ meetingId }: { meetingId: string }) {
   );
 }
 
-/** FR-MEET-005: host controls (mute everyone, remove a participant). */
-function HostControls({ meetingId, session }: { meetingId: string; session: MediaSession }) {
+/** FR-MEET-005: host controls (mute everyone, remove a participant); FR-MEET-007 recording. */
+function HostControls({ meetingId, session, meeting }: { meetingId: string; session: MediaSession; meeting: CallMeeting }) {
   useSession(session);
   const muteAll = useMuteAll(meetingId);
   const remove = useRemoveParticipant(meetingId);
@@ -68,6 +70,7 @@ function HostControls({ meetingId, session }: { meetingId: string; session: Medi
   const others = session.tiles().filter((t) => !t.isLocal);
   return (
     <>
+      <RecordControls meetingId={meetingId} recording={meeting.recording} canRecord={meeting.canRecord} />
       <Button size="sm" variant="outline" disabled={muteAll.isPending} onClick={() => muteAll.mutate()}><MicOff aria-hidden="true" /> Mute all</Button>
       {others.length ? (
         <span className="flex items-center gap-1">
@@ -82,7 +85,7 @@ function HostControls({ meetingId, session }: { meetingId: string; session: Medi
 }
 
 /** Join flow: pre-join device check, then READY / lobby WAITING / DENIED, then the call. */
-type CallMeeting = Pick<Meeting, 'id' | 'title' | 'status' | 'type' | 'myRole'>;
+type CallMeeting = Pick<Meeting, 'id' | 'title' | 'status' | 'type' | 'myRole' | 'recording' | 'canRecord'>;
 
 function MeetingCall({ meeting, autoStart, onChange }: { meeting: CallMeeting; autoStart: boolean; onChange?: () => void }) {
   const [phase, setPhase] = useState<Phase>(autoStart ? 'prejoin' : 'idle');
@@ -90,6 +93,9 @@ function MeetingCall({ meeting, autoStart, onChange }: { meeting: CallMeeting; a
   const [session] = useState(() => new MediaSession());
   const prefs = useRef<DevicePrefs | null>(null);
   const moderator = meeting.myRole === 'HOST' || meeting.myRole === 'COHOST';
+  const qc = useQueryClient();
+  const [consentFor, setConsentFor] = useState<string | null>(null);
+  const [answering, setAnswering] = useState(false);
 
   const attempt = async () => {
     setPhase('joining');
@@ -100,6 +106,10 @@ function MeetingCall({ meeting, autoStart, onChange }: { meeting: CallMeeting; a
         setPhase('call');
         onChange?.();
         await session.connect(r.token, prefs.current!);
+      } else if (r.status === 'CONSENT_REQUIRED') {
+        // FR-MEET-007: the call is being recorded; nobody joins without agreeing first.
+        setConsentFor(r.recordingId);
+        setPhase('consent');
       } else {
         setMessage(r.message);
         setPhase(r.status === 'WAITING' ? 'waiting' : 'denied');
@@ -116,8 +126,21 @@ function MeetingCall({ meeting, autoStart, onChange }: { meeting: CallMeeting; a
       if (e.meetingId !== meeting.id) return;
       if (e.admit) void attempt(); else { setMessage('The host did not let you in.'); setPhase('denied'); }
     });
-    const offRemoved = onUiEvent<{ meetingId: string }>('meeting:removed', (e) => { if (e.meetingId === meeting.id) { void session.disconnect(); setMessage('You were removed by the host.'); setPhase('denied'); } });
-    return () => { offDecision(); offRemoved(); };
+    const offRemoved = onUiEvent<{ meetingId: string; reason?: string }>('meeting:removed', (e) => {
+      if (e.meetingId !== meeting.id) return;
+      void session.disconnect();
+      setMessage(e.reason === 'RECORDING_CONSENT' ? 'This meeting is being recorded and you had not agreed. Join again to answer.' : 'You were removed by the host.');
+      setPhase('denied');
+    });
+    // FR-MEET-007: recording requests and state changes refresh the banner and the list.
+    const refresh = (e: { meetingId: string }) => {
+      if (e.meetingId !== meeting.id) return;
+      onChange?.();
+      void qc.invalidateQueries({ queryKey: recordingKeys.list(meeting.id) });
+    };
+    const offRec = onUiEvent<{ meetingId: string }>('meeting:recording', refresh);
+    const offAsk = onUiEvent<{ meetingId: string }>('meeting:recording-consent', refresh);
+    return () => { offDecision(); offRemoved(); offRec(); offAsk(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meeting.id]);
   useEffect(() => () => { void session.disconnect(); }, [session]);
@@ -126,7 +149,19 @@ function MeetingCall({ meeting, autoStart, onChange }: { meeting: CallMeeting; a
   if (meeting.type === 'ROOM') return <Alert><AlertDescription>This is a room meeting. <Link className="underline" href="/office">Walk into the room in the office</Link> to join.</AlertDescription></Alert>;
   return (
     <div className="space-y-3">
+      <RecordingBanner recording={meeting.recording} />
+      {phase === 'call' ? <InCallConsent meetingId={meeting.id} recording={meeting.recording} /> : null}
       {moderator && phase === 'call' ? <LobbyPanel meetingId={meeting.id} /> : null}
+      {phase === 'consent' && consentFor ? (
+        <ConsentNotice joining busy={answering} error={message} onAnswer={(granted) => {
+          setAnswering(true);
+          setMessage(null);
+          answerRecording(consentFor, granted)
+            .then(() => { if (granted) void attempt(); else { setPhase('idle'); } })
+            .catch((e: unknown) => setMessage(e instanceof Error ? e.message : 'Could not save your answer'))
+            .finally(() => setAnswering(false));
+        }} />
+      ) : null}
       {phase === 'idle' ? <Button onClick={() => setPhase('prejoin')}>{meeting.myRole === 'NONE' ? 'Ask to join' : 'Join meeting'}</Button> : null}
       {phase === 'prejoin' ? <PreJoin title={`Join “${meeting.title}”`} onCancel={() => setPhase('idle')} onJoin={(p) => { prefs.current = p; void attempt(); }} /> : null}
       {phase === 'joining' ? <p role="status" className="text-sm text-muted-foreground">Joining…</p> : null}
@@ -136,7 +171,7 @@ function MeetingCall({ meeting, autoStart, onChange }: { meeting: CallMeeting; a
       {phase === 'denied' ? <Alert variant="destructive" data-testid="join-denied"><AlertDescription>{message}</AlertDescription></Alert> : null}
       {phase === 'call' ? (
         <CallView session={session} onLeave={() => { void session.disconnect(); setPhase('idle'); }}
-          extraControls={moderator ? <HostControls meetingId={meeting.id} session={session} /> : null} />
+          extraControls={moderator ? <HostControls meetingId={meeting.id} session={session} meeting={meeting} /> : null} />
       ) : null}
     </div>
   );
@@ -253,7 +288,7 @@ function MeetingPage({ id }: { id: string }) {
       <div className="space-y-3">
         <h1 className="text-2xl font-semibold">Join a meeting</h1>
         <p className="text-sm text-muted-foreground">You were not invited to this meeting. You can ask to join; a host decides whether to let you in.</p>
-        <MeetingCall meeting={{ id, title: 'this meeting', status: 'SCHEDULED', type: 'INSTANT', myRole: 'NONE' }} autoStart={params.get('join') === '1'} />
+        <MeetingCall meeting={{ id, title: 'this meeting', status: 'SCHEDULED', type: 'INSTANT', myRole: 'NONE', recording: null, canRecord: false }} autoStart={params.get('join') === '1'} />
       </div>
     );
   }
@@ -273,6 +308,7 @@ function MeetingPage({ id }: { id: string }) {
         <Card><CardHeader><CardTitle className="text-base">Notes</CardTitle></CardHeader><CardContent><Notes meeting={m} /></CardContent></Card>
         <Card><CardHeader><CardTitle className="text-base">Action items</CardTitle></CardHeader><CardContent><ActionItems meeting={m} /></CardContent></Card>
       </div>
+      {m.type !== 'ROOM' ? <RecordingsCard meetingId={m.id} /> : null}
       {m.status === 'ENDED' && !m.participants.length ? <EmptyState title="Nobody joined this meeting" /> : null}
     </div>
   );

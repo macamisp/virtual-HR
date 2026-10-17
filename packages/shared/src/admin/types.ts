@@ -58,12 +58,15 @@ export type AttendanceGuards = z.infer<typeof AttendanceGuardsSchema>;
 export const RETENTION_LIMITS = {
   presenceDays: { min: 30, max: 730 },
   notificationsDays: { min: 30, max: 1825 },
+  recordingsDays: { min: 7, max: 3650 },
 } as const;
 
 export const RetentionSettingsSchema = z
   .object({
     presenceDays: z.number().int().min(RETENTION_LIMITS.presenceDays.min).max(RETENTION_LIMITS.presenceDays.max),
     notificationsDays: z.number().int().min(RETENTION_LIMITS.notificationsDays.min).max(RETENTION_LIMITS.notificationsDays.max),
+    /** Optional so older clients keep working; the current value is kept when it is left out. */
+    recordingsDays: z.number().int().min(RETENTION_LIMITS.recordingsDays.min).max(RETENTION_LIMITS.recordingsDays.max).optional(),
   })
   .strict();
 export type RetentionSettings = z.infer<typeof RetentionSettingsSchema>;
@@ -71,6 +74,7 @@ export type RetentionSettings = z.infer<typeof RetentionSettingsSchema>;
 export const RetentionOverviewSchema = z.object({
   presenceDays: z.number().int(),
   notificationsDays: z.number().int(),
+  recordingsDays: z.number().int(),
   /** Document categories with a rule (FR-DOC-017); set on the documents retention page. */
   documentRules: z.number().int(),
   /** Data types that do not exist yet in this release. */

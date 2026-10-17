@@ -10,6 +10,11 @@ rtc:
   # plus a loopback candidate for working offline. A fixed 127.0.0.1 failed once the machine had a
   # LAN address, because a loopback socket cannot reach it.
   enable_loopback_candidate: true
+# ADR 024: Egress (meeting recording) talks to LiveKit through Redis. Database 5 keeps it apart
+# from BullMQ and the coordination keys.
+redis:
+  address: 127.0.0.1:6379
+  db: 5
 # Dev key pair; the API reads the same values from LIVEKIT_API_KEY / LIVEKIT_API_SECRET.
 keys:
   hrvo-dev: hrvo-dev-secret-change-me-0123456789abcdef  # gitleaks:allow (local dev key)

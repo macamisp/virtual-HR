@@ -25,6 +25,11 @@ variable "cloudflare_zone_id" { type = string }
 variable "alert_emails" { type = list(string) }
 variable "image_tag" { type = string }
 variable "livekit_url" { type = string }
+variable "recording_enabled" {
+  description = "ADR 024: prepare meeting recording (upload-only IAM user, secrets)."
+  type        = bool
+  default     = false
+}
 
 provider "aws" {
   region              = "ap-southeast-1"
@@ -43,6 +48,7 @@ module "platform" {
   alert_emails             = var.alert_emails
   image_tag                = var.image_tag
   livekit_url              = var.livekit_url
+  recording_enabled        = var.recording_enabled
   nat_per_az               = true
   db_instance_class        = "db.m7g.large"
   db_allocated_storage_gb  = 100

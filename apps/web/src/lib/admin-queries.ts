@@ -12,9 +12,10 @@ import {
   MyAccessSchema,
   OrgPolicySchema,
   RetentionOverviewSchema,
+  RecordingSettingsSchema,
   RolesOverviewSchema,
 } from '@hrvo/shared';
-import type { AssignRoleDto, ConsentDto, CustomRoleDto, OrgPolicy, RetentionSettings } from '@hrvo/shared';
+import type { AssignRoleDto, ConsentDto, CustomRoleDto, OrgPolicy, RecordingSettings, RetentionSettings } from '@hrvo/shared';
 import { apiFetch } from './api';
 import { useAuthStore } from './auth-store';
 
@@ -24,6 +25,7 @@ export const adminKeys = {
   access: ['me', 'access'] as const,
   policy: ['admin', 'policy'] as const,
   retention: ['admin', 'retention'] as const,
+  recording: ['admin', 'recording'] as const,
   roles: ['admin', 'roles'] as const,
   users: ['admin', 'users'] as const,
   audit: (q: string) => ['audit', 'list', q] as const,
@@ -149,5 +151,18 @@ export function useUserConsents(userId: string) {
     queryKey: adminKeys.userConsents(userId),
     queryFn: () => apiFetch(`/admin/users/${encodeURIComponent(userId)}/consents`, { schema: ConsentListSchema }),
     enabled: useSignedIn() && !!userId,
+  });
+}
+
+/** FR-MEET-007 (ADR 024): meeting recording is off unless an admin turns it on. */
+export function useRecordingSettings() {
+  return useQuery({ queryKey: adminKeys.recording, queryFn: () => apiFetch('/admin/recording', { schema: RecordingSettingsSchema }), enabled: useSignedIn() });
+}
+
+export function useSaveRecordingSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (dto: RecordingSettings) => apiFetch('/admin/recording', { method: 'PUT', body: dto, schema: RecordingSettingsSchema }),
+    onSuccess: (r) => { qc.setQueryData(adminKeys.recording, r); void qc.invalidateQueries({ queryKey: ['meetings'] }); },
   });
 }

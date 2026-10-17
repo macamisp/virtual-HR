@@ -39,6 +39,7 @@ export interface VideoGrant {
   canPublishSources?: Array<'camera' | 'microphone' | 'screen_share' | 'screen_share_audio'>;
   canUpdateOwnMetadata?: boolean;
   hidden?: boolean;
+  roomRecord?: boolean;
 }
 
 /** A participant token: identity = user id, short-lived, scoped to exactly one room. */
@@ -86,6 +87,91 @@ export async function roomService<T>(cfg: LiveKitConfig, method: 'ListParticipan
   });
   if (!res.ok) throw new Error(`LiveKit ${method} failed (${res.status})`);
   return (await res.json()) as T;
+}
+
+/** Where Egress uploads the plaintext MP4 (a staging prefix only; the API encrypts it afterwards). */
+export interface EgressS3 {
+  accessKey: string;
+  secret: string;
+  region: string;
+  endpoint?: string;
+  bucket: string;
+  forcePathStyle: boolean;
+}
+
+/** LiveKit EgressInfo as JSON: Twirp answers with proto names, webhooks with camelCase. Both are read. */
+export interface LkEgressInfo {
+  egressId: string;
+  roomName: string;
+  status: string;
+  error?: string;
+  startedAt?: number;
+  endedAt?: number;
+  file?: { filename: string; size: number; durationSeconds: number; location?: string };
+}
+
+const pick = <T>(o: Record<string, unknown>, a: string, b: string): T | undefined => (o[a] ?? o[b]) as T | undefined;
+const STATUS_NAMES = ['EGRESS_STARTING', 'EGRESS_ACTIVE', 'EGRESS_ENDING', 'EGRESS_COMPLETE', 'EGRESS_FAILED', 'EGRESS_ABORTED', 'EGRESS_LIMIT_REACHED'];
+/** int64 times arrive as numbers or strings, in nanoseconds. */
+const nanos = (v: unknown): number | undefined => (v === undefined || v === null || v === '' || v === '0' || v === 0 ? undefined : Number(BigInt(String(v)) / 1_000_000n));
+
+export function parseEgressInfo(raw: unknown): LkEgressInfo | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const egressId = pick<string>(o, 'egress_id', 'egressId');
+  if (!egressId) return null;
+  const st = pick<string | number>(o, 'status', 'status');
+  const files = (pick<Array<Record<string, unknown>>>(o, 'file_results', 'fileResults') ?? []);
+  const legacy = pick<Record<string, unknown>>(o, 'file', 'file');
+  const f = files[0] ?? legacy;
+  return {
+    egressId,
+    roomName: pick<string>(o, 'room_name', 'roomName') ?? '',
+    status: typeof st === 'number' ? STATUS_NAMES[st] ?? 'UNKNOWN' : st ?? 'EGRESS_STARTING',
+    error: pick<string>(o, 'error', 'error') || undefined,
+    startedAt: nanos(pick(o, 'started_at', 'startedAt')),
+    endedAt: nanos(pick(o, 'ended_at', 'endedAt')),
+    file: f ? {
+      filename: String(f.filename ?? ''),
+      size: Number(f.size ?? 0),
+      durationSeconds: Math.round(Number(BigInt(String(f.duration ?? 0)) / 1_000_000n) / 1000),
+      location: f.location ? String(f.location) : undefined,
+    } : undefined,
+  };
+}
+
+/** Twirp call to the LiveKit Egress service (needs a token with roomRecord). */
+async function egressService(cfg: LiveKitConfig, method: 'StartRoomCompositeEgress' | 'StopEgress', room: string, body: Record<string, unknown>): Promise<LkEgressInfo> {
+  const { token } = accessToken(cfg, 'hrvo-api', 'HR Virtual Office', { room, roomRecord: true }, 60);
+  const res = await fetch(`${cfg.httpUrl}/twirp/livekit.Egress/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+  // Never echo the body: a failed start request may be about the upload credentials.
+  if (!res.ok) throw new Error(`LiveKit ${method} failed (${res.status})`);
+  const info = parseEgressInfo(await res.json());
+  if (!info) throw new Error(`LiveKit ${method} returned no egress`);
+  return info;
+}
+
+/** Composite (grid) recording of a room into one MP4 at `filepath` in the staging bucket. */
+export async function startRoomRecording(cfg: LiveKitConfig, room: string, filepath: string, s3: EgressS3): Promise<LkEgressInfo> {
+  return await egressService(cfg, 'StartRoomCompositeEgress', room, {
+    room_name: room,
+    layout: 'grid',
+    file_outputs: [{
+      file_type: 'MP4',
+      filepath,
+      disable_manifest: true,
+      s3: { access_key: s3.accessKey, secret: s3.secret, region: s3.region, endpoint: s3.endpoint ?? '', bucket: s3.bucket, force_path_style: s3.forcePathStyle },
+    }],
+  });
+}
+
+export async function stopRecording(cfg: LiveKitConfig, room: string, egressId: string): Promise<LkEgressInfo> {
+  return await egressService(cfg, 'StopEgress', room, { egress_id: egressId });
 }
 
 export interface LkParticipant {

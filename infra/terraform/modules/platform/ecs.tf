@@ -87,6 +87,7 @@ locals {
     [for s in aws_secretsmanager_secret.external : s.arn],
     [aws_db_instance.main.master_user_secret[0].secret_arn],
     [for s in aws_secretsmanager_secret.oauth : s.arn],
+    [for s in aws_secretsmanager_secret.recording : s.arn],
   )
 }
 
@@ -192,6 +193,8 @@ locals {
     DOCUMENT_KMS_PROVIDER        = "aws"
     DOCUMENT_KMS_KEY_ID          = aws_kms_key.documents.arn
     DOCUMENT_KMS_RECOVERY_KEY_ID = aws_kms_key.recovery.arn
+    RECORDING_S3_BUCKET          = aws_s3_bucket.documents.id
+    RECORDING_S3_REGION          = data.aws_region.current.region
   } : { name = k, value = v }]
 
   api_secrets = concat([
@@ -202,6 +205,7 @@ locals {
     { name = "LIVEKIT_API_KEY", valueFrom = aws_secretsmanager_secret.external["livekit-api-key"].arn },
     { name = "LIVEKIT_API_SECRET", valueFrom = aws_secretsmanager_secret.external["livekit-api-secret"].arn },
     ], [for k, s in aws_secretsmanager_secret.oauth : { name = "${upper(k)}_OAUTH_CLIENT_SECRET", valueFrom = s.arn }],
+    [for k, s in aws_secretsmanager_secret.recording : { name = upper(replace(k, "-", "_")), valueFrom = s.arn }],
   )
 }
 

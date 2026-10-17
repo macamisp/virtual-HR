@@ -5,3 +5,5 @@ cloudflare_zone_id = "<zone id>"
 alert_emails       = ["ops@example.com"]
 image_tag          = "<git sha>"
 livekit_url        = "wss://<project>.livekit.cloud"
+# ADR 024: true once the organisation wants meeting recording (then create the IAM key, see the runbook).
+recording_enabled  = false

@@ -12,6 +12,7 @@ output "documents_bucket" { value = aws_s3_bucket.documents.id }
 output "db_identifier" { value = aws_db_instance.main.identifier }
 output "secrets_to_fill" {
   description = "Secrets an operator sets once after the first apply (values never pass through Terraform)."
-  value       = merge({ for k, s in aws_secretsmanager_secret.external : k => s.name }, { for k, s in aws_secretsmanager_secret.oauth : "${k}-oauth-client-secret" => s.name })
+  value       = merge({ for k, s in aws_secretsmanager_secret.external : k => s.name }, { for k, s in aws_secretsmanager_secret.oauth : "${k}-oauth-client-secret" => s.name }, { for k, s in aws_secretsmanager_secret.recording : k => s.name })
 }
 output "alerts_topic" { value = aws_sns_topic.alerts.arn }
+output "recording_egress_user" { value = var.recording_enabled ? aws_iam_user.recording_egress[0].name : null }

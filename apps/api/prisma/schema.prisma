@@ -35,6 +35,10 @@ model Organization {
   attPaidBreakMinutes           Int                        @default(60) @map("att_paid_break_minutes")
   retentionPresenceDays         Int                        @default(90) @map("retention_presence_days")
   retentionNotificationsDays    Int                        @default(365) @map("retention_notifications_days")
+  /// FR-MEET-007 / SRS 13: meeting recording is off unless the organisation turns it on.
+  recordingEnabled              Boolean                    @default(false) @map("recording_enabled")
+  /// FR-ADM-004 / SRS 13: recordings are kept 90 days by default (7..3650).
+  retentionRecordingsDays       Int                        @default(90) @map("retention_recordings_days")
   createdAt                     DateTime                   @default(now()) @map("created_at") @db.Timestamptz()
   users                         User[]
   teams                         Team[]
@@ -117,6 +121,8 @@ model Organization {
 
   signatureRequests SignatureRequest[]
   signatureSigners  SignatureSigner[]
+  meetingRecordings MeetingRecording[]
+  recordingConsents RecordingConsent[]
 
   @@map("organizations")
 }
@@ -218,6 +224,8 @@ model User {
 
   signatureRequests SignatureRequest[] @relation("SignatureRequester")
   signatureSigners  SignatureSigner[]
+  meetingRecordings MeetingRecording[] @relation("RecordingStarter")
+  recordingConsents RecordingConsent[]
 
   @@map("users")
 }
@@ -1431,6 +1439,7 @@ model Meeting {
   actionItems  MeetingActionItem[]
 
   calendarEventLinks CalendarEventLink[]
+  recordings         MeetingRecording[]
 
   @@unique([livekitRoomName])
   @@index([orgId, status])
@@ -1795,4 +1804,63 @@ model SignatureSigner {
   @@id([requestId, userId])
   @@index([orgId, userId])
   @@map("signature_signers")
+}
+
+/// FR-MEET-007 (ADR 024): one recording of a meeting. Egress writes the plaintext MP4 to a staging
+/// key; the API encrypts it (envelope, KeyProvider purpose "recording") and deletes the staging copy.
+model MeetingRecording {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  meetingId       String    @map("meeting_id") @db.Uuid
+  startedBy       String    @map("started_by") @db.Uuid
+  /// CONSENT, RECORDING, PROCESSING, READY, FAILED, CANCELLED, DELETED
+  status          String    @default("CONSENT") @db.VarChar(12)
+  /// Everyone in the meeting when recording was requested, plus late joiners who were asked.
+  requiredUserIds String[]  @map("required_user_ids") @db.Uuid
+  consentDeadline DateTime  @map("consent_deadline") @db.Timestamptz()
+  egressId        String?   @unique @map("egress_id") @db.VarChar(64)
+  stagingKey      String?   @map("staging_key") @db.Text
+  storageKey      String?   @map("storage_key") @db.Text
+  dekWrapped      Bytes?    @map("dek_wrapped")
+  keyId           String?   @map("key_id") @db.VarChar(100)
+  iv              Bytes?
+  authTag         Bytes?    @map("auth_tag")
+  sha256          String?   @db.Char(64)
+  sizeBytes       BigInt?   @map("size_bytes")
+  durationSeconds Int?      @map("duration_seconds")
+  startedAt       DateTime? @map("started_at") @db.Timestamptz()
+  endedAt         DateTime? @map("ended_at") @db.Timestamptz()
+  expiresAt       DateTime? @map("expires_at") @db.Timestamptz()
+  detail          String?   @db.VarChar(300)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  meeting      Meeting            @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  starter      User               @relation("RecordingStarter", fields: [startedBy], references: [id], onDelete: Cascade)
+  consents     RecordingConsent[]
+
+  @@index([orgId, meetingId])
+  @@index([status, expiresAt])
+  @@map("meeting_recordings")
+}
+
+/// FR-MEET-007 / FR-AUD-004: the recorded-consent log. Append-only for the app.
+model RecordingConsent {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId         String   @map("org_id") @db.Uuid
+  recordingId   String   @map("recording_id") @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  granted       Boolean
+  noticeVersion String   @map("notice_version") @db.VarChar(20)
+  at            DateTime @default(now()) @db.Timestamptz()
+  ip            String?  @db.VarChar(64)
+  userAgent     String?  @map("user_agent") @db.VarChar(300)
+
+  organization Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  recording    MeetingRecording @relation(fields: [recordingId], references: [id], onDelete: Cascade)
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([recordingId, userId, at])
+  @@map("recording_consents")
 }

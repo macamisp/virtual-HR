@@ -92,3 +92,9 @@ variable "microsoft_oauth_client_id" {
   type        = string
   default     = ""
 }
+
+variable "recording_enabled" {
+  description = "ADR 024: create the upload-only IAM user and secrets LiveKit Cloud Egress needs for meeting recordings. Organisations still switch recording on themselves."
+  type        = bool
+  default     = false
+}

@@ -10,10 +10,12 @@ import { DocumentScannerService } from '../documents/document-scanner.service.ts
 import { DocumentMaintenanceService } from '../documents/document-maintenance.service.ts';
 import { CalendarService } from '../calendar/calendar.service.ts';
 import type { ScanDispatcher } from '../documents/scan-dispatcher.ts';
+import { RecordingsService } from '../meetings/recordings.service.ts';
+import type { RecordingDispatcher } from '../meetings/recording-dispatcher.ts';
 
 export const JOBS_QUEUE = 'hrvo-jobs';
 
-type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attendance-reconcile' | 'attendance-daily-close' | 'presence-retention' | 'timesheet-reminders' | 'document-maintenance' | 'deferred-emails' | 'attendance-alerts' | 'calendar-sync';
+type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attendance-reconcile' | 'attendance-daily-close' | 'presence-retention' | 'timesheet-reminders' | 'document-maintenance' | 'deferred-emails' | 'attendance-alerts' | 'calendar-sync' | 'recording-maintenance';
 
 /** Repeatable jobs. BullMQ job schedulers are de-duplicated in Redis, so N API instances run each tick once. */
 export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs: number }> = [
@@ -31,6 +33,8 @@ export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs: number }> =
   { name: 'attendance-alerts', everyMs: 5 * 60_000 },
   // ADR 023: Google/Outlook two-way sync.
   { name: 'calendar-sync', everyMs: 5 * 60_000 },
+  // ADR 024: unanswered recording requests, stuck processing, retention shredding.
+  { name: 'recording-maintenance', everyMs: 5 * 60_000 },
 ];
 
 export function jobsEnabled(): boolean {
@@ -52,7 +56,7 @@ function redisConnection(): ConnectionOptions {
  * sent inline.
  */
 @Injectable()
-export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatcher, ScanDispatcher {
+export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatcher, ScanDispatcher, RecordingDispatcher {
   private queue: Queue | null = null;
   private worker: Worker | null = null;
 
@@ -103,6 +107,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatch
       case 'attendance-alerts': return await work.attendanceAlerts(now);
       case 'calendar-sync': return await this.moduleRef.get(CalendarService, { strict: false }).syncAll();
       case 'document-maintenance': return await this.moduleRef.get(DocumentMaintenanceService, { strict: false }).run(now);
+      case 'recording-maintenance': return await this.moduleRef.get(RecordingsService, { strict: false }).maintenance(now);
+      case 'recording-process': {
+        const data = job.data as { orgId: string; recordingId: string };
+        return await this.moduleRef.get(RecordingsService, { strict: false }).process(data.orgId, data.recordingId);
+      }
       case 'document-scan': {
         const data = job.data as { orgId: string; versionId: string };
         return await this.moduleRef.get(DocumentScannerService, { strict: false }).process(data.orgId, data.versionId);
@@ -141,5 +150,15 @@ export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatch
       return;
     }
     await this.queue.add('document-scan', { orgId, versionId }, { jobId: `scan-${versionId}-${Date.now()}`, attempts: 6, backoff: { type: 'exponential', delay: 20_000 } });
+  }
+
+  /** ADR 024: encrypt a finished recording. Without Redis it runs in the background (not awaited). */
+  async dispatchRecording(orgId: string, recordingId: string): Promise<void> {
+    if (!this.queue) {
+      void this.moduleRef.get(RecordingsService, { strict: false }).process(orgId, recordingId)
+        .catch((err: unknown) => console.error('Recording processing failed:', err instanceof Error ? err.message : 'unknown error'));
+      return;
+    }
+    await this.queue.add('recording-process', { orgId, recordingId }, { jobId: `recording-${recordingId}-${Date.now()}`, attempts: 6, backoff: { type: 'exponential', delay: 20_000 } });
   }
 }

@@ -14,6 +14,7 @@ import type {
 } from '../../../../packages/shared/src/meetings/types.ts';
 import { MediaService } from '../media/media.service.ts';
 import { liveKitConfig, roomNames, roomService } from '../media/livekit.ts';
+import { RecordingsService } from './recordings.service.ts';
 import type { LkParticipant } from '../media/livekit.ts';
 import { buildIcs, nextOccurrence, rruleOf } from './ics.ts';
 import { CreateTaskDtoSchema } from '../../../../packages/shared/src/tasks/types.ts';
@@ -54,6 +55,7 @@ export class MeetingsService {
     private readonly gateway: AttendanceGateway,
     private readonly tasks: TasksService,
     @Inject(MAIL_TRANSPORT) private readonly mailer: MailTransport,
+    private readonly recordings: RecordingsService,
   ) {}
 
   private webUrl(): string {
@@ -130,6 +132,8 @@ export class MeetingsService {
          FROM meeting_action_items i LEFT JOIN users u ON u.id = i.assignee_id WHERE i.meeting_id = $1 ORDER BY i.created_at`, [id]);
       const ref = (p: { id: string; display_name: string | null; email: string }) => ({ id: p.id, displayName: p.display_name, email: p.email });
       const myRole = role === 'NONE' ? 'NONE' : role;
+      const recording = await this.recordings.active(db, user, m.id, role);
+      const canRecord = m.type !== 'ROOM' && (role === 'HOST' || role === 'COHOST') && (await this.recordings.enabled(db, user.orgId));
       return {
         id: m.id, type: m.type, status: m.status, title: m.title, agenda: m.agenda, notes: m.notes, host: ref(host), roomId: m.room_id,
         scheduledStart: iso(m.scheduled_start), scheduledEnd: iso(m.scheduled_end), startedAt: iso(m.started_at), endedAt: iso(m.ended_at),
@@ -141,6 +145,8 @@ export class MeetingsService {
         myRole,
         canEdit: this.moderates(role, user, m),
         version: m.version,
+        recording,
+        canRecord,
       };
     });
   }
@@ -284,9 +290,14 @@ export class MeetingsService {
       if (m.status === 'CANCELLED') return { kind: 'denied' as const, message: 'This meeting was cancelled' };
       if (m.status === 'ENDED' && !m.recurrence_rule && m.type === 'INSTANT') return { kind: 'denied' as const, message: 'This call has ended' };
       const role = await this.roleOf(db, m, user.id);
-      if (role !== 'NONE' || !m.lobby) return { kind: 'ready' as const, m, role };
+      // FR-MEET-007: nobody enters a call that is being recorded without agreeing first.
+      const ready = async () => {
+        const recordingId = await this.recordings.joinBlocker(db, id, user.id);
+        return recordingId ? { kind: 'consent' as const, recordingId } : { kind: 'ready' as const, m, role };
+      };
+      if (role !== 'NONE' || !m.lobby) return await ready();
       const entry = (await db.query<{ state: string }>(`SELECT state FROM meeting_lobby WHERE meeting_id = $1 AND user_id = $2`, [id, user.id])).rows[0];
-      if (entry?.state === 'ADMITTED') return { kind: 'ready' as const, m, role };
+      if (entry?.state === 'ADMITTED') return await ready();
       if (entry?.state === 'DENIED') return { kind: 'denied' as const, message: 'The host did not let you in' };
       if (!entry) await db.query(`INSERT INTO meeting_lobby (org_id, meeting_id, user_id) VALUES ($1, $2, $3)`, [user.orgId, id, user.id]);
       const hosts = (await db.query<{ user_id: string }>(`SELECT $2::uuid AS user_id UNION SELECT user_id FROM meeting_attendees WHERE meeting_id = $1 AND role = 'COHOST'`, [id, m.host_id])).rows.map((r) => r.user_id);
@@ -294,6 +305,7 @@ export class MeetingsService {
       return { kind: 'waiting' as const, hosts, name, title: m.title };
     });
     if (out.kind === 'denied') return { status: 'DENIED', message: out.message };
+    if (out.kind === 'consent') return { status: 'CONSENT_REQUIRED', recordingId: out.recordingId, message: 'This meeting is being recorded. Join only if you agree to be recorded.' };
     if (out.kind === 'waiting') {
       for (const h of out.hosts) this.gateway.notifyUser(h, 'meeting:lobby', { meetingId: id, userId: user.id, name: out.name, title: out.title });
       return { status: 'WAITING', message: 'Waiting for the host to let you in' };

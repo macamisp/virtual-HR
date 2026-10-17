@@ -17,6 +17,8 @@ const csp = [
   "style-src 'self' 'unsafe-inline'",
   // blob: = document previews, fetched with the access token and shown from memory.
   "img-src 'self' data: blob:",
+  // blob: = meeting recordings (ADR 024), decrypted by the API and played from memory.
+  "media-src 'self' blob:",
   "frame-src blob:",
   "font-src 'self'",
   `connect-src 'self' ${apiUrl} ${wsUrl} ${liveKitUrl} ${liveKitHttp}${storageUrl ? ` ${storageUrl}` : ''}${isDev ? ' ws://localhost:3000' : ''}`,

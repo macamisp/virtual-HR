@@ -52,6 +52,7 @@ export * from './reports/types.ts';
 export * from './privacy/types.ts';
 export * from './office/index.ts';
 export * from './meetings/types.ts';
+export * from './meetings/recording.ts';
 export * from './chat/types.ts';
 export * from './agent/types.ts';
 export * from './attendance/flags.ts';
