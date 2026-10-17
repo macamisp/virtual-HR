@@ -1,6 +1,6 @@
 /**
  * NFR-ACC-004 (SRS 6.5), written before the implementation: daily totals must be identical when
- * recomputed from the stored sessions, and a nightly replay job compares the stored
+ * recomputed from the recorded attendance inputs, and a nightly replay job compares the stored
  * attendance_daily row of every person with that recomputation and alerts HR on any difference
  * without touching the stored row.
  */
@@ -9,7 +9,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { SystemClock } from '../../../packages/shared/src/index.ts';
+import { DEFAULT_ATTENDANCE_CONFIG, SystemClock } from '../../../packages/shared/src/index.ts';
 import { PrismaService } from '../src/common/prisma.service.ts';
 import { AttendanceService } from '../src/attendance/attendance.service.ts';
 import { PostgresAttendanceRepository } from '../src/attendance/attendance-repository.ts';
@@ -32,13 +32,16 @@ describe('Nightly replay of daily totals (NFR-ACC-004)', { concurrency: false },
   let service: AttendanceService;
   let work: ScheduledWorkService;
 
-  async function session(userId: string, inAt: Date, outAt: Date, net: number, extra: Partial<{ active: number; idle: number; breakS: number; meeting: number }> = {}) {
+  async function session(userId: string, inAt: Date, outAt: Date, net: number) {
     const id = randomUUID();
     await admin.query(
       `INSERT INTO attendance_sessions (id, org_id, user_id, device_id, work_date, clock_in_at, clock_out_at, clock_in_source, clock_out_source,
          active_seconds, idle_seconds, break_seconds, meeting_seconds, net_seconds, last_heartbeat_at, ip_in, status, current_state)
        VALUES ($1, $2, $3, 'laptop', $4, $5, $6, 'AUTO_HEARTBEAT', 'LOGOUT', $7, $8, $9, $10, $11, $6, '10.0.0.1', 'CLOSED', 'OFFLINE')`,
-      [id, ORG, userId, DAY, inAt, outAt, extra.active ?? net, extra.idle ?? 0, extra.breakS ?? 0, extra.meeting ?? 0, net]);
+      [id, ORG, userId, DAY, inAt, outAt, net, 0, 0, 0, net]);
+    await admin.query(`INSERT INTO presence_events (org_id, user_id, session_id, server_ts, event_type, state, seq, meta)
+      VALUES ($1, $2, $3, $4, 'ATTENDANCE_INPUT', 'OFFLINE', 0, $5)`, [ORG, userId, id, outAt,
+      JSON.stringify({ version: 1, config: { ...DEFAULT_ATTENDANCE_CONFIG, orgTimezone: 'Asia/Colombo' }, input: { kind: 'correction', from: inAt.toISOString(), to: outAt.toISOString(), deviceId: 'laptop' } })]);
     return id;
   }
   const daily = async (userId: string) => (await admin.query(`SELECT * FROM attendance_daily WHERE org_id = $1 AND user_id = $2 AND work_date = $3`, [ORG, userId, DAY])).rows[0];
@@ -71,15 +74,16 @@ describe('Nightly replay of daily totals (NFR-ACC-004)', { concurrency: false },
     await admin.end();
   });
 
-  it('recomputing a day from its stored sessions matches the stored daily row exactly', async () => {
-    await session(U.emp, ts('09:05'), ts('12:30'), 3 * 3600 + 25 * 60, { active: 3 * 3600, idle: 25 * 60 });
-    await session(U.emp, ts('13:15'), ts('17:40'), 4 * 3600 + 25 * 60, { active: 4 * 3600 + 25 * 60 });
+  it('recomputing a day from its recorded attendance inputs matches the stored daily row exactly', async () => {
+    await session(U.emp, ts('09:05'), ts('12:30'), 3 * 3600 + 25 * 60);
+    await session(U.emp, ts('13:15'), ts('17:40'), 4 * 3600 + 25 * 60);
     const stored = await service.recomputeDailySummaryForUser(ORG, U.emp, DAY);
     assert.ok(stored);
+    await service.recomputeDailySummaryForUser(ORG, U.hr, DAY);
     const r = await service.replayDay(ORG, DAY);
-    assert.equal(r.users, 1);
+    assert.equal(r.users, 2);
     assert.deepEqual(r.mismatches, []);
-    console.log(`# NFR-ACC-004 replay ${DAY}: ${r.users} person, ${r.mismatches.length} differences (net ${stored!.netSeconds} s stored = recomputed)`);
+    console.log(`# NFR-ACC-004 replay ${DAY}: ${r.users} people, ${r.mismatches.length} differences (net ${stored!.netSeconds} s stored = recomputed)`);
   });
 
   it('a stored total that drifted from its sessions is reported field by field, and the stored row is left as it is', async () => {
@@ -93,6 +97,7 @@ describe('Nightly replay of daily totals (NFR-ACC-004)', { concurrency: false },
   });
 
   it('a person with sessions but no daily row is a difference too', async () => {
+    await admin.query(`DELETE FROM attendance_daily WHERE org_id = $1 AND user_id = $2`, [ORG, U.hr]);
     await session(U.hr, ts('10:00'), ts('11:00'), 3600);
     const r = await service.replayDay(ORG, DAY);
     assert.ok(r.mismatches.some((m) => m.userId === U.hr && m.field === 'row' && m.stored === 'missing'));
@@ -115,6 +120,8 @@ describe('Nightly replay of daily totals (NFR-ACC-004)', { concurrency: false },
     await service.runDailyCloseJob(ORG, DAY);
     const clean = await service.replayDay(ORG, DAY);
     assert.deepEqual(clean.mismatches, []);
-    assert.equal(await work.attendanceReplay(new Date(`${DAY}T22:30:00Z`)), 0);
+    await work.attendanceReplay(new Date(`${DAY}T22:30:00Z`));
+    // Other parallel suites own other tenants; assert this clean tenant remains quiet.
+    assert.equal((await admin.query(`SELECT count(*)::int AS n FROM notifications WHERE org_id = $1 AND type = 'ATTENDANCE_REPLAY_MISMATCH'`, [ORG])).rows[0].n, 1);
   });
 });

@@ -148,8 +148,10 @@ jobs:
           for i in $(seq 1 90); do docker logs clamav 2>&1 | grep -qE "Listening daemon|socket found, clamd started" && break; sleep 5; done
           docker logs clamav 2>&1 | tail -3
 
-      - name: Run test suite with coverage
-        run: npm run test:coverage
+      - name: Run test suite with coverage and attendance accuracy measurements (NFR-ACC-001..004)
+        run: |
+          set -o pipefail
+          npm run test:coverage 2>&1 | tee api-test-output.log
 
       - name: Typecheck web app
         run: npm run web:typecheck
@@ -171,7 +173,19 @@ jobs:
         env:
           CI: 'true'
         # xvfb: the desktop agent spec (19) runs the real Electron app, which needs a display.
-        run: xvfb-run -a npm run e2e
+        run: |
+          set -o pipefail
+          xvfb-run -a npm run e2e 2>&1 | tee playwright-test-output.log
+
+      - name: Preserve attendance accuracy measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: attendance-accuracy-measurements
+          path: |
+            api-test-output.log
+            playwright-test-output.log
+          retention-days: 14
 
       - name: Upload Playwright report
         if: failure()

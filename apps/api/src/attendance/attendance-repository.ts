@@ -1,3 +1,4 @@
+import type { AttendanceInputRecord } from './attendance-replay.ts';
 /**
  * PostgreSQL Implementation of IAttendanceRepository with Row-Level Security (RLS)
  * Ref: docs/SRS.md Section 7.4, Security Rules & AGENTS.md
@@ -60,7 +61,7 @@ export interface IAttendanceRepository {
   findCoveredSpans(orgId: string, userId: string, from: Date, to: Date): Promise<Array<{ start: Date; end: Date }>>;
   findSessionById(orgId: string, sessionId: string): Promise<AttendanceSession | null>;
   findAllOpenSessions(orgId: string): Promise<AttendanceSession[]>;
-  saveSession(session: AttendanceSession): Promise<void>;
+  saveSession(session: AttendanceSession, input?: AttendanceInputRecord): Promise<void>;
   saveSegment(orgId: string, seg: AttendanceSegment, sessionId: string): Promise<void>;
   findSegmentsBySessionId(orgId: string, sessionId: string): Promise<AttendanceSegment[]>;
   hasNonce(orgId: string, userId: string, nonce: string): Promise<boolean>;
@@ -112,6 +113,8 @@ export interface IAttendanceRepository {
   saveMonitoringConsent(consent: MonitoringConsent): Promise<void>;
   findMonitoringConsentsByUser(orgId: string, userId: string): Promise<MonitoringConsent[]>;
   recordPresenceEvent(event: { orgId: string; userId: string; sessionId?: string; serverTs: Date; clientTs?: Date; eventType: string; state: string; seq: number; ip?: string; meta?: Record<string, unknown> }): Promise<void>;
+  findUsersForReplay(orgId: string, workDate: string): Promise<string[]>;
+  findAttendanceInputs(orgId: string, userId: string, workDate: string): Promise<AttendanceInputRecord[]>;
   findPresenceEventsByUser(orgId: string, userId: string, limit?: number): Promise<PresenceEventRecord[]>;
   cleanupOldPresenceEvents(orgId: string, olderThan: Date): Promise<number>;
   cleanupOldNotifications(orgId: string, olderThan: Date): Promise<number>;
@@ -284,9 +287,41 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     return sessions;
   }
 
-  public async saveSession(session: AttendanceSession): Promise<void> {
-    await this.queryWithRls(
-      session.orgId,
+  public async saveSession(session: AttendanceSession, input?: AttendanceInputRecord): Promise<void> {
+    if (!session.orgId) throw new Error('Tenant context missing: orgId is required');
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.org_id', $1, true)`, [session.orgId]);
+      await this.persistSession(session, client, input);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally { client.release(); }
+    // FR-TS-003: a real clock-out stops the running task timer. Not for the midnight split
+    // (work continues) nor for corrections re-saving an old session.
+    if (
+      session.clockOutAt &&
+      session.clockOutSource !== ClockOutSource.MIDNIGHT &&
+      session.clockOutSource !== ClockOutSource.CORRECTION &&
+      // ADR 018: a synced offline session is in the past; it must not stop today's running timer.
+      session.clockOutSource !== ClockOutSource.OFFLINE_SYNC &&
+      session.status !== SessionStatus.ADJUSTED &&
+      session.status !== SessionStatus.CANCELLED
+    ) {
+      for (const listener of this.sessionClosedListeners) {
+        try {
+          await listener(session);
+        } catch (err) {
+          console.error('session-closed listener failed', err instanceof Error ? err.message : 'unknown error');
+        }
+      }
+    }
+  }
+
+  private async persistSession(session: AttendanceSession, client: pg.PoolClient, input?: AttendanceInputRecord): Promise<void> {
+    await client.query(
       `INSERT INTO attendance_sessions (
         id, org_id, user_id, device_id, work_date, clock_in_at, clock_out_at,
         clock_in_source, clock_out_source, active_seconds, idle_seconds, break_seconds,
@@ -355,37 +390,22 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
 
     // Save all segments
     for (const seg of session.segments) {
-      await this.saveSegment(session.orgId, seg, session.id);
+      await this.saveSegment(session.orgId, seg, session.id, client);
     }
 
-    // FR-TS-003: a real clock-out stops the running task timer. Not for the midnight split
-    // (work continues) nor for corrections re-saving an old session.
-    if (
-      session.clockOutAt &&
-      session.clockOutSource !== ClockOutSource.MIDNIGHT &&
-      session.clockOutSource !== ClockOutSource.CORRECTION &&
-      // ADR 018: a synced offline session is in the past; it must not stop today's running timer.
-      session.clockOutSource !== ClockOutSource.OFFLINE_SYNC &&
-      session.status !== SessionStatus.ADJUSTED &&
-      session.status !== SessionStatus.CANCELLED
-    ) {
-      for (const listener of this.sessionClosedListeners) {
-        try {
-          await listener(session);
-        } catch (err) {
-          console.error('session-closed listener failed', err instanceof Error ? err.message : 'unknown error');
-        }
-      }
-    }
+    if (input) await this.recordPresenceEvent({ orgId: session.orgId, userId: session.userId, sessionId: session.id,
+      serverTs: input.at, eventType: 'ATTENDANCE_INPUT', state: session.currentState, seq: 0,
+      meta: { version: 1, config: input.config, input: input.input } }, client);
   }
 
   public async saveSegment(
     orgId: string,
     seg: AttendanceSegment,
     sessionId: string,
+    client?: pg.PoolClient,
   ): Promise<void> {
-    await this.queryWithRls(
-      orgId,
+    const query = (sql: string, params: unknown[]) => client ? client.query(sql, params) : this.queryWithRls(orgId, sql, params);
+    await query(
       `INSERT INTO attendance_segments (
         id, org_id, session_id, state, started_at, ended_at, duration_seconds, meeting_id, flags
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -1079,9 +1099,9 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     }));
   }
 
-  public async recordPresenceEvent(e: { orgId: string; userId: string; sessionId?: string; serverTs: Date; clientTs?: Date; eventType: string; state: string; seq: number; ip?: string; meta?: Record<string, unknown> }): Promise<void> {
-    await this.queryWithRls(
-      e.orgId,
+  public async recordPresenceEvent(e: { orgId: string; userId: string; sessionId?: string; serverTs: Date; clientTs?: Date; eventType: string; state: string; seq: number; ip?: string; meta?: Record<string, unknown> }, client?: pg.PoolClient): Promise<void> {
+    const query = (sql: string, params: unknown[]) => client ? client.query(sql, params) : this.queryWithRls(e.orgId, sql, params);
+    await query(
       `INSERT INTO presence_events (org_id, user_id, session_id, server_ts, client_ts, event_type, state, seq, ip, meta)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
@@ -1099,10 +1119,31 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     );
   }
 
+  public async findUsersForReplay(orgId: string, workDate: string): Promise<string[]> {
+    const result = await this.queryWithRls<{ id: string }>(orgId, `SELECT u.id FROM users u
+      JOIN organizations o ON o.id = u.org_id WHERE u.org_id = $1
+      AND u.created_at < (($2::date + 1)::timestamp AT TIME ZONE o.timezone)`, [orgId, workDate]);
+    return result.rows.map((u) => u.id);
+  }
+
+  /** Full history for this day's sessions, including parents of midnight splits; no UI limit. */
+  public async findAttendanceInputs(orgId: string, userId: string, workDate: string): Promise<AttendanceInputRecord[]> {
+    const rows = await this.queryWithRls<{ session_id: string; server_ts: Date; meta: Pick<AttendanceInputRecord, 'config' | 'input'> }>(orgId, `
+      WITH RECURSIVE lineage(id) AS (
+        SELECT id FROM attendance_sessions WHERE org_id = $1 AND user_id = $2 AND work_date = $3
+        UNION
+        SELECT e.session_id FROM presence_events e JOIN lineage l ON e.meta->'input'->>'splitSessionId' = l.id::text
+          WHERE e.org_id = $1 AND e.user_id = $2 AND e.event_type = 'ATTENDANCE_INPUT'
+      )
+      SELECT e.session_id, e.server_ts, e.meta FROM presence_events e JOIN lineage l ON l.id = e.session_id
+        WHERE e.org_id = $1 AND e.user_id = $2 AND e.event_type = 'ATTENDANCE_INPUT' ORDER BY e.id`, [orgId, userId, workDate]);
+    return rows.rows.map((r) => ({ sessionId: r.session_id, orgId, userId, at: new Date(r.server_ts), config: r.meta.config, input: r.meta.input }));
+  }
+
   public async findPresenceEventsByUser(orgId: string, userId: string, limit: number = 100): Promise<PresenceEventRecord[]> {
     const res = await this.queryWithRls(
       orgId,
-      `SELECT * FROM presence_events WHERE org_id = $1 AND user_id = $2 ORDER BY server_ts DESC LIMIT $3`,
+      `SELECT * FROM presence_events WHERE org_id = $1 AND user_id = $2 AND event_type <> 'ATTENDANCE_INPUT' ORDER BY server_ts DESC LIMIT $3`,
       [orgId, userId, limit],
     );
     return res.rows.map((r: pg.QueryResultRow) => ({

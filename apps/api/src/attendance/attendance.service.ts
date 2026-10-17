@@ -1,3 +1,4 @@
+import { replayAttendanceInputs, type AttendanceInput } from './attendance-replay.ts';
 /** FR-ATT-021: a session the server closed itself (timeout, lost connection, maximum length). */
 /** NFR-ACC-004: one field of one person's day that does not recompute to its stored value. */
 export interface ReplayMismatch { userId: string; field: string; stored: string | number | null; recomputed: string | number | null }
@@ -188,6 +189,12 @@ export class AttendanceService {
     }
   }
 
+  private async saveWithInput(session: AttendanceSession, at: Date, input: AttendanceInput): Promise<void> {
+    if (!this.repository) return;
+    const { config } = await this.policy(session.orgId);
+    await this.repository.saveSession(session, { sessionId: session.id, orgId: session.orgId, userId: session.userId, at, config, input });
+  }
+
   /**
    * Cryptographically generate a random per-session HMAC secret
    */
@@ -357,7 +364,9 @@ export class AttendanceService {
       if (country) result.session.countryOut = country;
 
       if (this.repository) {
-        await this.repository.saveSession(result.session);
+        await this.saveWithInput(result.session, serverTime, { kind: 'heartbeat', deviceId: payload.deviceId,
+          activeSeconds: payload.activeSeconds, idleSeconds: payload.idleSeconds, inCall: payload.inCall,
+          tabVisible: payload.tabVisible, windowFocused: payload.windowFocused, source });
         // FR-ATT-020: raw event the user can inspect. Counters only, never content.
         await this.repository.recordPresenceEvent({
           orgId: payload.orgId,
@@ -404,7 +413,7 @@ export class AttendanceService {
       if (!session || session.status !== SessionStatus.OPEN) throw new InvalidTransitionError(AttendanceState.OFFLINE, 'answer the presence challenge');
       const result = (await this.policy(orgId)).machine.handleChallengeResponse(session, challengeId, serverTime);
       if (this.repository) {
-        await this.repository.saveSession(result.session);
+        await this.saveWithInput(result.session, serverTime, { kind: 'challenge-confirmed' });
         await this.repository.recordPresenceEvent({ orgId, userId, sessionId: result.session.id, serverTs: serverTime, eventType: 'PRESENCE_CONFIRMED', state: result.currentState, seq: 0 });
       }
       this.sessions.set(userId, result.session);
@@ -452,7 +461,9 @@ export class AttendanceService {
           })),
           consecutiveIdleSeconds: 0, agentDeviceId: p.deviceId, agentLastSeenAt: null, webInCallAt: null,
         };
-        await repo.saveSession(session);
+        await this.saveWithInput(session, now, { kind: 'offline', deviceId: p.deviceId, anchorServerMs: p.anchorServerMs,
+          intervals: p.intervals, covered: covered.map((c) => ({ from: c.start.toISOString(), to: c.end.toISOString() })),
+          maxWindowSeconds: p.maxWindowSeconds ?? 12 * 3600, sessionStart: planned.start.toISOString() });
         // FR-ATT-020: the user sees the synced block among their raw events.
         await repo.recordPresenceEvent({
           orgId: p.orgId, userId: p.userId, sessionId: session.id, serverTs: now, eventType: 'OFFLINE_SYNC', state: AttendanceState.OFFLINE, seq: 0, ip: p.ip,
@@ -483,7 +494,7 @@ export class AttendanceService {
 
       const result = (await this.policy(targetOrgId)).machine.handleSocketDisconnect(session, serverTime);
       if (this.repository) {
-        await this.repository.saveSession(result.session);
+        await this.saveWithInput(result.session, serverTime, { kind: 'disconnect' });
       }
       this.sessions.set(userId, result.session);
       return result;
@@ -505,7 +516,7 @@ export class AttendanceService {
 
       const result = (await this.policy(targetOrgId)).machine.handleSocketReconnect(session, serverTime);
       if (this.repository) {
-        await this.repository.saveSession(result.session);
+        await this.saveWithInput(result.session, serverTime, { kind: 'reconnect' });
       }
       this.sessions.set(userId, result.session);
       return result;
@@ -542,7 +553,7 @@ export class AttendanceService {
       const closeAt = session.lastHeartbeatAt.getTime() < serverTime.getTime() ? session.lastHeartbeatAt : serverTime;
       const result = (await this.policy(targetOrgId)).machine.handleExplicitLogout(session, closeAt);
       if (this.repository) {
-        await this.repository.saveSession(result.session);
+        await this.saveWithInput(result.session, closeAt, { kind: 'logout' });
       }
       this.sessions.delete(userId);
       this.closedSessions.set(result.session.id, result.session);
@@ -565,7 +576,7 @@ export class AttendanceService {
 
       const result = (await this.policy(targetOrgId)).machine.handleUserStartsBreak(session, serverTime);
       if (this.repository) {
-        await this.repository.saveSession(result.session);
+        await this.saveWithInput(result.session, serverTime, { kind: 'break-start' });
       }
       this.sessions.set(userId, result.session);
       return result;
@@ -587,7 +598,7 @@ export class AttendanceService {
 
       const result = (await this.policy(targetOrgId)).machine.handleUserEndsBreak(session, serverTime);
       if (this.repository) {
-        await this.repository.saveSession(result.session);
+        await this.saveWithInput(result.session, serverTime, { kind: 'break-end' });
       }
       this.sessions.set(userId, result.session);
       return result;
@@ -610,7 +621,7 @@ export class AttendanceService {
 
       const result = (await this.policy(targetOrgId)).machine.handleJoinMeeting(session, meetingId, serverTime);
       if (this.repository) {
-        await this.repository.saveSession(result.session);
+        await this.saveWithInput(result.session, serverTime, { kind: 'meeting-start', meetingId });
       }
       this.sessions.set(userId, result.session);
       return result;
@@ -632,7 +643,7 @@ export class AttendanceService {
 
       const result = (await this.policy(targetOrgId)).machine.handleLeaveMeeting(session, serverTime);
       if (this.repository) {
-        await this.repository.saveSession(result.session);
+        await this.saveWithInput(result.session, serverTime, { kind: 'meeting-end' });
       }
       this.sessions.set(userId, result.session);
       return result;
@@ -689,8 +700,8 @@ export class AttendanceService {
         let currentSession = session;
         if (midRes.splitSession) {
           if (this.repository) {
-            await this.repository.saveSession(midRes.session);
             await this.repository.saveSession(midRes.splitSession);
+            await this.saveWithInput(midRes.session, serverTime, { kind: 'midnight', splitSessionId: midRes.splitSession.id });
           }
           this.closedSessions.set(midRes.session.id, midRes.session);
           this.sessions.set(session.userId, midRes.splitSession);
@@ -702,7 +713,7 @@ export class AttendanceService {
         const maxRes = machine.handleMaxLengthCheck(currentSession, serverTime);
         if (maxRes.session.status === SessionStatus.CLOSED) {
           if (this.repository) {
-            await this.repository.saveSession(maxRes.session);
+            await this.saveWithInput(maxRes.session, serverTime, { kind: 'max-length' });
           }
           noteClosed(maxRes.session);
           // FR-ATT-009: closed at the last heartbeat and flagged for review.
@@ -721,7 +732,7 @@ export class AttendanceService {
         ) {
           const res = machine.handleGraceExpiration(currentSession, serverTime);
           if (this.repository) {
-            await this.repository.saveSession(res.session);
+            await this.saveWithInput(res.session, serverTime, { kind: 'grace-expired' });
           }
           noteClosed(res.session);
           this.sessions.delete(session.userId);
@@ -739,7 +750,7 @@ export class AttendanceService {
         ) {
           const res = machine.handleMissingHeartbeatTimeout(currentSession, serverTime);
           if (this.repository) {
-            await this.repository.saveSession(res.session);
+            await this.saveWithInput(res.session, serverTime, { kind: 'timeout' });
           }
           noteClosed(res.session);
           this.sessions.delete(session.userId);
@@ -751,7 +762,9 @@ export class AttendanceService {
         // 6. FR-ATT-023: an unanswered presence challenge pauses even without heartbeats.
         const challengeRes = machine.handleChallengeExpiry(currentSession, serverTime);
         if (challengeRes) {
-          if (this.repository) await this.repository.saveSession(challengeRes.session);
+          if (this.repository) {
+            await this.saveWithInput(challengeRes.session, serverTime, { kind: 'challenge-expired' });
+          }
           this.sessions.set(session.userId, challengeRes.session);
         }
           });
@@ -979,8 +992,7 @@ export class AttendanceService {
         segments: [],
         consecutiveIdleSeconds: 0,
       };
-
-      await this.repository.saveSession(adjustedSession);
+      await this.saveWithInput(adjustedSession, reviewedAt, { kind: 'correction', from: correction.requestedIn.toISOString(), to: correction.requestedOut.toISOString(), deviceId: adjustedSession.deviceId });
 
       await this.repository.recordAuditLog({
         orgId: params.orgId,
@@ -1179,14 +1191,14 @@ export class AttendanceService {
 
   /**
    * The day's totals for one person from the stored sessions and schedule, without writing
-   * anything. The daily close saves this; the nightly replay (NFR-ACC-004) recomputes it and
-   * compares. Deterministic: the same sessions always give the same row.
+   * anything. The daily close saves this; nightly replay supplies sessions independently
+   * rebuilt from accepted raw inputs (NFR-ACC-004). The same inputs give the same row.
    */
-  public async computeDailySummary(orgId: string, userId: string, workDate: string): Promise<AttendanceDaily> {
+  public async computeDailySummary(orgId: string, userId: string, workDate: string, replayedSessions?: AttendanceSession[]): Promise<AttendanceDaily> {
     if (!this.repository) {
       throw new Error('Repository is required for computeDailySummary');
     }
-    const allSessions = await this.repository.findSessionsByDate(orgId, workDate);
+    const allSessions = replayedSessions ?? await this.repository.findSessionsByDate(orgId, workDate);
     const userSessions = allSessions.filter(
       (s: AttendanceSession) => s.userId === userId && s.status !== SessionStatus.CANCELLED && s.status !== SessionStatus.ADJUSTED,
     );
@@ -1258,7 +1270,7 @@ export class AttendanceService {
   }
 
   /**
-   * NFR-ACC-004 (ADR 026): recompute every person's day from the stored sessions and compare with
+   * NFR-ACC-004 (ADR 029): rebuild every person's day from accepted raw attendance inputs and compare with
    * the stored attendance_daily row, field by field. Reports only; never rewrites a row. A person
    * with sessions but no row is a difference too (the daily close has not covered them).
    */
@@ -1268,12 +1280,13 @@ export class AttendanceService {
     }
     const stored = await this.repository.findDailyAttendanceInRange(orgId, { startDate: workDate, endDate: workDate });
     const byUser = new Map(stored.map((d) => [d.userId, d]));
+    const storedSessions = await this.repository.findSessionsByDate(orgId, workDate);
     const withSessions = new Set(
-      (await this.repository.findSessionsByDate(orgId, workDate))
+      storedSessions
         .filter((s) => s.status !== SessionStatus.CANCELLED && s.status !== SessionStatus.ADJUSTED)
         .map((s) => s.userId),
     );
-    const users = new Set([...byUser.keys(), ...withSessions]);
+    const users = new Set([...byUser.keys(), ...withSessions, ...await this.repository.findUsersForReplay(orgId, workDate)]);
     const mismatches: ReplayMismatch[] = [];
     const fields: Array<keyof AttendanceDaily> = ['firstIn', 'lastOut', 'activeSeconds', 'idleSeconds', 'breakSeconds', 'meetingSeconds', 'netSeconds', 'expectedSeconds', 'lateMinutes', 'earlyLeaveMinutes', 'overtimeMinutes', 'dayStatus'];
     const norm = (v: unknown): string | number | null => (v instanceof Date ? v.toISOString() : v === undefined ? null : (v as string | number | null));
@@ -1283,7 +1296,20 @@ export class AttendanceService {
         mismatches.push({ userId, field: 'row', stored: 'missing', recomputed: 'present' });
         continue;
       }
-      const again = await this.computeDailySummary(orgId, userId, workDate);
+      const materialised = storedSessions.filter((s) => s.userId === userId && s.status !== SessionStatus.CANCELLED && s.status !== SessionStatus.ADJUSTED);
+      const inputs = await this.repository.findAttendanceInputs(orgId, userId, workDate);
+      let replayed: Map<string, AttendanceSession>;
+      try { replayed = replayAttendanceInputs(inputs); } catch {
+        mismatches.push({ userId, field: 'rawEvents', stored: 'incomplete', recomputed: 'complete input history required' });
+        continue;
+      }
+      const uncovered = materialised.filter((s) => !replayed.has(s.id));
+      if (uncovered.length) {
+        mismatches.push({ userId, field: 'rawEvents', stored: 'missing', recomputed: `${uncovered.length} session(s) need input history` });
+        continue;
+      }
+      const sessions = materialised.map((s) => replayed.get(s.id)!).sort((a, b) => a.clockInAt.getTime() - b.clockInAt.getTime());
+      const again = await this.computeDailySummary(orgId, userId, workDate, sessions);
       for (const f of fields) {
         const a = norm(row[f]);
         const b = norm(again[f]);

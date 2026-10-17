@@ -288,7 +288,7 @@ describe('Notifications and scheduled work', { concurrency: false }, () => {
       // earlier today (before these rows existed) does not mask the effect.
       const later = new Date(now.getTime() + 2 * 86_400_000);
       await work.presenceRetention(later);
-      const left = await adminPool.query(`SELECT seq FROM presence_events WHERE user_id = $1 ORDER BY seq`, [U.emp.id]);
+      const left = await adminPool.query(`SELECT seq FROM presence_events WHERE user_id = $1 AND event_type = 'HEARTBEAT' ORDER BY seq`, [U.emp.id]);
       assert.deepEqual(left.rows.map((r) => Number(r.seq)), [2]);
       assert.equal(await work.presenceRetention(new Date(later.getTime() + 60_000)), 0, 'once per day');
     });

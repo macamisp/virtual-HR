@@ -187,7 +187,7 @@ describe('Desktop agent (FR-ATT-011, FR-ATT-012)', { concurrency: false }, () =>
       assert.equal(after.active_seconds, before.active_seconds);
       assert.ok(!after.flags.includes('MULTI_DEVICE'), String(after.flags));
       assert.ok(new Date(after.last_heartbeat_at) >= new Date(before.last_heartbeat_at));
-      const ev = (await adminPool.query(`SELECT meta FROM presence_events WHERE user_id = $1 ORDER BY id DESC LIMIT 2`, [U.a.id])).rows.map((r) => r.meta.source);
+      const ev = (await adminPool.query(`SELECT meta FROM presence_events WHERE user_id = $1 AND event_type = 'HEARTBEAT' ORDER BY id DESC LIMIT 2`, [U.a.id])).rows.map((r) => r.meta.source);
       assert.deepEqual(ev, ['WEB', 'AGENT'], 'the source is visible in the raw events (FR-ATT-020)');
     });
   });
@@ -227,7 +227,7 @@ describe('Desktop agent (FR-ATT-011, FR-ATT-012)', { concurrency: false }, () =>
         assert.deepEqual(s.flags, ['OFFLINE_SYNCED']);
         const segs = (await adminPool.query(`SELECT flags FROM attendance_segments WHERE session_id = $1`, [s.id])).rows;
         assert.ok(segs.length >= 1 && segs.every((g) => g.flags.includes('OFFLINE_SYNCED')));
-        const ev = (await adminPool.query(`SELECT event_type FROM presence_events WHERE session_id = $1`, [s.id])).rows;
+        const ev = (await adminPool.query(`SELECT event_type FROM presence_events WHERE session_id = $1 AND event_type <> 'ATTENDANCE_INPUT'`, [s.id])).rows;
         assert.deepEqual(ev, [{ event_type: 'OFFLINE_SYNC' }]);
         const daily = (await adminPool.query(`SELECT net_seconds FROM attendance_daily WHERE user_id = $1 AND work_date = $2`, [U.a.id, s.work_date])).rows[0];
         assert.ok(daily.net_seconds >= s.active_seconds, `daily ${daily.net_seconds}`);

@@ -74,6 +74,7 @@ export default defineConfig({
       timeout: 240_000,
       env: {
         ...process.env,
+        NODE_ENV: 'production',
         NEXT_PUBLIC_API_URL: apiUrl,
         NEXT_PUBLIC_STORAGE_URL: process.env.S3_PUBLIC_ENDPOINT ?? process.env.S3_ENDPOINT ?? '',
         NEXT_PUBLIC_LIVEKIT_URL: process.env.LIVEKIT_URL ?? 'ws://localhost:7880',

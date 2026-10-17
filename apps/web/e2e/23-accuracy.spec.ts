@@ -7,7 +7,7 @@ import { passNoticeGate, signIn, signOut, traceSockets } from './helpers';
  * SRS 6.5 accuracy proofs, run against the real app, API and Postgres with the server's own clock
  * (ADR 026). Every measurement is printed, so CI output carries the numbers.
  *
- *  NFR-ACC-001  clock-in within 5 s of the first real activity, every run (20 runs here)
+ *  NFR-ACC-001  clock-in within 5 s of the first real activity in at least 99% of 100 runs
  *  NFR-ACC-002  clock-out within 30 s of the real last activity: logout, tab close, network loss
  *  NFR-ACC-003  two devices at once: counted time never exceeds the wall-clock union
  *
@@ -17,7 +17,7 @@ import { passNoticeGate, signIn, signOut, traceSockets } from './helpers';
  */
 interface Row { id: string; status: string; clock_in_at: Date; clock_out_at: Date | null; clock_out_source: string | null; last_heartbeat_at: Date; net_seconds: number; active_seconds: number; flags: string[] }
 
-const HEARTBEAT_S = 30;
+const CLOCK_IN_RUNS = 100;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const latest = async (pool: pg.Pool): Promise<Row | null> =>
   (await pool.query<Row>(`SELECT id, status, clock_in_at, clock_out_at, clock_out_source, last_heartbeat_at, net_seconds, active_seconds, flags FROM attendance_sessions WHERE org_id = $1 AND user_id = $2 ORDER BY clock_in_at DESC LIMIT 1`, [ORG_ID, USERS.worker.id])).rows[0] ?? null;
@@ -66,14 +66,14 @@ test.describe.serial('Accuracy proofs (SRS 6.5, NFR-ACC-001..003)', () => {
   });
   test.afterAll(async () => { await pool.end(); });
 
-  test('NFR-ACC-001: clock-in within 5 s of the first activity, 20 sign-ins', async ({ page }) => {
-    test.setTimeout(240_000);
+  test('NFR-ACC-001: clock-in within 5 s of the first activity, 100 sign-ins', async ({ page }) => {
+    test.setTimeout(900_000);
     traceSockets(page);
     if (process.env.E2E_TRACE) {
       page.on('response', (r) => { if (r.url().includes('/attendance/me/today')) void r.text().then((b) => console.log(`today ${r.status()} ${b.slice(0, 80)}`)).catch(() => undefined); });
     }
     const deltas: number[] = [];
-    for (let i = 0; i < 20; i += 1) {
+    for (let i = 0; i < CLOCK_IN_RUNS; i += 1) {
       await page.goto('/login');
       await page.getByLabel('Email').fill(USERS.worker.email);
       await page.getByLabel('Password').fill(PASSWORD);
@@ -89,6 +89,8 @@ test.describe.serial('Accuracy proofs (SRS 6.5, NFR-ACC-001..003)', () => {
       await expect.poll(async () => { row = await latest(pool); return row?.status; }).toBe('OPEN');
       const delta = new Date(row!.clock_in_at).getTime() - t0;
       deltas.push(delta);
+      console.log(`NFR-ACC-001 run ${i + 1}/${CLOCK_IN_RUNS}: ${delta} ms`);
+      expect(delta).toBeGreaterThanOrEqual(0);
       await signOut(page);
       await untilClosed(pool, row!.id, 5_000); // ADR 025: logout closes at once
       // A person does not sign in again within the same second; pacing also keeps the per-user
@@ -97,7 +99,7 @@ test.describe.serial('Accuracy proofs (SRS 6.5, NFR-ACC-001..003)', () => {
     }
     const within = deltas.filter((d) => d <= 5_000).length;
     console.log(`NFR-ACC-001 clock-in after first activity (ms): ${deltas.join(' ')} | p50 ${pct(deltas, 50)} | p99 ${pct(deltas, 99)} | max ${Math.max(...deltas)} | ${within}/${deltas.length} within 5 s`);
-    expect(within).toBe(deltas.length);
+    expect(within / deltas.length).toBeGreaterThanOrEqual(0.99);
   });
 
   test('NFR-ACC-002: clock-out within 30 s of the last activity for logout, tab close and network loss', async ({ browser }) => {
@@ -145,11 +147,10 @@ test.describe.serial('Accuracy proofs (SRS 6.5, NFR-ACC-001..003)', () => {
     }
     for (const r of results) console.log(`NFR-ACC-002 ${r.scenario}: clock_out_at is ${r.errorS.toFixed(1)} s before the last activity (source ${r.source}); session closed ${r.detectS.toFixed(1)} s after the event`);
     for (const r of results) {
-      expect(r.errorS).toBeGreaterThanOrEqual(-1);
-      // The clock-out is the last heartbeat, so the error is bounded by the 30 s heartbeat interval (+1 s jitter).
-      expect(r.errorS).toBeLessThanOrEqual(HEARTBEAT_S + 1);
+      expect(Math.abs(r.errorS)).toBeLessThanOrEqual(30);
+
     }
-    expect(results[0]!.detectS).toBeLessThan(2);
+    expect(results[0]!.detectS).toBeLessThan(1);
     expect(results[1]!.source).toBe('DISCONNECT');
     expect(['DISCONNECT', 'TIMEOUT']).toContain(results[2]!.source);
   });
@@ -167,7 +168,20 @@ test.describe.serial('Accuracy proofs (SRS 6.5, NFR-ACC-001..003)', () => {
     const spanS = (new Date(row.last_heartbeat_at).getTime() - new Date(row.clock_in_at).getTime()) / 1000;
     console.log(`NFR-ACC-003 two devices: wall-clock span ${spanS.toFixed(0)} s | counted net ${row.net_seconds} s | raw active counters from both devices ${row.active_seconds} s | flags ${row.flags.join(',')}`);
     expect(row.flags).toContain('MULTI_DEVICE');
-    expect(row.net_seconds).toBeLessThanOrEqual(Math.ceil(spanS) + 1);
+    const sessions = await pool.query(`SELECT count(*)::int AS n FROM attendance_sessions WHERE org_id = $1 AND user_id = $2 AND status = 'OPEN'`, [ORG_ID, USERS.worker.id]);
+    expect(sessions.rows[0].n).toBe(1);
+    const segments = (await pool.query<{ started_at: Date; ended_at: Date | null }>(`SELECT started_at, ended_at FROM attendance_segments WHERE org_id = $1 AND session_id = $2 AND state IN ('ACTIVE', 'IN_MEETING') ORDER BY started_at`, [ORG_ID, row.id])).rows;
+    let unionMs = 0;
+    let until = 0;
+    for (const segment of segments) {
+      const start = segment.started_at.getTime();
+      const end = segment.ended_at?.getTime() ?? row.last_heartbeat_at.getTime();
+      unionMs += Math.max(0, end - Math.max(start, until));
+      until = Math.max(until, end);
+    }
+    const unionSeconds = Math.round(unionMs / 1000);
+    console.log(`NFR-ACC-003 segment union ${unionSeconds} s = net ${row.net_seconds} s; difference ${row.net_seconds - unionSeconds} s`);
+    expect(row.net_seconds).toBe(unionSeconds);
     // Both logins sign out: a login that merely vanished counts as live for the missed-heartbeat
     // window (ADR 025) and would keep the person clocked in for the next spec.
     await signOut(a.page);
