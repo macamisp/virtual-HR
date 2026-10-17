@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { PrismaService } from '../common/prisma.service.ts';
 import { NotificationsModule } from '../notifications/notifications.module.ts';
 import { JobsService } from '../notifications/jobs.service.ts';
 import { DocumentsController } from './documents.controller.ts';
@@ -25,7 +24,6 @@ import { EsignController } from './esign.controller.ts';
   imports: [NotificationsModule],
   controllers: [DocumentsController, ContractsController, VaultController, PublicShareController, EsignController],
   providers: [
-    PrismaService,
     DocumentsService,
     FoldersService,
     ContractsService,

@@ -14,7 +14,6 @@ import { RedisLock } from '../common/redis-lock.ts';
 @Module({
   controllers: [AttendanceController, AttendanceFlagsController],
   providers: [
-    PrismaService,
     {
       provide: PostgresAttendanceRepository,
       useFactory: () => {

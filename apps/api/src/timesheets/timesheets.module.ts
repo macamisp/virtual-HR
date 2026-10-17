@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { PrismaService } from '../common/prisma.service.ts';
 import { AttendanceModule } from '../attendance/attendance.module.ts';
 import { TasksModule } from '../tasks/tasks.module.ts';
 import { PlanningModule } from '../planning/planning.module.ts';
@@ -15,7 +14,7 @@ import { TimesheetReportsService } from './reports.service.ts';
 @Module({
   imports: [AttendanceModule, TasksModule, PlanningModule],
   controllers: [TimeEntriesController, TimesheetsController],
-  providers: [PrismaService, TimeEntriesService, TimesheetsService, RatesService, TimesheetEvents, TimesheetReportsService],
+  providers: [TimeEntriesService, TimesheetsService, RatesService, TimesheetEvents, TimesheetReportsService],
   exports: [TimeEntriesService, TimesheetsService, TimesheetEvents],
 })
 export class TimesheetsModule {}

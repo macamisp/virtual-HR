@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { PrismaService } from '../common/prisma.service.ts';
 import { MailModule } from '../common/mail.module.ts';
 import { AttendanceModule } from '../attendance/attendance.module.ts';
 import { TasksModule } from '../tasks/tasks.module.ts';
@@ -21,7 +20,7 @@ import { OBJECT_STORE, objectStoreFromEnv } from '../documents/object-store.ts';
   imports: [MailModule, AttendanceModule, TasksModule, OfficeModule, NotificationsModule],
   controllers: [MeetingsController, MediaController, LiveKitWebhookController, RecordingsController],
   providers: [
-    PrismaService, MediaService, MeetingsService, RecordingsService,
+    MediaService, MeetingsService, RecordingsService,
     // FR-MEET-007: recordings are encrypted like documents (same key provider and bucket, ADR 024).
     { provide: KEY_PROVIDER, useFactory: () => keyProviderFromEnv() },
     { provide: OBJECT_STORE, useFactory: () => objectStoreFromEnv() },

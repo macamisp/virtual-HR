@@ -67,5 +67,6 @@ export class PermissionResolver {
 }
 
 @Global()
-@Module({ providers: [PrismaService, PermissionResolver], exports: [PermissionResolver] })
+// One PrismaService (and so one pg pool) for the whole app: modules must not provide their own.
+@Module({ providers: [PrismaService, PermissionResolver], exports: [PrismaService, PermissionResolver] })
 export class PermissionsModule {}

@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { PrismaService } from '../common/prisma.service.ts';
 import { MailModule } from '../common/mail.module.ts';
 import { AttendanceModule } from '../attendance/attendance.module.ts';
 import { TasksModule } from '../tasks/tasks.module.ts';
@@ -17,7 +16,6 @@ import { JobsService } from './jobs.service.ts';
   imports: [MailModule, AttendanceModule, TasksModule, PlanningModule, TimesheetsModule],
   controllers: [NotificationsController, PublicUnsubscribeController],
   providers: [
-    PrismaService,
     NotificationPreferencesService,
     NotificationEmailSender,
     JobsService,
