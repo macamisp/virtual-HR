@@ -270,9 +270,10 @@ describe('Attendance safeguards (FR-ATT-017, 018, 021, 023)', { concurrency: fal
       const s = await socket('lead');
       const got = new Promise<PresenceChallenge>((res) => s.once('attendance:challenge', res));
       // 15 minutes of silence fed at past server times, then the heartbeat that crosses the threshold via the socket.
-      const start = Date.now() - 31 * 30_000;
-      await svc.ingestHeartbeat(await payload('lead', 'web-lee', { active: 30, idle: 0 }), new Date(start));
-      for (let i = 1; i <= 29; i += 1) await svc.ingestHeartbeat(await payload('lead', 'web-lee', { active: 0, idle: 30 }), new Date(start + i * 30_000));
+      // Each past time is taken relative to "now" as it is sent, so a slow machine cannot open a gap of
+      // more than ~30 s between the last injected heartbeat and the live one.
+      await svc.ingestHeartbeat(await payload('lead', 'web-lee', { active: 30, idle: 0 }), new Date(Date.now() - 31 * 30_000));
+      for (let i = 1; i <= 29; i += 1) await svc.ingestHeartbeat(await payload('lead', 'web-lee', { active: 0, idle: 30 }), new Date(Date.now() - (31 - i) * 30_000));
       assert.equal((await beat(s, 'lead', 'web-lee', { active: 0, idle: 30 })).success, true);
       return { challenge: await Promise.race([got, wait(5000).then(() => assert.fail('no challenge event'))]) };
     }

@@ -56,7 +56,14 @@ const pct = (xs: number[], p: number) => [...xs].sort((a, b) => a - b)[Math.min(
 
 test.describe.serial('Accuracy proofs (SRS 6.5, NFR-ACC-001..003)', () => {
   let pool: pg.Pool;
-  test.beforeAll(async () => { pool = adminPool(); await pool.query(`UPDATE attendance_sessions SET status = 'CLOSED', clock_out_at = last_heartbeat_at, clock_out_source = 'TIMEOUT' WHERE org_id = $1 AND user_id = $2 AND status = 'OPEN'`, [ORG_ID, USERS.worker.id]); });
+  test.beforeAll(async () => {
+    pool = adminPool();
+    // Start from no live logins: a login an earlier spec abandoned without signing out counts as
+    // live for the missed-heartbeat window (ADR 025) and would keep the person clocked in.
+    await pool.query(`DELETE FROM session_secrets WHERE org_id = $1 AND session_id IN (SELECT id::text FROM auth_sessions WHERE user_id = $2)`, [ORG_ID, USERS.worker.id]);
+    await pool.query(`UPDATE auth_sessions SET is_revoked = true, revoked_reason = 'LOGOUT', updated_at = now() WHERE org_id = $1 AND user_id = $2 AND NOT is_revoked`, [ORG_ID, USERS.worker.id]);
+    await pool.query(`UPDATE attendance_sessions SET status = 'CLOSED', clock_out_at = last_heartbeat_at, clock_out_source = 'TIMEOUT' WHERE org_id = $1 AND user_id = $2 AND status = 'OPEN'`, [ORG_ID, USERS.worker.id]);
+  });
   test.afterAll(async () => { await pool.end(); });
 
   test('NFR-ACC-001: clock-in within 5 s of the first activity, 20 sign-ins', async ({ page }) => {

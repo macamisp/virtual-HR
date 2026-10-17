@@ -1,6 +1,6 @@
 # HRVO project status
 
-**As of:** 17 October 2026, at commit `f30ad7a` (CI green).
+**As of:** 17 October 2026. Section 7 records the three gaps fixed after the first report; the counts in section 2 include them.
 **Prepared for:** the product owner.
 **Method:**
 - Every requirement ID in `docs/SRS.md` was checked against the code and the automated tests, not against documentation claims.
@@ -36,10 +36,10 @@ The SRS has 151 functional requirement IDs.
 | Module | IDs | DONE | PARTIAL | MISSING | Missing IDs |
 | --- | ---: | ---: | ---: | ---: | --- |
 | AUTH | 12 | 6 | 3 | 3 | FR-AUTH-005, 009, 012 |
-| ORG | 12 | 0 | 8 | 4 | FR-ORG-007, 008, 010, 011 |
+| ORG | 12 | 2 | 6 | 2 | FR-ORG-007, 008 |
 | VO | 14 | 10 | 2 | 2 | FR-VO-011, 014 |
 | MEET | 14 | 8 | 5 | 1 | FR-MEET-014 |
-| ATT | 23 | 18 | 5 | 0 | none |
+| ATT | 23 | 21 | 2 | 0 | none |
 | TS | 13 | 10 | 2 | 1 | FR-TS-007 |
 | TASK | 16 | 7 | 5 | 4 | FR-TASK-009, 012, 014, 015 |
 | DOC | 20 | 15 | 3 | 2 | FR-DOC-018, 020 |
@@ -47,7 +47,7 @@ The SRS has 151 functional requirement IDs.
 | REP | 8 | 6 | 1 | 1 | FR-REP-007 |
 | ADM | 8 | 3 | 2 | 3 | FR-ADM-003, 005, 008 |
 | AUD | 5 | 4 | 1 | 0 | none |
-| **Total** | **151** | **90** | **37** | **24** | |
+| **Total** | **151** | **95** | **34** | **22** | |
 
 ### By phase
 
@@ -55,10 +55,10 @@ The SRS has 151 functional requirement IDs.
 
 | Phase | IDs | DONE | PARTIAL | MISSING | % DONE | Weighted |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| P1 | 74 | 55 | 18 | 1 | 74 % | 86 % |
-| P2 | 60 | 29 | 18 | 13 | 48 % | 63 % |
+| P1 | 74 | 57 | 16 | 1 | 77 % | 88 % |
+| P2 | 60 | 32 | 17 | 11 | 53 % | 68 % |
 | P3 | 17 | 6 | 1 | 10 | 35 % | 38 % |
-| **All** | **151** | **90** | **37** | **24** | **60 %** | **72 %** |
+| **All** | **151** | **95** | **34** | **22** | **63 %** | **74 %** |
 
 The only P1 requirement that is MISSING is FR-ORG-008 (onboarding checklist).
 
@@ -69,7 +69,7 @@ The only P1 requirement that is MISSING is FR-ORG-008 (onboarding checklist).
 - **FR-AUTH-007:** lockout works, but there is no CAPTCHA and no lockout e-mail.
 - **FR-AUTH-011:** login and logout audit rows are written but not asserted by any test. A failed login for an unknown e-mail is not audited.
 
-**ORG (no organisation-management slice has been built yet)**
+**ORG (no organisation-management slice has been built yet; leave and holidays, FR-ORG-010 and 011, are DONE since section 7)**
 - **FR-ORG-001:** the organisation has only a name and timezone; there is no profile screen.
 - **FR-ORG-002:** a subcontractor profile has rates only. There is no legal name, tax ID, bank details or emergency contact.
 - **FR-ORG-003:** contract alerts fire at 60/30/7/0 days instead of 30/14/7, and a contract has no rate.
@@ -89,10 +89,9 @@ The only P1 requirement that is MISSING is FR-ORG-008 (onboarding checklist).
 - **FR-MEET-010:** there is no background blur.
 
 **ATT**
-- **FR-ATT-002:** logging out does not clock out at once. `onExplicitLogout` is never called, so the session closes after the 120 s grace period with the reason DISCONNECT.
 - **FR-ATT-005:** a manager cannot approve idle time as payable.
 - **FR-ATT-007:** breaks are not suggested automatically.
-- **FR-ATT-016 and FR-ATT-022:** the leave and holiday providers are never wired up in production (`attendance.module.ts` passes `undefined`), so "On leave" never shows and holidays have no effect.
+- FR-ATT-002, 016 and 022 were PARTIAL in the first report and are now DONE (section 7).
 
 **TS**
 - **FR-TS-008:** "billable" is a per-entry flag that the UI hard-codes to true.
@@ -123,13 +122,13 @@ Two documentation pointers are out of date:
 
 | # | HR requirement | Verdict | Evidence | Still missing |
 | --- | --- | --- | --- | --- |
-| 1 | Automatic detection of in and out times | **PASS** | e2e `02-clock-in-heartbeat` › "monitoring notice blocks the app; after acceptance the worker clocks in automatically"; `attendance-service` › "Reconciler closes sessions when heartbeats are missing for > 90s"; e2e `19-desktop-agent` (tray, offline OFFLINE_SYNCED); screens `/attendance`, `/live` | Logging out closes the session after the 120 s grace, not at once (FR-ATT-002). |
+| 1 | Automatic detection of in and out times | **PASS** | e2e `02-clock-in-heartbeat` › "monitoring notice blocks the app; after acceptance the worker clocks in automatically"; `attendance-service` › "Reconciler closes sessions when heartbeats are missing for > 90s"; e2e `19-desktop-agent` (tray, offline OFFLINE_SYNCED); screens `/attendance`, `/live` | Nothing. Logout now closes the session at once (section 7). |
 | 2 | Document handling and storage | **PARTIAL** | e2e `10-documents` (upload, scan, preview, versions, sharing); `documents-e2e` (access log, 60/30/7 reminders); `21-esign`; `vault-e2e` (trash and crypto-shredding); screens `/documents`, `/documents/access-log`, `/documents/retention`, `/signatures` | Search covers title and tags only (FR-DOC-016). No policy acknowledgement (FR-DOC-018), no Office preview (FR-DOC-019), no bulk ZIP download (FR-DOC-020). |
 | 3 | Timesheets and task management for each subcontractor | **PARTIAL** | e2e `09-timesheets` (timer, manual time, return, resubmit, approve and lock, report and CSV); e2e `06-tasks` › "the subcontractor must accept before working"; `timesheets-e2e` rates and reopen; screens `/timesheets`, `/timesheets/review`, `/timesheets/rates`, `/tasks` | No multi-level approval (FR-TS-007) and no invoice (FR-TS-010). No recurring tasks, dependencies or CSV import (FR-TASK-009, 014, 015). The subcontractor profile lacks legal and bank details (FR-ORG-002), and there are no cap warnings (FR-ORG-004). |
 | 4 | Meetings and connecting with each other | **PARTIAL** | e2e `16-office` (map, WASD, knock rooms, 200 avatars); e2e `17-meetings` (ring, lobby, proximity call, screen share); e2e `18-chat`; e2e `22-recording`; screens `/office`, `/meetings`, `/chat` | No map editor (FR-VO-006), no guest links (FR-VO-011), no in-meeting chat (FR-MEET-005), no background blur (FR-MEET-010), no AI summary (FR-MEET-014). |
 | 5 | Daily and weekly task lists | **PASS** | e2e `07-planning` › "the worker plans the day, confirms it and submits an end-of-day report", "the weekly planner schedules by drag and by keyboard, shows capacity and keeps goals"; `notifications-e2e` weekly summary and carry-over; screens `/tasks/today`, `/tasks/week`, `/tasks/workload` | Nothing. |
 | 6 | Password-protected documents for contracts and similar | **PASS** | e2e `11-vault` › "a confidential document asks the owner to confirm it is them, then a document password", share links, watermarked view; `vault-e2e` › "a database dump plus a bucket dump contain no content, file name or confidential title" | Encryption in transit (FR-DOC-008) is configuration only, with no test. |
-| 7 | Accurate detection of in and out times | **PARTIAL** | `attendance-state-machine` › "Accuracy strictly ignores client timestamps and uses NTP server clock UTC"; signed heartbeats with nonce and sequence; `attendance-guards-e2e` impossible travel | The SRS §6.5 proofs are not automated: NFR-ACC-001 (clock-in within 5 s, 99 % of the time — the test only allows 60 s, once), NFR-ACC-002 (no chaos tests for tab close or laptop sleep) and NFR-ACC-004 (no nightly replay job). |
+| 7 | Accurate detection of in and out times | **PASS** (one caveat) | Playwright `23-accuracy` prints the measurements: clock-in p50 230 ms, max 281 ms, 20/20 within 5 s; clock-out error 4.3–4.4 s for logout, tab close and network loss; two devices never counted more than the wall clock. `attendance-replay` › "the nightly job checks yesterday…alerts HR once…"; `attendance-logout-e2e`; `attendance-state-machine` › "Accuracy strictly ignores client timestamps…" | Laptop sleep is not emulated separately (from the server it is the network-loss case). NFR-ACC-005 (clock drift monitoring) is an infrastructure alert, not a test. |
 
 ## 4. Quality gates (run locally on 17 October 2026)
 
@@ -137,9 +136,9 @@ Two documentation pointers are out of date:
 | --- | --- |
 | `npm run lint` (API, shared, web) | Clean: 0 errors, 0 warnings |
 | `npm run typecheck` (+ web `tsc --noEmit`) | Clean |
-| API tests with coverage (`npm run test:coverage`, 677 tests) | **677 passed, 0 failed, 0 cancelled** (after the connection fix in `7fadc94`; also 677/677 when squeezed onto 2 CPUs) |
-| API coverage, all files | **97.0 % lines · 80.7 % branches · 95.3 % functions** |
-| Playwright (`npx playwright test`, with real LiveKit Egress) | **58 / 58 passed** |
+| API tests with coverage (`npm run test:coverage`, 700 tests, 4 files at a time) | **699 passed, 1 failed, 0 cancelled.** The failure is `planning-e2e` › "Today lists planned, due, overdue and carried-over tasks…" (a task came back PLANNED instead of CARRIED_OVER); it passed in the previous full run and passes alone (7/7, twice). The previous full run also had one failure, the presence-challenge tests in `attendance-guards-e2e`, whose injected heartbeats were stamped at one fixed time and so could fall outside the window under load; the test helper now stamps them relative to the send time, and the suite passed under full load. Both are load-sensitive tests, not product defects, and neither is in the code changed in section 7 |
+| API coverage, all files | **97.0 % lines · 80.5 % branches · 95.3 % functions** |
+| Playwright (`npx playwright test`, with real LiveKit Egress, 63 tests) | **62 passed, 1 failed** in the full 16-minute run; the failure, `18-chat` › "a message reaches a channel member live…", passes alone (2/2). The new `23-accuracy` and `24-leave` specs passed in both full runs; their measured numbers are in section 7 |
 | Terraform `fmt` / `validate` (staging and production) | Run in CI (Terraform job: success) |
 | `npm audit --omit=dev` | 7 findings: **4 high, 3 moderate, 0 critical** (listed below) |
 
@@ -246,7 +245,6 @@ ClamAV needs a few minutes after its first start to load its signatures. Until t
 **What does not work yet**
 - Everything listed under MISSING and PARTIAL in section 2. The most visible gaps:
   - no organisation administration (organisation profile, teams, schedules, onboarding and off-boarding);
-  - leave and holidays are not connected;
   - no SSO login (Google or Microsoft);
   - no web push;
   - no map editor;
@@ -259,4 +257,44 @@ ClamAV needs a few minutes after its first start to load its signatures. Until t
 - **Calendar sync** needs the organisation's own Google and Microsoft OAuth apps. Without them, the Calendar page says "Not set up on this server yet".
 - **AWS production** has never been deployed. The Terraform validates, but `apply` needs the owner's approval and the runbooks.
 - **Dev mode is slow:** `npm run web` compiles each page on first visit. On slow disks the first load can take a minute or more. `npm run web:build` followed by `next start` is fast.
-- **Known issue:** logging out ends attendance only after the 120 s grace period (FR-ATT-002).
+- **Without Redis** (`JOBS_ENABLED=false`), also set `ATTENDANCE_RECONCILE_INLINE_MS=15000`, or dropped sessions are never closed.
+
+## 7. Fixed gaps (17 October 2026, after the first report)
+
+Each fix was written test-first; the "before" is the new test's first run against the old code.
+
+### Gap 1: explicit logout did not clock out (FR-ATT-002) — commits `355f142`, `2688e3e`
+
+| | Before | After |
+| --- | --- | --- |
+| `POST /auth/logout` with an open session | Session stayed `OPEN / DISCONNECTED`; closed 120 s later with source DISCONNECT | Closed **56 ms** after the request, at the last valid heartbeat, source LOGOUT; nothing after that heartbeat credited |
+| Password reset | Same 120 s delay | Closed **101 ms** after the reset |
+| Administrative revocation (role change, deactivation) | Same 120 s delay | Closed **35 ms** after the revocation |
+| Two devices, logout on one | n/a | The person stays clocked in while the other login heartbeated within the missed-heartbeat window (90 s); the last logout closes |
+| Two tabs of one login | n/a | Logout in one revokes the login; the other tab cannot keep the session alive |
+| Tab close without logout | Grace window | Unchanged: grace window |
+
+Tests: `apps/api/test/attendance-logout-e2e.test.ts` (8). Design: ADR 025. The rule is decided from the database (`session_secrets.last_used_at`), after the API test suite, which runs several API processes on one database, showed a socket-visibility check closing a session another login still kept alive. SRS 6.2 row 14 says "close session immediately"; the implementation reads that as the latency and stamps the last valid heartbeat, like rows 12 and 13. **Please confirm that reading.**
+
+### Gap 2: the SRS 6.5 accuracy proofs were not automated (NFR-ACC-001..004) — commit `2688e3e`
+
+| Requirement | Before | After (measured on 17 October 2026) |
+| --- | --- | --- |
+| NFR-ACC-001 clock-in within 5 s of first activity, 99 % of runs | One Playwright assertion allowing 60 s, once | 20 sign-ins: **p50 230 ms, p99 281 ms, max 281 ms, 20/20 within 5 s** |
+| NFR-ACC-002 clock-out within 30 s of last activity: logout, tab close, network loss | No chaos tests | Real input until the event, then: logout **4.3 s** error (closed 0.1 s after); tab close **4.3 s** (DISCONNECT, closed 32.9 s after); network loss **4.4 s** (DISCONNECT, closed 69.2 s after). The error is bounded by the 30 s heartbeat interval |
+| NFR-ACC-003 no double counting on two devices | Unit tests of the interval union only | Two real browsers for 70 s: **net 61 s over a 61 s wall clock**, while the raw per-device counters summed to 122 s |
+| NFR-ACC-004 nightly replay of daily totals | Nothing | `attendance-replay` job every night at 02:30 UTC: recomputes every person's day from the stored sessions, compares field by field, alerts HR (critical notification, once) and audits; never rewrites. Test: a drifted total is reported field by field and left alone |
+
+Tests: `apps/web/e2e/23-accuracy.spec.ts` (3, numbers printed in CI output), `apps/api/test/attendance-replay.test.ts` (4). Design: ADR 026. Two side findings fixed on the way: with `JOBS_ENABLED=false` nothing ever closed a dropped session (`ATTENDANCE_RECONCILE_INLINE_MS` now runs the reconciler in-process), and the web badge could show "Not clocked in" for up to a minute after sign-in when the first status request was slower than the first heartbeat. Not done: laptop sleep is not emulated separately; the replay recomputes from stored sessions, not from the heartbeat log (break and meeting events are not in `presence_events`).
+
+### Gap 3: leave and holidays were never connected (FR-ORG-010, FR-ORG-011, FR-ATT-022) — commit `3e5ce25`
+
+| | Before | After |
+| --- | --- | --- |
+| Leave requests | None | `/attendance/leave`: annual, sick, unpaid, other; validated; one open request per day; cancel while pending or before the leave ends |
+| Approval | None | `/attendance/leave/review`: the requester's manager (or their team's leads and managers when they have no manager) or HR; never the requester; a rejection needs a note; decided once; notifications both ways; audited |
+| Holiday calendar | None | `/admin/holidays`: Sri Lanka 2026 (25 dates from the gazette) loaded in one step and seeded for existing organisations; HR adds, renames, removes |
+| Attendance providers | `attendance.module.ts` passed `undefined`; leave and holidays had no effect | Real database providers wired in; expected hours 0, day status LEAVE or HOLIDAY, no absence or late flag, no no-clock-in reminder |
+| Live board | "On leave" never shown | Shows "On leave" for a person on approved leave without an open session |
+
+Tests: `apps/api/test/leave-e2e.test.ts` (8, including RLS), `apps/web/e2e/24-leave.spec.ts` (3). Design: ADR 027. Not done: half days and balances; planner capacity still counts leave and holiday days; built-in calendars for years other than 2026.
