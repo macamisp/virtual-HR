@@ -18,6 +18,7 @@ import pg from 'pg';
 import argon2 from 'argon2';
 import { generateSync } from 'otplib';
 import { formatInTimeZone } from 'date-fns-tz';
+import { SRI_LANKA_HOLIDAYS } from '../src/leave/sri-lanka-holidays.ts';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
 import { AttendanceService } from '../src/attendance/attendance.service.ts';
@@ -42,6 +43,18 @@ const U = {
 type Who = keyof typeof U;
 const TZ = 'Asia/Colombo';
 const dayPlus = (n: number) => formatInTimeZone(new Date(Date.now() + n * 86_400_000), TZ, 'yyyy-MM-dd');
+// The test organisation gets the Sri Lanka default calendar when it is created, and a holiday turns
+// ABSENT into HOLIDAY and expected hours into 0. Days that must be ordinary working days skip it, so
+// the suite passes on every calendar date (it failed on 19 October 2026: day +20 was Deepavali).
+const DEFAULT_HOLIDAYS = new Set(Object.values(SRI_LANKA_HOLIDAYS).flat().map((h) => h.date));
+const workingOffset = (from: number, span = 1) => {
+  let n = from;
+  while (Array.from({ length: span }, (_, i) => dayPlus(n + i)).some((d) => DEFAULT_HOLIDAYS.has(d))) n += 1;
+  return n;
+};
+const FUTURE = workingOffset(10, 4); // annual leave on +0..+1, the overlap probe on +1..+2, a plain absent day on +3
+const REJECT_DAY = workingOffset(Math.max(20, FUTURE + 4));
+const OTHER_DAY = workingOffset(Math.max(30, REJECT_DAY + 1));
 const SCHEDULE = { '1': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '2': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '3': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '4': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '5': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '6': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '7': { startTime: '09:00', endTime: '17:00', expectedHours: 8 } };
 
 describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { concurrency: false }, () => {
@@ -101,18 +114,18 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
 
   let future: LeaveRequest;
   it('an employee requests leave; input is validated; the manager is told', async () => {
-    assert.equal((await api('auditor', '/leave/requests', { method: 'POST', body: { type: 'ANNUAL', startDate: dayPlus(10), endDate: dayPlus(11) } })).status, 403, 'auditors do not take leave here');
-    assert.equal((await api('emp', '/leave/requests', { method: 'POST', body: { type: 'ANNUAL', startDate: dayPlus(11), endDate: dayPlus(10) } })).status, 400, 'end before start');
-    assert.equal((await api('emp', '/leave/requests', { method: 'POST', body: { type: 'HOLIDAY', startDate: dayPlus(10), endDate: dayPlus(10) } })).status, 400, 'unknown type');
-    assert.equal((await api('emp', '/leave/requests', { method: 'POST', body: { type: 'ANNUAL', startDate: dayPlus(10), endDate: dayPlus(200) } })).status, 400, 'too long');
-    future = await ok(await api('emp', '/leave/requests', { method: 'POST', body: { type: 'ANNUAL', startDate: dayPlus(10), endDate: dayPlus(11), reason: 'Family visit' } }), 201, LeaveRequestSchema);
+    assert.equal((await api('auditor', '/leave/requests', { method: 'POST', body: { type: 'ANNUAL', startDate: dayPlus(FUTURE), endDate: dayPlus(FUTURE + 1) } })).status, 403, 'auditors do not take leave here');
+    assert.equal((await api('emp', '/leave/requests', { method: 'POST', body: { type: 'ANNUAL', startDate: dayPlus(FUTURE + 1), endDate: dayPlus(FUTURE) } })).status, 400, 'end before start');
+    assert.equal((await api('emp', '/leave/requests', { method: 'POST', body: { type: 'HOLIDAY', startDate: dayPlus(FUTURE), endDate: dayPlus(FUTURE) } })).status, 400, 'unknown type');
+    assert.equal((await api('emp', '/leave/requests', { method: 'POST', body: { type: 'ANNUAL', startDate: dayPlus(FUTURE), endDate: dayPlus(200) } })).status, 400, 'too long');
+    future = await ok(await api('emp', '/leave/requests', { method: 'POST', body: { type: 'ANNUAL', startDate: dayPlus(FUTURE), endDate: dayPlus(FUTURE + 1), reason: 'Family visit' } }), 201, LeaveRequestSchema);
     assert.equal(future.status, 'PENDING');
     assert.equal(future.days, 2);
     assert.equal(future.canCancel, true);
     assert.equal(future.canDecide, false, 'not by the requester');
     assert.equal((await notes('lead', 'LEAVE_REQUESTED')).length, 1, 'the manager is told');
     assert.equal(await audits('LEAVE_REQUESTED'), 1);
-    assert.equal((await api('emp', '/leave/requests', { method: 'POST', body: { type: 'SICK', startDate: dayPlus(11), endDate: dayPlus(12) } })).status, 409, 'overlaps an open request');
+    assert.equal((await api('emp', '/leave/requests', { method: 'POST', body: { type: 'SICK', startDate: dayPlus(FUTURE + 1), endDate: dayPlus(FUTURE + 2) } })).status, 409, 'overlaps an open request');
   });
 
   it('only the manager (or HR) decides; never the requester; another team\'s lead cannot', async () => {
@@ -124,10 +137,10 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
     assert.equal((await ok(await api('lead2', '/leave/requests?scope=team'), 200, LeaveRequestListSchema)).items.length, 0);
     assert.equal((await ok(await api('hr', '/leave/requests?scope=team'), 200, LeaveRequestListSchema)).items.length, 1, 'HR sees the organisation');
     assert.equal((await api('lead', `/leave/requests/${future.id}/decide`, { method: 'POST', body: { approved: false } })).status, 400, 'a rejection needs a note');
-    await attendance.recomputeDailySummaryForUser(ORG, U.emp.id, dayPlus(10));
+    await attendance.recomputeDailySummaryForUser(ORG, U.emp.id, dayPlus(FUTURE));
     const decided = await ok(await api('lead', `/leave/requests/${future.id}/decide`, { method: 'POST', body: { approved: true, note: 'Enjoy' } }), 200, LeaveRequestSchema);
     assert.equal(decided.status, 'APPROVED');
-    assert.equal((await adminPool.query(`SELECT expected_seconds FROM attendance_daily WHERE org_id = $1 AND user_id = $2 AND work_date = $3`, [ORG, U.emp.id, dayPlus(10)])).rows[0].expected_seconds, 0, 'approval refreshes existing daily expectations immediately');
+    assert.equal((await adminPool.query(`SELECT expected_seconds FROM attendance_daily WHERE org_id = $1 AND user_id = $2 AND work_date = $3`, [ORG, U.emp.id, dayPlus(FUTURE)])).rows[0].expected_seconds, 0, 'approval refreshes existing daily expectations immediately');
     assert.equal(decided.decidedBy?.id, U.lead.id);
     assert.equal((await notes('emp', 'LEAVE_APPROVED')).length, 1);
     assert.equal((await api('lead', `/leave/requests/${future.id}/decide`, { method: 'POST', body: { approved: false, note: 'changed my mind' } })).status, 409, 'decided once');
@@ -135,7 +148,7 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
   });
 
   it('approved leave: expected hours are zero, no absence flag, the day is LEAVE, the reminder stays quiet', async () => {
-    const day = dayPlus(10);
+    const day = dayPlus(FUTURE);
     const daily = await attendance.computeDailySummary(ORG, U.emp.id, day);
     assert.equal(daily.dayStatus, 'LEAVE');
     assert.equal(daily.expectedSeconds, 0);
@@ -148,7 +161,7 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
     assert.equal(compliance.lateArrivalMinutes, 0);
     assert.equal(compliance.isAbsent, false);
     assert.deepEqual(compliance.flags, ['ON_LEAVE']);
-    const other = await attendance.computeDailySummary(ORG, U.emp.id, dayPlus(13));
+    const other = await attendance.computeDailySummary(ORG, U.emp.id, dayPlus(FUTURE + 3));
     assert.equal(other.dayStatus, 'ABSENT', 'a scheduled day without leave or sessions is absent');
     assert.equal(other.expectedSeconds, 8 * 3600);
     const reminder = await attendance.clockInReminderDue(ORG, U.emp.id, new Date(`${day}T06:00:00Z`)); // 11:30 in Colombo, two hours after the 09:00 start
@@ -176,16 +189,16 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
   });
 
   it('a rejected request tells the requester why', async () => {
-    const r = await ok(await api('emp', '/leave/requests', { method: 'POST', body: { type: 'UNPAID', startDate: dayPlus(20), endDate: dayPlus(20) } }), 201, LeaveRequestSchema);
+    const r = await ok(await api('emp', '/leave/requests', { method: 'POST', body: { type: 'UNPAID', startDate: dayPlus(REJECT_DAY), endDate: dayPlus(REJECT_DAY) } }), 201, LeaveRequestSchema);
     const d = await ok(await api('lead', `/leave/requests/${r.id}/decide`, { method: 'POST', body: { approved: false, note: 'Release week' } }), 200, LeaveRequestSchema);
     assert.equal(d.status, 'REJECTED');
     assert.equal(d.decisionNote, 'Release week');
     assert.match((await notes('emp', 'LEAVE_REJECTED'))[0].title, /rejected|declined/i);
-    assert.equal((await attendance.computeDailySummary(ORG, U.emp.id, dayPlus(20))).dayStatus, 'ABSENT', 'rejected leave changes nothing');
+    assert.equal((await attendance.computeDailySummary(ORG, U.emp.id, dayPlus(REJECT_DAY))).dayStatus, 'ABSENT', 'rejected leave changes nothing');
   });
 
   it('other leave follows manager approval and cancellation restores expected hours', async () => {
-    const day = dayPlus(30);
+    const day = dayPlus(OTHER_DAY);
     const request = await ok(await api('emp', '/leave/requests', { method: 'POST', body: { type: 'OTHER', startDate: day, endDate: day } }), 201, LeaveRequestSchema);
     const decision = await ok(await api('lead', `/leave/requests/${request.id}/decide`, { method: 'POST', body: { approved: true } }), 200, LeaveRequestSchema);
     assert.equal(decision.type, 'OTHER');
