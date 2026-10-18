@@ -22,9 +22,10 @@ import { RlsInterceptor } from './common/interceptors/rls.interceptor.ts';
 import { rateLimitModule } from './common/rate-limit.ts';
 import { PermissionsModule } from './common/permission-resolver.ts';
 import { LeaveModule } from './leave/leave.module.ts';
+import { OrgModule } from './org/org.module.ts';
 
 @Module({
-  imports: [rateLimitModule(), PermissionsModule, AuthModule, UsersModule, AttendanceModule, AuditModule, TasksModule, PlanningModule, TimesheetsModule, NotificationsModule, DocumentsModule, AdminModule, ReportsModule, PrivacyModule, OfficeModule, MeetingsModule, ChatModule, AgentModule, HealthModule, CalendarModule, LeaveModule],
+  imports: [rateLimitModule(), PermissionsModule, AuthModule, UsersModule, AttendanceModule, AuditModule, TasksModule, PlanningModule, TimesheetsModule, NotificationsModule, DocumentsModule, AdminModule, ReportsModule, PrivacyModule, OfficeModule, MeetingsModule, ChatModule, AgentModule, HealthModule, CalendarModule, LeaveModule, OrgModule],
   providers: [
     {
       provide: APP_INTERCEPTOR,
