@@ -51,6 +51,18 @@ test.describe('Automatic clock-in via signed heartbeat (FR-ATT-001, 004, 020)', 
     expect(Number(payload[1].activeSeconds) + Number(payload[1].idleSeconds)).toBeLessThanOrEqual(30);
   });
 
+  test('the raw events and the clock-in carry seconds, so times can be checked against a phone clock (docs/runbooks/uat.md)', async ({ page }) => {
+    await signIn(page, USERS.worker.email);
+    await passNoticeGate(page);
+    await expect(page.getByTestId('tracking-badge')).toHaveText(/Tracking: Active since/);
+    await page.getByRole('link', { name: 'What we collect' }).click();
+    const times = page.getByTestId('event-time');
+    await expect(times.first()).toBeVisible();
+    for (const t of await times.allTextContents()) expect(t).toMatch(/\d{2}:\d{2}:\d{2}/);
+    await page.getByRole('link', { name: 'My attendance' }).click();
+    await expect(page.getByRole('cell', { name: /^\d{2}:\d{2}$/ }).first()).toHaveAttribute('title', /^Clock-in \d{2}:\d{2}:\d{2}$/);
+  });
+
   test('a dropped connection shows a clear reconnecting state and recovers on its own', async ({ page, context }) => {
     await signIn(page, USERS.worker.email);
     await passNoticeGate(page);

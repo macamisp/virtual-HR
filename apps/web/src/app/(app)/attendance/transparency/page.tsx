@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { EmptyState, ErrorState, LoadingState } from '@/components/state-views';
 import { useConsent, useTransparency } from '@/lib/queries';
-import { formatDateTime } from '@/lib/format';
+import { formatDateTime, formatDateTimeSeconds } from '@/lib/format';
 
 const NOT_COLLECTED = [
   'Keystrokes or what you type',
@@ -81,7 +81,7 @@ export default function TransparencyPage() {
                   <TableBody>
                     {info.data.events.map((e) => (
                       <TableRow key={String(e.id)}>
-                        <TableCell>{formatDateTime(e.serverTs)}</TableCell>
+                        <TableCell className="whitespace-nowrap tabular-nums" data-testid="event-time">{formatDateTimeSeconds(e.serverTs)}</TableCell>
                         <TableCell>{e.eventType}</TableCell>
                         <TableCell>{e.state}</TableCell>
                         <TableCell className="text-right tabular-nums">{e.seq}</TableCell>

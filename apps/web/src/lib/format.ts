@@ -5,6 +5,17 @@ export function formatClock(iso: string | null | undefined): string {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
+/** With seconds (HH:MM:SS, 24 h): for checking times against a phone clock (docs/runbooks/uat.md). */
+export function formatClockSeconds(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+
+export function formatDateTimeSeconds(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium', hour12: false });
+}
+
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '—';
   return new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short', hour12: false });

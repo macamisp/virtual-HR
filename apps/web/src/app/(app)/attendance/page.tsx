@@ -16,7 +16,7 @@ import { Label } from '@/components/ui/label';
 import { FormField } from '@/components/form-field';
 import { EmptyState, ErrorState, LoadingState } from '@/components/state-views';
 import { useBreak, useDays, useMyCorrections, useRequestCorrection, useToday } from '@/lib/queries';
-import { addDays, formatClock, formatDateTime, formatDuration, formatWorkDate, startOfWeek, toWorkDate } from '@/lib/format';
+import { addDays, formatClock, formatClockSeconds, formatDateTime, formatDuration, formatWorkDate, startOfWeek, toWorkDate } from '@/lib/format';
 
 const STATE_LABEL: Record<MyToday['state'], string> = {
   OFFLINE: 'Not clocked in',
@@ -188,8 +188,8 @@ function WeekList() {
               {days.data.map((d: MyDay) => (
                 <TableRow key={d.workDate}>
                   <TableCell className="font-medium">{formatWorkDate(d.workDate)}</TableCell>
-                  <TableCell>{formatClock(d.firstIn)}</TableCell>
-                  <TableCell>{d.open ? <Badge variant="success">In progress</Badge> : formatClock(d.lastOut)}</TableCell>
+                  <TableCell title={d.firstIn ? `Clock-in ${formatClockSeconds(d.firstIn)}` : undefined}>{formatClock(d.firstIn)}</TableCell>
+                  <TableCell title={!d.open && d.lastOut ? `Clock-out ${formatClockSeconds(d.lastOut)}` : undefined}>{d.open ? <Badge variant="success">In progress</Badge> : formatClock(d.lastOut)}</TableCell>
                   <TableCell className="text-right tabular-nums">{formatDuration(d.activeSeconds)}</TableCell>
                   <TableCell className="text-right tabular-nums">{formatDuration(d.idleSeconds)}</TableCell>
                   <TableCell className="text-right tabular-nums">{formatDuration(d.breakSeconds)}</TableCell>
