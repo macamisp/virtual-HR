@@ -46,7 +46,9 @@ export interface VideoGrant {
 export function accessToken(cfg: LiveKitConfig, identity: string, name: string, grant: VideoGrant, ttlSeconds = TOKEN_TTL_SECONDS): { token: string; expiresAt: Date } {
   const now = Math.floor(Date.now() / 1000);
   const token = jwt.sign(
-    { video: grant, name, sub: identity, jti: `${identity}-${now}-${Math.random().toString(36).slice(2, 8)}` },
+    // iat from the same clock reading as expiresAt: jsonwebtoken reads the clock again otherwise, and
+    // across a second boundary the token outlived the expiresAt the API reported by one second.
+    { video: grant, name, sub: identity, iat: now, jti: `${identity}-${now}-${Math.random().toString(36).slice(2, 8)}` },
     cfg.apiSecret,
     { algorithm: 'HS256', issuer: cfg.apiKey, notBefore: 0, expiresIn: ttlSeconds },
   );

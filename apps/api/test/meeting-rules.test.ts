@@ -48,7 +48,7 @@ describe('LiveKit tokens and webhooks (ADR 016)', () => {
     const c = jwt.verify(token, cfg.apiSecret, { issuer: 'k1' }) as { video: { room: string }; sub: string; exp: number };
     assert.equal(c.video.room, 'meet-x');
     assert.equal(c.sub, 'user-1');
-    assert.ok(Math.abs(c.exp * 1000 - expiresAt.getTime()) < 1000);
+    assert.equal(c.exp * 1000, expiresAt.getTime(), 'the token expires exactly when the API says');
     assert.ok(expiresAt.getTime() - Date.now() <= 600_000);
   });
 
