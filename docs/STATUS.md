@@ -335,3 +335,10 @@ Gates on the branch (19 October 2026): lint and typecheck clean; API **743 / 744
 
 Found on the way, not fixed here: three tests fail on `main` as well on 19 October 2026 (`timesheets-e2e` › "owners are reminded to submit on the last day…", `reports-e2e` › "per assignee…", `attendance-guards-e2e` › "several open items alert the manager once per week"); they look date-dependent and need their own fix. The server accepts a 2FA code only inside its own 30-second step (no tolerance); the new e2e admin sign-in waits for a fresh step.
 
+## 10. Verification pack results (19 October 2026)
+
+- **CI** on `main` at `50648cc` (internet demo merged): all jobs green (`test`, `terraform`, `images`, three `agent-installers`).
+- **`npm run verify`** on a development computer: lint PASS, types PASS, API tests 759 passed / 0 failed / 0 skipped, browser tests 70 passed / 1 failed / 1 not run (because of the failure) / 2 skipped. The failure was the share-link download file name in spec `11-vault` (a random name instead of the document's); it passed when run alone straight after (3 of 3). See known issue 17.
+- **Measured accuracy:** NFR-ACC-001 median 220 ms, 99th percentile 277 ms (100/100 within 5 s); NFR-ACC-002 logout clock-out closed 0.1 s after the event, tab close 35.4 s, network loss 69.2 s (clock-out time itself 4.3-4.4 s off); logout closes the session 65 ms after the request; NFR-ACC-003 wall clock 61 s counted 61 s; NFR-ACC-004 a total altered by 600 s was reported.
+- **Why 2 browser tests are skipped:** the two `22-recording` tests need LiveKit's Egress container (about 1.3 GB). CI starts LiveKit but not Egress, so they are skipped there; they passed on 17 October with `LIVEKIT_EGRESS=1`. Recording is covered in CI by the API tests.
+- **Where the three earlier fixes landed (all on `main`):** logout closes the session: 355f142, 2688e3e, 1d0b590, a0e71ae. Accuracy numbers (NFR-ACC-001..004): 2688e3e, 2e910cd, 53d6c44. Leave and holidays: 3e5ce25, facebe8, 92e2f18, f76c6ec.
