@@ -262,6 +262,8 @@ model WorkSchedule {
   days          Json
   flexible      Boolean   @default(false)
   graceMinutes  Int       @default(10) @map("grace_minutes")
+  earlyLeaveGraceMinutes Int? @map("early_leave_grace_minutes")
+  breakAllowanceMinutes  Int? @map("break_allowance_minutes")
   effectiveFrom DateTime  @map("effective_from") @db.Date
   effectiveTo   DateTime? @map("effective_to") @db.Date
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
@@ -416,6 +418,7 @@ model AttendanceDaily {
   lateMinutes       Int       @default(0) @map("late_minutes")
   earlyLeaveMinutes Int       @default(0) @map("early_leave_minutes")
   overtimeMinutes   Int       @default(0) @map("overtime_minutes")
+  excessBreakMinutes Int      @default(0) @map("excess_break_minutes")
   dayStatus         String    @default("PRESENT") @map("day_status") @db.VarChar(20)
   createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz()

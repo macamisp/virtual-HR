@@ -60,3 +60,4 @@ export * from './attendance/leave.ts';
 export * from './calendar/types.ts';
 export * from './documents/esign.ts';
 export * from './org/structure.ts';
+export * from './org/schedules.ts';

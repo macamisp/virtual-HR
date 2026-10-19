@@ -221,7 +221,12 @@ export interface WorkSchedule {
   teamId?: string | null;
   days: Record<string, WorkScheduleDay>; // "1".."7" (1 = Monday)
   flexible: boolean;
-  graceMinutes: number; // default 10
+  /** Late-arrival grace; also the early-leave grace when earlyLeaveGraceMinutes is not set. Default 10. */
+  graceMinutes: number;
+  /** FR-ORG-005: early-leave grace; null or absent means "same as graceMinutes". */
+  earlyLeaveGraceMinutes?: number | null;
+  /** FR-ORG-005: break time allowed per day; beyond it the day is flagged EXCESS_BREAK. Null: no limit. */
+  breakAllowanceMinutes?: number | null;
   effectiveFrom: string; // YYYY-MM-DD
   effectiveTo?: string | null;
 }
@@ -268,6 +273,8 @@ export interface ScheduleComplianceResult {
   lateArrivalMinutes: number;
   earlyLeaveMinutes: number;
   overtimeMinutes: number;
+  /** Break minutes beyond the schedule's allowance (FR-ORG-005); 0 without an allowance. */
+  excessBreakMinutes: number;
   isAbsent: boolean;
   flags: string[];
 }
@@ -299,6 +306,7 @@ export interface AttendanceDaily {
   lateMinutes: number;
   earlyLeaveMinutes: number;
   overtimeMinutes: number;
+  excessBreakMinutes: number;
   dayStatus: DayStatus;
   displayName?: string;
   email?: string;
@@ -329,6 +337,9 @@ export interface LiveBoardUser {
   lastHeartbeatAt?: Date | null;
   todayNetSeconds: number;
   hasClockedInToday: boolean;   // distinguishes "signed out" from "not yet in"
+  /** FR-ORG-005: break time today, and the allowance of the schedule in force today (null: no limit). */
+  todayBreakSeconds: number;
+  breakAllowanceSeconds: number | null;
 }
 
 export interface LiveBoardFilter {

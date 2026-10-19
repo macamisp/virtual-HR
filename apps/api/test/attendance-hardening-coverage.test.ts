@@ -456,6 +456,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
         lateMinutes: 0,
         earlyLeaveMinutes: 0,
         overtimeMinutes: 0,
+        excessBreakMinutes: 0,
         dayStatus: DayStatus.PRESENT,
       });
     });
@@ -1448,6 +1449,7 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
         lateMinutes: 0,
         earlyLeaveMinutes: 0,
         overtimeMinutes: 0,
+        excessBreakMinutes: 0,
         dayStatus: DayStatus.PRESENT,
       });
       const csvNoEmail = await service.exportAttendanceCsv({

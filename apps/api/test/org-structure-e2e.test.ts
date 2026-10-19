@@ -20,7 +20,7 @@ import { LeaveRequestListSchema } from '../../../packages/shared/src/attendance/
 const ORG = '0c0c0000-0000-4000-8000-000000000001';
 const OTHER = '0c0c0000-0000-4000-8000-000000000002';
 const TEAM = '0c0c0000-0000-4000-8000-000000000101';
-const PORT = 3095;
+const PORT = 3111;
 const PASSWORD = 'ComplexPassword123!';
 const MFA_SECRET = 'KVKFKRCPNZQUYMLXOVYDSQKJKZDTSRLD'; // test-only; HR must have 2FA enrolled (FR-AUTH-004)
 const U = {

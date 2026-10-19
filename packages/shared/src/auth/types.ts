@@ -78,6 +78,8 @@ export const Permission = {
   LEAVE_APPROVE_ALL: 'leave.approve.all',
   /** FR-ORG-011: the public holiday calendar. */
   HOLIDAYS_MANAGE: 'holidays.manage',
+  /** FR-ORG-005: edit work schedules (organisation default, team, person). */
+  SCHEDULES_MANAGE: 'schedules.manage',
 } as const;
 export type Permission = (typeof Permission)[keyof typeof Permission];
 
@@ -92,6 +94,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.LEAVE_USE,
     Permission.LEAVE_APPROVE_ALL,
     Permission.HOLIDAYS_MANAGE,
+    Permission.SCHEDULES_MANAGE,
     Permission.MEETINGS_USE,
     Permission.CHAT_USE,
     Permission.TASKS_USE,
@@ -135,6 +138,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.LEAVE_USE,
     Permission.LEAVE_APPROVE_ALL,
     Permission.HOLIDAYS_MANAGE,
+    Permission.SCHEDULES_MANAGE,
     Permission.MEETINGS_USE,
     Permission.CHAT_USE,
     Permission.TASKS_USE,
@@ -177,6 +181,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.LEAVE_USE,
     Permission.LEAVE_APPROVE_ALL,
     Permission.HOLIDAYS_MANAGE,
+    Permission.SCHEDULES_MANAGE,
     Permission.MEETINGS_USE,
     Permission.CHAT_USE,
     Permission.TASKS_USE,
@@ -219,6 +224,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.LEAVE_USE,
     Permission.LEAVE_APPROVE_ALL,
     Permission.HOLIDAYS_MANAGE,
+    Permission.SCHEDULES_MANAGE,
     Permission.MEETINGS_USE,
     Permission.CHAT_USE,
     Permission.TASKS_USE,
@@ -414,6 +420,7 @@ export const PERMISSION_GROUPS: ReadonlyArray<{ group: string; items: ReadonlyAr
     { permission: Permission.LEAVE_APPROVE_TEAM, label: 'Decide the team\'s leave requests' },
     { permission: Permission.LEAVE_APPROVE_ALL, label: 'Decide everyone\'s leave requests' },
     { permission: Permission.HOLIDAYS_MANAGE, label: 'Manage the public holiday calendar' },
+    { permission: Permission.SCHEDULES_MANAGE, label: 'Manage work schedules' },
   ] },
   { group: 'Tasks', items: [
     { permission: Permission.TASKS_USE, label: 'Use tasks' },
