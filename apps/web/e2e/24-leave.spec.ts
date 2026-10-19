@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { generateSync } from 'otplib';
 import { ADMIN_USER, ORG_ID, USERS, adminPool } from './fixtures';
-import { passNoticeGate, signIn, signOut } from './helpers';
+import { freshTotp, passNoticeGate, signIn, signOut } from './helpers';
 
 /**
  * Leave and public holidays in the browser (FR-ORG-010, FR-ORG-011, FR-ATT-022; ADR 027): the
@@ -57,7 +56,7 @@ test.describe.serial('Leave requests and public holidays', () => {
     await signOut(page);
 
     await signIn(page, ADMIN_USER.email);
-    await page.getByLabel('Authentication code').fill(generateSync({ secret: ADMIN_USER.totp }));
+    await page.getByLabel('Authentication code').fill(await freshTotp(page, ADMIN_USER.totp));
     await page.getByRole('button', { name: 'Verify' }).click();
     await passNoticeGate(page);
     await page.goto('/admin/holidays');

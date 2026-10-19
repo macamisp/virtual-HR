@@ -18,6 +18,7 @@ import { configureApp } from '../src/common/configure-app.ts';
 import { AttendanceGateway } from '../src/attendance/attendance.gateway.ts';
 import { signHeartbeatPayload } from '../../../packages/shared/src/attendance/heartbeat-signer.ts';
 import { CONSENT_NOTICES } from '../../../packages/shared/src/index.ts';
+import { resetOrgs } from './support/reset-orgs.ts';
 
 const ORG = 'a8a80000-0000-4000-8000-000000000001';
 const USER = { id: 'a8a80000-0000-4000-8000-000000000011', email: 'mia@multi.test' };
@@ -46,7 +47,7 @@ describe('Multi-instance coordination (ADR 020)', { concurrency: false }, () => 
     await r.flushdb();
     r.disconnect();
     adminPool = new pg.Pool({ host: process.env.PGHOST || 'localhost', port: Number(process.env.PGPORT || 5433), database: process.env.PGDATABASE || 'hrvo_dev', user: process.env.PGADMIN_USER || 'postgres', password: process.env.PGADMIN_PASSWORD || 'postgres' });
-    await adminPool.query(`DELETE FROM organizations WHERE id = $1`, [ORG]);
+    await resetOrgs(adminPool, [ORG]);
     await adminPool.query(`INSERT INTO organizations (id, name, slug) VALUES ($1, 'Multi Ltd', 'multi-e2e')`, [ORG]);
     const hash = await argon2.hash(PASSWORD, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 });
     await adminPool.query(`INSERT INTO users (id, org_id, email, display_name, role, password_hash, status) VALUES ($1, $2, $3, 'Mia Multi', 'EMPLOYEE', $4, 'ACTIVE')`, [USER.id, ORG, USER.email, hash]);
@@ -64,7 +65,7 @@ describe('Multi-instance coordination (ADR 020)', { concurrency: false }, () => 
   after(async () => {
     for (const s of sockets) s.disconnect();
     for (const app of apps) await app.close();
-    await adminPool.query(`DELETE FROM organizations WHERE id = $1`, [ORG]);
+    await resetOrgs(adminPool, [ORG]);
     await adminPool.end();
     for (const k of ['COORDINATION', 'REDIS_DB', 'RATE_LIMIT_LOGIN']) delete process.env[k];
   });

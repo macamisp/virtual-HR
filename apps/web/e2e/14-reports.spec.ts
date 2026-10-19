@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { generateSync } from 'otplib';
 import { ADMIN_USER, USERS } from './fixtures';
-import { passNoticeGate, signIn } from './helpers';
+import { freshTotp, passNoticeGate, signIn } from './helpers';
 
 test.describe.serial('Manager dashboard and reports (FR-REP-001..006, 008)', () => {
   test('a team lead sees the dashboard and team-scoped reports; exports download', async ({ page }) => {
@@ -32,7 +31,7 @@ test.describe.serial('Manager dashboard and reports (FR-REP-001..006, 008)', () 
     // The HR fixture enrolled 2FA in spec 01; its secret is read from the page in that spec, so sign in as the admin instead.
     await page.goto('/login');
     await signIn(page, ADMIN_USER.email);
-    await page.getByLabel('Authentication code').fill(generateSync({ secret: ADMIN_USER.totp }));
+    await page.getByLabel('Authentication code').fill(await freshTotp(page, ADMIN_USER.totp));
     await page.getByRole('button', { name: 'Verify' }).click();
     await passNoticeGate(page);
     await page.goto('/reports');

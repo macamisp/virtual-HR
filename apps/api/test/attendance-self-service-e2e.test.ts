@@ -216,11 +216,18 @@ describe('Attendance self-service API (apps/web contract)', { concurrency: false
   });
 
   it('corrections: requester sees own list; queue is scoped to the requester\'s manager (FR-ATT-013)', async () => {
+    // Yesterday 09:00-17:00 in Colombo: corrections older than 7 days are refused, so no fixed date.
+    const yesterday = formatInTimeZone(new Date(Date.now() - 86_400_000), 'Asia/Colombo', 'yyyy-MM-dd');
     const create = await api(emp.accessToken, '/attendance/corrections', {
       method: 'POST',
-      body: JSON.stringify({ requestedIn: '2026-10-12T03:30:00.000Z', requestedOut: '2026-10-12T11:30:00.000Z', reason: 'Forgot laptop at home' }),
+      body: JSON.stringify({ requestedIn: new Date(`${yesterday}T09:00:00+05:30`).toISOString(), requestedOut: new Date(`${yesterday}T17:00:00+05:30`).toISOString(), reason: 'Forgot laptop at home' }),
     });
     assert.equal(create.status, 201);
+    const tooOld = await api(emp.accessToken, '/attendance/corrections', {
+      method: 'POST',
+      body: JSON.stringify({ requestedIn: new Date(Date.now() - 9 * 86_400_000).toISOString(), requestedOut: new Date(Date.now() - 9 * 86_400_000 + 3_600_000).toISOString(), reason: 'Much too late' }),
+    });
+    assert.equal(tooOld.status, 400, 'older than 7 days is a client error, not a 500');
     // The web client validates this body; every contract field must be present (nulls included).
     const created = CorrectionSchema.parse(await create.json());
     assert.equal(created.reviewerId, null);

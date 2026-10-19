@@ -1,14 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
-import { generateSync } from 'otplib';
 import { ADMIN_USER, USERS } from './fixtures';
-import { passNoticeGate, signIn } from './helpers';
+import { freshTotp, passNoticeGate, signIn } from './helpers';
 
 const ROLE = `No documents ${Date.now()}`;
 
 async function signInAdmin(page: Page) {
   await signIn(page, ADMIN_USER.email);
   await expect(page.getByRole('heading', { name: 'Two-factor authentication' })).toBeVisible();
-  await page.getByLabel('Authentication code').fill(generateSync({ secret: ADMIN_USER.totp }));
+  await page.getByLabel('Authentication code').fill(await freshTotp(page, ADMIN_USER.totp));
   await page.getByRole('button', { name: 'Verify' }).click();
   await passNoticeGate(page);
 }

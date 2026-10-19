@@ -591,8 +591,10 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
 
     it('FR-ATT-013: Attendance correction workflow with validation and manager approval', async () => {
       // 1. Employee requests correction
-      const reqIn = '2026-10-14T03:30:00.000Z';
-      const reqOut = '2026-10-14T11:30:00.000Z';
+      // Yesterday 09:00-17:00 in Colombo: corrections older than 7 days are refused, so no fixed date.
+      const yesterday = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Colombo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(Date.now() - 86_400_000));
+      const reqIn = new Date(`${yesterday}T09:00:00+05:30`).toISOString();
+      const reqOut = new Date(`${yesterday}T17:00:00+05:30`).toISOString();
 
       const createRes = await fetch(`${baseUrl}/attendance/corrections`, {
         method: 'POST',

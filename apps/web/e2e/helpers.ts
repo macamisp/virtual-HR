@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test';
+import { generateSync } from 'otplib';
 import { PASSWORD } from './fixtures';
 
 export async function signIn(page: Page, email: string, password = PASSWORD): Promise<void> {
@@ -35,4 +36,15 @@ export function traceSockets(page: Page): void {
     ws.on('framereceived', (f) => log('WS <', String(f.payload).slice(0, 140)));
     ws.on('close', () => log('WS closed'));
   });
+}
+
+/**
+ * A valid TOTP code that will still be valid when it arrives. The server accepts a code only inside
+ * its own 30-second step (no tolerance), so a code made in a step's last seconds can expire on the
+ * way: wait for a fresh step first.
+ */
+export async function freshTotp(page: Page, secret: string): Promise<string> {
+  const left = 30 - (Math.floor(Date.now() / 1000) % 30);
+  if (left < 5) await page.waitForTimeout(left * 1000 + 250);
+  return generateSync({ secret });
 }

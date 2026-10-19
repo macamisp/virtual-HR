@@ -22,6 +22,7 @@ import { signHeartbeatPayload } from '../../../packages/shared/src/attendance/he
 import { centre, generateDefaultFloor, OfficeSnapshotSchema, PeopleListSchema, TILE_SIZE } from '../../../packages/shared/src/office/index.ts';
 import type { JoinAck, MoveAck, OfficeSnapshot, PositionsMessage, ProximityMessage, RosterEntry, TeleportAck } from '../../../packages/shared/src/office/index.ts';
 import type { StateMachineTransitionResult } from '../../../packages/shared/src/index.ts';
+import { resetOrgs } from './support/reset-orgs.ts';
 
 const ORG = 'f0f00000-0000-4000-8000-000000000001';
 const OTHER = 'f0f00000-0000-4000-8000-000000000002';
@@ -101,7 +102,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
     process.env.RATE_LIMIT_LOGIN = '1000';
     process.env.JOBS_ENABLED = 'false';
     adminPool = new pg.Pool({ host: process.env.PGHOST || 'localhost', port: Number(process.env.PGPORT || 5433), database: process.env.PGDATABASE || 'hrvo_dev', user: process.env.PGADMIN_USER || 'postgres', password: process.env.PGADMIN_PASSWORD || 'postgres' });
-    await adminPool.query(`DELETE FROM organizations WHERE id = ANY($1::uuid[])`, [[ORG, OTHER]]);
+    await resetOrgs(adminPool, [ORG, OTHER]);
     await adminPool.query(`INSERT INTO organizations (id, name, slug) VALUES ($1, 'VO Ltd', 'vo-e2e'), ($2, 'Other Ltd', 'vo-other-e2e')`, [ORG, OTHER]);
     const hash = await argon2.hash(PASSWORD, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 });
     for (const u of Object.values(U)) {
@@ -121,7 +122,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
   after(async () => {
     for (const s of sockets) s.disconnect();
     await app?.close();
-    await adminPool.query(`DELETE FROM organizations WHERE id = ANY($1::uuid[])`, [[ORG, OTHER]]);
+    await resetOrgs(adminPool, [ORG, OTHER]);
     await adminPool.end();
   });
 

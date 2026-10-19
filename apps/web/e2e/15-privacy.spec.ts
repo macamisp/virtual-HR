@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { generateSync } from 'otplib';
 import { ADMIN_USER, USERS } from './fixtures';
-import { passNoticeGate, signIn } from './helpers';
+import { freshTotp, passNoticeGate, signIn } from './helpers';
 
 test.describe.serial('Data-subject export and anonymisation requests (FR-AUD-002, 003)', () => {
   test('a person downloads their own data as a ZIP', async ({ page }) => {
@@ -16,7 +15,7 @@ test.describe.serial('Data-subject export and anonymisation requests (FR-AUD-002
 
   test('HR checks, opens and cancels an anonymisation request without touching the data', async ({ page }) => {
     await signIn(page, ADMIN_USER.email);
-    await page.getByLabel('Authentication code').fill(generateSync({ secret: ADMIN_USER.totp }));
+    await page.getByLabel('Authentication code').fill(await freshTotp(page, ADMIN_USER.totp));
     await page.getByRole('button', { name: 'Verify' }).click();
     await passNoticeGate(page);
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Privacy requests' }).click();

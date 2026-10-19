@@ -55,7 +55,7 @@ function toHttpError(err: unknown): unknown {
     return new ForbiddenException(err.message);
   }
   if (/not found/i.test(err.message)) return new NotFoundException(err.message);
-  if (/must be (after|before)|Invalid|overlap|future/i.test(err.message)) return new BadRequestException(err.message);
+  if (/must be (after|before)|Invalid|overlap|future|exceeds maximum allowed age/i.test(err.message)) return new BadRequestException(err.message);
   return err;
 }
 
