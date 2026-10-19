@@ -33,6 +33,8 @@ export class DataExportService {
       profile: {
         ...profile,
         subcontractorProfile: (await one(`SELECT rate_type, rate::text, currency, overtime_multiplier::text, weekly_hours_cap::text, updated_at FROM subcontractor_profiles WHERE user_id = $1`))[0] ?? null,
+        // FR-ORG-002: tax ID and bank details stay encrypted; the person reveals them in the app.
+        subcontractorDetails: (await one(`SELECT legal_name, company_name, country, contact_email, contact_phone, address, emergency_contact, tax_id_enc IS NOT NULL AS tax_id_on_file, bank_details_enc IS NOT NULL AS bank_details_on_file, updated_at FROM subcontractor_details WHERE user_id = $1`))[0] ?? null,
         contracts: await one(`SELECT id, title, scope, start_date, end_date, status, renewal_notice_days, created_at FROM contracts WHERE user_id = $1 ORDER BY start_date`),
         workSchedules: await one(`SELECT days, flexible, grace_minutes, effective_from, effective_to FROM work_schedules WHERE user_id = $1`),
       },

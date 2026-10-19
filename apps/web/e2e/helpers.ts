@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 import { generateSync } from 'otplib';
-import { PASSWORD } from './fixtures';
+import { ADMIN_USER, PASSWORD } from './fixtures';
 
 export async function signIn(page: Page, email: string, password = PASSWORD): Promise<void> {
   await page.goto('/login');
@@ -47,4 +47,13 @@ export async function freshTotp(page: Page, secret: string): Promise<string> {
   const left = 30 - (Math.floor(Date.now() / 1000) % 30);
   if (left < 5) await page.waitForTimeout(left * 1000 + 250);
   return generateSync({ secret });
+}
+
+/** The admin signs in with 2FA; waits for the code screen first so the code is not typed mid-navigation. */
+export async function signInAdmin(page: Page): Promise<void> {
+  await signIn(page, ADMIN_USER.email);
+  await expect(page.getByRole('heading', { name: 'Two-factor authentication' })).toBeVisible();
+  await page.getByLabel('Authentication code').fill(await freshTotp(page, ADMIN_USER.totp));
+  await page.getByRole('button', { name: 'Verify' }).click();
+  await passNoticeGate(page);
 }

@@ -66,6 +66,7 @@ Generated 2026-10-19 from `pg_class` / `pg_policy` on a database at the current 
 | `session_secrets` | yes | yes | 1 | yes | DELETE, INSERT, SELECT, UPDATE |
 | `signature_requests` | yes | yes | 1 | yes | INSERT, SELECT, UPDATE |
 | `signature_signers` | yes | yes | 1 | yes | INSERT, SELECT, UPDATE |
+| `subcontractor_details` | yes | yes | 1 | yes | DELETE, INSERT, SELECT, UPDATE |
 | `subcontractor_profiles` | yes | yes | 1 | yes | INSERT, SELECT, UPDATE |
 | `task_activity` | yes | yes | 1 | yes | INSERT, SELECT |
 | `task_attachments` | yes | yes | 1 | yes | INSERT, SELECT, UPDATE |

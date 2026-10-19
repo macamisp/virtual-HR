@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { generateSync } from 'otplib';
-import { ADMIN_USER, ORG_ID, USERS, adminPool } from './fixtures';
-import { passNoticeGate, signIn, signOut } from './helpers';
+import { ORG_ID, USERS, adminPool } from './fixtures';
+import { passNoticeGate, signIn, signInAdmin, signOut } from './helpers';
 
 /**
  * The work schedule editor in the browser (FR-ORG-005; ADR 032): an admin gives one person their
@@ -15,10 +14,7 @@ test.describe.serial('Work schedules', () => {
   });
 
   test('an admin gives a person their own schedule and stops it again', async ({ page }) => {
-    await signIn(page, ADMIN_USER.email);
-    await page.getByLabel('Authentication code').fill(generateSync({ secret: ADMIN_USER.totp }));
-    await page.getByRole('button', { name: 'Verify' }).click();
-    await passNoticeGate(page);
+    await signInAdmin(page);
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Work schedules' }).click();
 
     await page.getByLabel('Schedule for').selectOption('USER');

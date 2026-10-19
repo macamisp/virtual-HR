@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { generateSync } from 'otplib';
-import { ADMIN_USER, ORG_ID, TEAM_ID, USERS, adminPool } from './fixtures';
-import { passNoticeGate, signIn, signOut } from './helpers';
+import { ORG_ID, TEAM_ID, USERS, adminPool } from './fixtures';
+import { passNoticeGate, signIn, signInAdmin, signOut } from './helpers';
 
 /**
  * Teams and the manager hierarchy in the browser (FR-ORG-006; ADR 031): an admin creates a team,
@@ -19,10 +18,7 @@ test.describe.serial('Teams, managers and the organisation chart', () => {
   });
 
   test('an admin creates a team, moves a person under a new manager, and sees it in the chart', async ({ page }) => {
-    await signIn(page, ADMIN_USER.email);
-    await page.getByLabel('Authentication code').fill(generateSync({ secret: ADMIN_USER.totp }));
-    await page.getByRole('button', { name: 'Verify' }).click();
-    await passNoticeGate(page);
+    await signInAdmin(page);
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Teams and managers' }).click();
 
     const create = page.getByRole('form', { name: 'Create a team' });

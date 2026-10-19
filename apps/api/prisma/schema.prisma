@@ -72,6 +72,7 @@ model Organization {
   notificationPreferences       NotificationPreference[]
   jobRuns                       JobRun[]
   subcontractorProfiles         SubcontractorProfile[]
+  subcontractorDetails          SubcontractorDetail[]
   timesheets                    Timesheet[]
   timesheetDays                 TimesheetDay[]
   timeEntries                   TimeEntry[]
@@ -196,6 +197,7 @@ model User {
   privacySubjectOf        PrivacyRequest[]         @relation("PrivacySubject")
   privacyRequested        PrivacyRequest[]         @relation("PrivacyRequester")
   rateProfile             SubcontractorProfile?
+  subcontractorDetail     SubcontractorDetail?
   timesheets              Timesheet[]
   timesheetDays           TimesheetDay[]
   timeEntries             TimeEntry[]
@@ -940,6 +942,32 @@ model SubcontractorProfile {
 
   @@index([orgId])
   @@map("subcontractor_profiles")
+}
+
+/// FR-ORG-002 (ADR 033): who the subcontractor is and how to pay them. Tax ID and bank details are
+/// AES-256-GCM ciphertext under a per-profile data key wrapped by the KeyProvider; never plaintext.
+model SubcontractorDetail {
+  userId           String   @id @map("user_id") @db.Uuid
+  orgId            String   @map("org_id") @db.Uuid
+  legalName        String   @default("") @map("legal_name") @db.VarChar(200)
+  companyName      String   @default("") @map("company_name") @db.VarChar(200)
+  country          String?  @db.Char(2)
+  contactEmail     String?  @map("contact_email") @db.VarChar(255)
+  contactPhone     String?  @map("contact_phone") @db.VarChar(40)
+  address          String   @default("") @db.VarChar(500)
+  emergencyContact Json?    @map("emergency_contact")
+  taxIdEnc         Bytes?   @map("tax_id_enc")
+  bankDetailsEnc   Bytes?   @map("bank_details_enc")
+  dekWrapped       Bytes?   @map("dek_wrapped")
+  dekKeyId         String?  @map("dek_key_id") @db.VarChar(200)
+  updatedBy        String?  @map("updated_by") @db.Uuid
+  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("subcontractor_details")
 }
 
 /// FR-TS-002 / FR-TS-006: periodic, approvable timesheet per user.
