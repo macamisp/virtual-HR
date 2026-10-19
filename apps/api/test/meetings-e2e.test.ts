@@ -369,6 +369,9 @@ describe('Media and meetings (FR-VO-005, 009, 010; FR-MEET-001..003, 005, 008, 0
   });
 
   describe('Ring decisions and meeting chat (FR-VO-008; FR-MEET-001, 005, 012, 013)', () => {
+    // Earlier tests leave people connected to live meetings (no "left" webhook); start from nobody in a call.
+    before(async () => { await adminPool.query(`UPDATE meeting_participants SET left_at = now() WHERE org_id = $1 AND left_at IS NULL`, [ORG]); });
+
     it('persists incoming rings, decline and caller feedback, with tenant isolation', async () => {
       const m = await ok(await api('host', '/meetings', { method: 'POST', body: { type: 'INSTANT', title: 'Ring decision', attendeeIds: [U.a.id] } }), 201, MeetingSchema);
       const incoming = await ok<{ items: Array<{ meetingId: string }> }>(await api('a', '/meetings/incoming'), 200);
@@ -400,6 +403,19 @@ describe('Media and meetings (FR-VO-005, 009, 010; FR-MEET-001..003, 005, 008, 0
       assert.equal(calls.items[0]?.state, 'BUSY');
       assert.equal((await api('a', `/meetings/${next.id}/accept`, { method: 'POST' })).status, 409);
       await webhook({ event: 'participant_left', room: { name: `meet-${ORG}-${m.id}` }, participant: { identity: U.a.id, sid: 'PA_BUSY' } });
+    });
+
+    it('a lost "left" webhook does not keep someone busy forever (12-hour bound)', async () => {
+      const m = await ok(await api('host', '/meetings', { method: 'POST', body: { type: 'INSTANT', title: 'Stale', attendeeIds: [U.a.id] } }), 201, MeetingSchema);
+      await ok(await api('a', `/meetings/${m.id}/accept`, { method: 'POST' }), 200);
+      await webhook({ event: 'participant_joined', room: { name: `meet-${ORG}-${m.id}` }, participant: { identity: U.a.id, sid: 'PA_STALE' } });
+      await adminPool.query(`UPDATE meeting_participants SET joined_at = now() - interval '13 hours' WHERE meeting_id = $1`, [m.id]);
+      await adminPool.query(`UPDATE meeting_calls SET expires_at = now() - interval '1 second' WHERE meeting_id = $1`, [m.id]);
+      const next = await ok(await api('b', '/meetings', { method: 'POST', body: { type: 'INSTANT', title: 'After a lost webhook', attendeeIds: [U.a.id] } }), 201, MeetingSchema);
+      const calls = await ok<{ items: Array<{ state: string; callerName: string }> }>(await api('b', `/meetings/${next.id}/calls`), 200);
+      assert.equal(calls.items[0]?.state, 'RINGING');
+      assert.equal(calls.items[0]?.callerName, U.b.name, 'the callee sees who is calling');
+      await ok(await api('a', `/meetings/${next.id}/decline`, { method: 'POST' }), 200);
     });
 
     it('keeps one persisted chat per meeting, with mentions and member-only access', async () => {

@@ -45,6 +45,14 @@ export class MeetingsController {
     return this.calls.list(user, meetingId);
   }
 
+  /** FR-VO-008: the caller stops ringing the people who have not answered yet. */
+  @Post(':id/calls/cancel')
+  @HttpCode(HttpStatus.OK)
+  async cancelCalls(@CurrentUser() user: AuthenticatedUser, @Param('id', id) meetingId: string) {
+    await this.calls.cancel(user, meetingId);
+    return this.calls.list(user, meetingId);
+  }
+
   @Post(':id/chat')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions(Permission.MEETINGS_USE, Permission.CHAT_USE)

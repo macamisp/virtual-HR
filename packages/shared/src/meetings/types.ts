@@ -171,7 +171,7 @@ export type MeetingDataMessage = { type: 'hand'; raised: boolean } | { type: 'mu
 
 /** FR-VO-008 / FR-MEET-001: server-owned ring and decision state. */
 export const CallStateSchema = z.object({
-  meetingId: z.string().uuid(), userId: z.string().uuid(), name: z.string(), title: z.string(),
+  meetingId: z.string().uuid(), userId: z.string().uuid(), name: z.string(), callerId: z.string().uuid(), callerName: z.string(), title: z.string(),
   state: z.enum(['RINGING', 'ACCEPTED', 'DECLINED', 'MISSED', 'BUSY', 'CANCELLED']),
   expiresAt: z.string().datetime({ offset: true }),
 });

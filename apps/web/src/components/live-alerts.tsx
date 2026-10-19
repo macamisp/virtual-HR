@@ -8,20 +8,28 @@ import { Megaphone, PhoneIncoming, X } from 'lucide-react';
 import type { BroadcastMessage } from '@hrvo/shared';
 import { Button } from '@/components/ui/button';
 import { closeUiSocket, onUiEvent } from '@/lib/ui-socket';
+import type { CallState } from '@hrvo/shared';
 
 interface Ring { meetingId: string; title: string }
 
-function RingAlert({ ring }: { ring: Ring }) {
+function RingAlert({ ring }: { ring: CallState }) {
   const respond = useRespond(ring.meetingId);
   const router = useRouter();
   const qc = useQueryClient();
-  const answer = (accept: boolean) => respond.mutate(accept, { onSuccess: () => {
-    void qc.invalidateQueries({ queryKey: ['meetings', 'incoming'] });
-    if (accept) router.push(`/meetings/${ring.meetingId}?join=1`);
-  } });
+  // mutateAsync, not mutate(…, { onSuccess }): the server's call-state event can remove this ring
+  // (unmounting the alert) before the response arrives, and per-call callbacks of an unmounted
+  // component never run. The promise still resolves, so the navigation always happens.
+  const meetingId = ring.meetingId;
+  const answer = (accept: boolean) => {
+    respond.mutateAsync(accept).then(() => {
+      void qc.invalidateQueries({ queryKey: ['meetings', 'incoming'] });
+      if (accept) router.push(`/meetings/${meetingId}?join=1`);
+    }).catch(() => undefined); // the error is shown from respond.error while the alert is mounted
+  };
   return <div role="alert" data-testid="ring" className="rounded border border-primary bg-background p-3 shadow-lg">
     <p className="flex items-center gap-2 text-sm font-medium"><PhoneIncoming className="h-4 w-4" aria-hidden="true" /> Incoming call</p>
-    <p className="text-sm">{ring.title}</p>
+    <p className="text-sm"><span className="font-medium">{ring.callerName}</span> is calling you</p>
+    <p className="text-xs text-muted-foreground">{ring.title}</p>
     <div className="mt-2 flex gap-2">
       <Button size="sm" disabled={respond.isPending} onClick={() => answer(true)}>Accept</Button>
       <Button size="sm" variant="ghost" disabled={respond.isPending} onClick={() => answer(false)}>Decline</Button>

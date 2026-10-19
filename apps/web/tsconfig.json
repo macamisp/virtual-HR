@@ -31,14 +31,13 @@
     }
   },
   "include": [
-    ".next-e2e/types/**/*.ts",
     ".next/types/**/*.ts",
     "e2e/**/*.ts",
     "next-env.d.ts",
     "playwright.config.ts",
     "src/**/*.ts",
     "src/**/*.tsx",
-    ".next-demo/types/**/*.ts"
+    ".next-e2e/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

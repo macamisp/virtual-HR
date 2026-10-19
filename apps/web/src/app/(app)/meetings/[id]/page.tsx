@@ -4,8 +4,9 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, use, useEffect, useId, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CalendarPlus, ListTodo, MicOff, UserMinus, Users } from 'lucide-react';
-import type { Meeting } from '@hrvo/shared';
+import { CalendarPlus, ListTodo, MessagesSquare, MicOff, PhoneOff, UserMinus, Users } from 'lucide-react';
+import type { CallState, Meeting } from '@hrvo/shared';
+import { MeetingChat } from '@/components/meeting-chat';
 import { CallView, useSession } from '@/components/media/call-view';
 import { PreJoin } from '@/components/media/prejoin';
 import { ConsentNotice, InCallConsent, RecordControls, RecordingBanner, RecordingsCard } from '@/components/media/recording-ui';
@@ -25,7 +26,7 @@ import type { DevicePrefs } from '@/lib/media/devices';
 import { MediaSession } from '@/lib/media/media-session';
 import {
   downloadIcs, joinMeeting, meetingKeys, useAddActionItem, useCancelMeeting, useConvertToTask, useLobby, useLobbyDecision,
-  useMeeting, useMuteAll, useRemoveParticipant, useRespond, useUpdateMeeting,
+  useCallResponses, useCancelCalls, useMeeting, useMuteAll, useRemoveParticipant, useRespond, useUpdateMeeting,
 } from '@/lib/meeting-queries';
 import { Permission, useCan } from '@/lib/permissions';
 import { onUiEvent } from '@/lib/ui-socket';
@@ -87,7 +88,35 @@ function HostControls({ meetingId, session, meeting }: { meetingId: string; sess
 /** Join flow: pre-join device check, then READY / lobby WAITING / DENIED, then the call. */
 type CallMeeting = Pick<Meeting, 'id' | 'title' | 'status' | 'type' | 'myRole' | 'recording' | 'canRecord'>;
 
-function MeetingCall({ meeting, autoStart, onChange }: { meeting: CallMeeting; autoStart: boolean; onChange?: () => void }) {
+/** FR-MEET-005: the meeting chat toggle; inside the call controls during a call, above the call otherwise. */
+function ChatToggle({ chat }: { chat: { open: boolean; toggle: () => void } }) {
+  return <Button size="sm" variant={chat.open ? 'default' : 'outline'} aria-pressed={chat.open} onClick={chat.toggle}><MessagesSquare aria-hidden="true" /> Chat</Button>;
+}
+
+const CALL_STATE_LABEL: Record<CallState['state'], string> = {
+  RINGING: 'Ringing…', ACCEPTED: 'Accepted', DECLINED: 'Declined', MISSED: 'Missed (no answer)', BUSY: 'Busy in another call', CANCELLED: 'Cancelled',
+};
+
+/** FR-VO-008: the caller sees each person's answer as it comes in, and can stop ringing. */
+function CallResponses({ meetingId }: { meetingId: string }) {
+  const calls = useCallResponses(meetingId);
+  const cancel = useCancelCalls(meetingId);
+  const items = calls.data?.items ?? [];
+  if (!items.length) return null;
+  const ringing = items.some((c) => c.state === 'RINGING');
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded border p-2 text-sm" data-testid="call-responses" aria-live="polite">
+      <span className="font-medium">Call:</span>
+      {items.map((c) => (
+        <Badge key={c.userId} variant={c.state === 'ACCEPTED' ? 'success' : c.state === 'RINGING' ? 'secondary' : 'outline'}>{c.name}: {CALL_STATE_LABEL[c.state]}</Badge>
+      ))}
+      {ringing ? <Button size="sm" variant="ghost" disabled={cancel.isPending} onClick={() => cancel.mutate()}><PhoneOff aria-hidden="true" /> Cancel call</Button> : null}
+      {cancel.isError ? <span role="alert" className="text-destructive">{cancel.error.message}</span> : null}
+    </div>
+  );
+}
+
+function MeetingCall({ meeting, autoStart, onChange, chat }: { meeting: CallMeeting; autoStart: boolean; onChange?: () => void; chat?: { open: boolean; toggle: () => void } }) {
   const [phase, setPhase] = useState<Phase>(autoStart ? 'prejoin' : 'idle');
   const [message, setMessage] = useState<string | null>(null);
   const [session] = useState(() => new MediaSession());
@@ -162,6 +191,7 @@ function MeetingCall({ meeting, autoStart, onChange }: { meeting: CallMeeting; a
             .finally(() => setAnswering(false));
         }} />
       ) : null}
+      {chat && phase !== 'call' ? <div><ChatToggle chat={chat} /></div> : null}
       {phase === 'idle' ? <Button onClick={() => setPhase('prejoin')}>{meeting.myRole === 'NONE' ? 'Ask to join' : 'Join meeting'}</Button> : null}
       {phase === 'prejoin' ? <PreJoin title={`Join “${meeting.title}”`} onCancel={() => setPhase('idle')} onJoin={(p) => { prefs.current = p; void attempt(); }} /> : null}
       {phase === 'joining' ? <p role="status" className="text-sm text-muted-foreground">Joining…</p> : null}
@@ -171,7 +201,7 @@ function MeetingCall({ meeting, autoStart, onChange }: { meeting: CallMeeting; a
       {phase === 'denied' ? <Alert variant="destructive" data-testid="join-denied"><AlertDescription>{message}</AlertDescription></Alert> : null}
       {phase === 'call' ? (
         <CallView session={session} onLeave={() => { void session.disconnect(); setPhase('idle'); }}
-          extraControls={moderator ? <HostControls meetingId={meeting.id} session={session} meeting={meeting} /> : null} />
+          extraControls={<>{moderator ? <HostControls meetingId={meeting.id} session={session} meeting={meeting} /> : null}{chat ? <ChatToggle chat={chat} /> : null}</>} />
       ) : null}
     </div>
   );
@@ -279,6 +309,7 @@ function MeetingPage({ id }: { id: string }) {
   const meeting = useMeeting(id);
   // Sticky: once in ask-to-join mode, a later successful refetch must not unmount a running call.
   const [ask, setAsk] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const notFound = meeting.error instanceof ApiError && meeting.error.status === 404;
   useEffect(() => { if (notFound) setAsk(true); }, [notFound]);
   if (!allowed) return <AccessDenied what="Meetings" />;
@@ -302,7 +333,10 @@ function MeetingPage({ id }: { id: string }) {
         {m.status === 'LIVE' ? <Badge variant="success">Live</Badge> : m.status === 'CANCELLED' ? <Badge variant="destructive">Cancelled</Badge> : m.status === 'ENDED' ? <Badge variant="secondary">Ended</Badge> : null}
         <Link href="/meetings" className="ml-auto text-sm underline">All meetings</Link>
       </div>
-      <MeetingCall meeting={m} autoStart={params.get('join') === '1'} onChange={() => void meeting.refetch()} />
+      {m.type === 'INSTANT' && m.myRole === 'HOST' ? <CallResponses meetingId={m.id} /> : null}
+      <MeetingCall meeting={m} autoStart={params.get('join') === '1'} onChange={() => void meeting.refetch()}
+        chat={m.type !== 'ROOM' && m.status !== 'CANCELLED' ? { open: chatOpen, toggle: () => setChatOpen((o) => !o) } : undefined} />
+      {chatOpen && m.type !== 'ROOM' ? <MeetingChat meetingId={m.id} /> : null}
       <div className="grid gap-4 lg:grid-cols-3">
         <Card><CardHeader><CardTitle className="text-base">Details</CardTitle></CardHeader><CardContent><Details meeting={m} /></CardContent></Card>
         <Card><CardHeader><CardTitle className="text-base">Notes</CardTitle></CardHeader><CardContent><Notes meeting={m} /></CardContent></Card>

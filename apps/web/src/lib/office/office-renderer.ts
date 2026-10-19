@@ -50,6 +50,8 @@ export class OfficeRenderer {
   private destroyed = false;
   fps = 0;
   frameMs = 0;
+  /** FR-VO-008: a right-click on another person's avatar; the page opens that person's menu. */
+  onAvatarMenu: ((userId: string) => void) | null = null;
 
   constructor(private readonly client: OfficeClient, private readonly host: HTMLElement) {}
 
@@ -68,12 +70,14 @@ export class OfficeRenderer {
       this.client.walkTo({ x: p.x, y: p.y });
     });
     this.host.addEventListener('wheel', this.onWheel, { passive: false });
+    this.host.addEventListener('contextmenu', this.onContext);
     this.app.ticker.add((t) => this.frame(t.deltaMS));
   }
 
   destroy(): void {
     this.destroyed = true;
     this.host.removeEventListener('wheel', this.onWheel);
+    this.host.removeEventListener('contextmenu', this.onContext);
     try { this.app.destroy(true, { children: true }); } catch { /* not initialised yet */ }
   }
 
@@ -81,6 +85,35 @@ export class OfficeRenderer {
     e.preventDefault();
     this.zoom = Math.max(0.4, Math.min(2, this.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
   };
+
+  private onContext = (e: MouseEvent) => {
+    const box = this.host.getBoundingClientRect();
+    const id = this.avatarAt(e.clientX - box.left, e.clientY - box.top);
+    if (!id) return;
+    e.preventDefault();
+    this.onAvatarMenu?.(id);
+  };
+
+  /** The other people's avatars in host CSS pixels (autoDensity), for the accessible overlay over the canvas. */
+  avatarsOnScreen(): Array<{ id: string; x: number; y: number }> {
+    const meId = this.client.snapshot.me.id;
+    const out: Array<{ id: string; x: number; y: number }> = [];
+    for (const [id, s] of this.sprites) {
+      if (id === meId || id.startsWith('bench-') || s.root.destroyed) continue;
+      const p = s.root.getGlobalPosition();
+      out.push({ id, x: p.x, y: p.y });
+    }
+    return out;
+  }
+
+  private avatarAt(x: number, y: number): string | null {
+    let best: { id: string; d: number } | null = null;
+    for (const a of this.avatarsOnScreen()) {
+      const d = Math.hypot(a.x - x, a.y - y);
+      if (d <= 24 * Math.max(1, this.zoom) && (!best || d < best.d)) best = { id: a.id, d };
+    }
+    return best?.id ?? null;
+  }
 
   zoomBy(f: number): void {
     this.zoom = Math.max(0.4, Math.min(2, this.zoom * f));

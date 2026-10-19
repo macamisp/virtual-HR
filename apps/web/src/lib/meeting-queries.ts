@@ -102,6 +102,10 @@ export function useIncomingCalls() {
 export function useCallResponses(id: string) {
   return useQuery({ queryKey: ['meetings', 'calls', id], queryFn: () => apiFetch(`/meetings/${enc(id)}/calls`, { schema: CallListSchema }), enabled: useSignedIn() && !!id, refetchInterval: 2_000 });
 }
+export function useCancelCalls(id: string) {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: () => apiFetch(`/meetings/${enc(id)}/calls/cancel`, { method: 'POST', schema: CallListSchema }), onSuccess: (list) => qc.setQueryData(['meetings', 'calls', id], list) });
+}
 export function useMeetingChat(id: string) {
   return useQuery({ queryKey: ['meetings', 'chat', id], queryFn: () => apiFetch(`/meetings/${enc(id)}/chat`, { method: 'POST', schema: z.object({ id: z.string().uuid() }) }), enabled: useSignedIn() && !!id, retry: false });
 }

@@ -319,8 +319,6 @@ export class MeetingsService {
       for (const h of out.hosts) this.gateway.notifyUser(h, 'meeting:lobby', { meetingId: id, userId: user.id, name: out.name, title: out.title });
       return { status: 'WAITING', message: 'Waiting for the host to let you in' };
     }
-    const busy = await this.prisma.runWithTenantContext(user.orgId, (db) => this.calls.busy(db, user.id, id));
-    if (busy) return { status: 'DENIED', message: 'You are already in a call. Leave it before joining another.' };
     const canModerate = this.moderates(out.role, user, out.m);
     return { status: 'READY', token: await this.media.meetingToken(user, { id: out.m.id, title: out.m.title, livekitRoomName: out.m.livekit_room_name }, canModerate) };
   }

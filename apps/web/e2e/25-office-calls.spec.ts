@@ -21,6 +21,7 @@ async function join(page: Page) {
 
 test.describe.serial('FR-VO-008 / FR-MEET-001, 005, 012, 013: office calls and meeting chat', () => {
   test('people list rings, decline reaches caller, avatar menu accepts; chat persists for both users', async ({ browser }) => {
+    test.setTimeout(180_000); // two sign-ins, two calls, two media joins and a chat round trip
     const lead = await person(browser, USERS.lead.email);
     const host = await person(browser, USERS.worker.email);
     try {

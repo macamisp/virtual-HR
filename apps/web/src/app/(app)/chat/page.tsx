@@ -19,6 +19,8 @@ import { formatDateTime } from '@/lib/format';
 import { Permission, useCan } from '@/lib/permissions';
 import { onUiEvent } from '@/lib/ui-socket';
 import { Composer, MessageList } from '@/components/chat-conversation';
+import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 
 const author = (m: ChatMessage) => m.author.displayName ?? m.author.email;
 const KIND_ICON: Record<Channel['kind'], typeof Hash> = { PUBLIC: Hash, PRIVATE: Lock, GROUP: Users, DM: MessageSquare };

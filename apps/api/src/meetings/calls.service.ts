@@ -8,27 +8,37 @@ import { NotificationsService } from '../notifications/notifications.service.ts'
 
 interface CallRow {
   meeting_id: string; caller_id: string; callee_id: string;
-  state: string; expires_at: Date; title: string; display_name: string | null; email: string;
+  state: string; expires_at: Date; title: string; display_name: string | null; email: string; caller_name: string;
 }
-const SELECT = `SELECT c.*, m.title, u.display_name, u.email FROM meeting_calls c
-  JOIN meetings m ON m.id = c.meeting_id JOIN users u ON u.id = c.callee_id`;
-const map = (c: CallRow) => ({ meetingId: c.meeting_id, userId: c.callee_id, name: c.display_name ?? c.email, title: c.title, state: c.state, expiresAt: c.expires_at.toISOString() });
+const SELECT = `SELECT c.*, m.title, u.display_name, u.email, coalesce(k.display_name, k.email) AS caller_name FROM meeting_calls c
+  JOIN meetings m ON m.id = c.meeting_id JOIN users u ON u.id = c.callee_id JOIN users k ON k.id = c.caller_id`;
+const map = (c: CallRow) => ({ meetingId: c.meeting_id, userId: c.callee_id, name: c.display_name ?? c.email, callerId: c.caller_id, callerName: c.caller_name, title: c.title, state: c.state, expiresAt: c.expires_at.toISOString() });
+/** A participant row without a "left" event stops counting after this long (a lost webhook must not block calls forever). */
+const STALE_PARTICIPANT_HOURS = 12;
 
 /** Durable 45-second ringing; decisions and missed notifications survive socket loss/restarts. */
 @Injectable()
 export class CallsService {
   constructor(private readonly prisma: PrismaService, private readonly gateway: AttendanceGateway, private readonly notifications: NotificationsService) {}
 
+  /**
+   * In another call: connected to another meeting that is live (joined within the last
+   * STALE_PARTICIPANT_HOURS, no "left" event), or accepted another call and not connected to it yet.
+   */
   async busy(db: pg.PoolClient, userId: string, meetingId: string): Promise<boolean> {
-    const r = await db.query(`SELECT 1 FROM meeting_participants WHERE user_id = $1 AND meeting_id <> $2 AND left_at IS NULL
-      UNION ALL SELECT 1 FROM meeting_calls WHERE callee_id = $1 AND meeting_id <> $2 AND state = 'ACCEPTED' AND expires_at > now() LIMIT 1`, [userId, meetingId]);
+    const r = await db.query(`SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id = p.meeting_id
+        WHERE p.user_id = $1 AND p.meeting_id <> $2 AND p.left_at IS NULL AND m.status = 'LIVE' AND p.joined_at > now() - make_interval(hours => $3)
+      UNION ALL SELECT 1 FROM meeting_calls c WHERE c.callee_id = $1 AND c.meeting_id <> $2 AND c.state = 'ACCEPTED' AND c.expires_at > now()
+        -- accepted but not connected yet; once they joined (and perhaps left), the participant rule decides
+        AND NOT EXISTS (SELECT 1 FROM meeting_participants q WHERE q.meeting_id = c.meeting_id AND q.user_id = $1) LIMIT 1`, [userId, meetingId, STALE_PARTICIPANT_HOURS]);
     return !!r.rows[0];
   }
 
   async start(db: pg.PoolClient, user: AuthenticatedUser, meetingId: string, ids: string[]): Promise<void> {
     // Stable ordering prevents deadlocks for simultaneous group calls. Decisions use the same lock.
     await db.query(`SELECT id FROM users WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE`, [[user.id, ...ids]]);
-    if (await this.busy(db, user.id, meetingId)) throw new ConflictException('You are already in a call');
+    // Only callees are "busy": they are not rung and the caller sees it. The caller is never blocked;
+    // LiveKit reports "left" some seconds after a call ends, and that lag must not refuse a new call.
     for (const id of ids) {
       const state = await this.busy(db, id, meetingId) ? 'BUSY' : 'RINGING';
       await db.query(`INSERT INTO meeting_calls (org_id, meeting_id, caller_id, callee_id, state) VALUES ($1,$2,$3,$4,$5)`, [user.orgId, meetingId, user.id, id, state]);
@@ -38,7 +48,7 @@ export class CallsService {
   async announce(orgId: string, meetingId: string): Promise<void> {
     const rows = await this.prisma.runWithTenantContext(orgId, async (db) => (await db.query<CallRow>(`${SELECT} WHERE c.meeting_id = $1`, [meetingId])).rows);
     for (const c of rows) {
-      if (c.state === 'RINGING') this.gateway.notifyUser(c.callee_id, 'meeting:ring', { meetingId, title: c.title, from: c.caller_id, expiresAt: c.expires_at.toISOString() });
+      if (c.state === 'RINGING') this.gateway.notifyUser(c.callee_id, 'meeting:ring', { meetingId, title: c.title, from: c.caller_id, callerName: c.caller_name, expiresAt: c.expires_at.toISOString() });
       else this.push(c);
     }
   }
@@ -95,7 +105,6 @@ export class CallsService {
       if (!c) throw new NotFoundException('Call not found');
       if (c.state === (accept ? 'ACCEPTED' : 'DECLINED')) return c;
       if (c.state !== 'RINGING' || c.expires_at <= new Date()) throw new ConflictException('This call is no longer ringing');
-      if (accept && await this.busy(db, user.id, meetingId)) throw new ConflictException('You are already in a call');
       c.state = accept ? 'ACCEPTED' : 'DECLINED';
       await db.query(`UPDATE meeting_calls SET state = $3, decided_at = now() WHERE meeting_id = $1 AND callee_id = $2`, [meetingId, user.id, c.state]);
       await db.query(`UPDATE meeting_attendees SET response = $3 WHERE meeting_id = $1 AND user_id = $2`, [meetingId, user.id, c.state]);

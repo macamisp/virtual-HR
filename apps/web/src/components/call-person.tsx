@@ -13,7 +13,8 @@ export function CallPerson({ userId, name, menu = false }: { userId: string; nam
   if (!allowed) return null;
   return <span>
     <Button size="sm" variant="outline" role={menu ? 'menuitem' : undefined} aria-label={`Call ${name}`} disabled={create.isPending}
-      onClick={() => create.mutate({ type: 'INSTANT', title: `Call with ${name}`.slice(0, 200), attendeeIds: [userId], lobby: true, sendInvites: false }, { onSuccess: (m) => router.push(`/meetings/${m.id}?join=1`) })}>
+      // mutateAsync: navigate even if this button unmounts first (the avatar menu closes, the list refreshes).
+      onClick={() => { create.mutateAsync({ type: 'INSTANT', title: `Call with ${name}`.slice(0, 200), attendeeIds: [userId], lobby: true, sendInvites: false }).then((m) => router.push(`/meetings/${m.id}?join=1`)).catch(() => undefined); }}>
       <Phone aria-hidden="true" />{create.isPending ? 'Calling…' : 'Call'}
     </Button>
     {create.isError ? <span role="alert" className="block text-xs text-destructive">{create.error.message}</span> : null}

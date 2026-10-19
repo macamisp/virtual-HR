@@ -45,10 +45,11 @@ test.describe.serial('Meetings: instant call, device check, lobby', () => {
     await expect(host.getByTestId('call-view')).toHaveAttribute('data-status', 'connected');
     await expect(host.getByTestId('tile-local')).toBeVisible();
 
-    // The invitee gets a ring and joins from it.
+    // The invitee gets a ring (who is calling, and the call), accepts it and joins.
     const ring = lead.getByTestId('ring');
+    await expect(ring).toContainText(`${USERS.worker.name} is calling you`);
     await expect(ring).toContainText('Call with');
-    await ring.getByRole('link', { name: 'Join' }).click();
+    await ring.getByRole('button', { name: 'Accept', exact: true }).click();
     await passPreJoin(lead, false);
     await expect(lead.getByTestId('call-view')).toHaveAttribute('data-status', 'connected');
 
