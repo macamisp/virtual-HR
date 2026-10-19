@@ -20,6 +20,16 @@ async function join(page: Page) {
 }
 
 test.describe.serial('FR-VO-008 / FR-MEET-001, 005, 012, 013: office calls and meeting chat', () => {
+  test.beforeEach(async () => {
+    // Start with nobody in a call: LiveKit reports "left" some seconds after an earlier spec's call
+    // ends, and until then the callee is correctly treated as busy and not rung.
+    const pool = adminPool();
+    try {
+      await pool.query(`UPDATE meeting_participants SET left_at = now() WHERE user_id = ANY($1::uuid[]) AND left_at IS NULL`, [[USERS.lead.id, USERS.worker.id]]);
+      await pool.query(`UPDATE meeting_calls SET state = 'CANCELLED', decided_at = now() WHERE state IN ('RINGING', 'ACCEPTED') AND (callee_id = ANY($1::uuid[]) OR caller_id = ANY($1::uuid[]))`, [[USERS.lead.id, USERS.worker.id]]);
+    } finally { await pool.end(); }
+  });
+
   test('people list rings, decline reaches caller, avatar menu accepts; chat persists for both users', async ({ browser }) => {
     test.setTimeout(180_000); // two sign-ins, two calls, two media joins and a chat round trip
     const lead = await person(browser, USERS.lead.email);
@@ -45,6 +55,8 @@ test.describe.serial('FR-VO-008 / FR-MEET-001, 005, 012, 013: office calls and m
       await panel.getByRole('searchbox', { name: 'Mention someone', exact: true }).fill('Leo');
       await panel.getByRole('button', { name: new RegExp(USERS.lead.name) }).click();
       const message = panel.getByRole('textbox', { name: 'Message this meeting', exact: true });
+      // The picked mention is inserted by an effect after the click: wait for it before appending.
+      await expect(message).toHaveValue(/Leo Lead/);
       await message.fill(`${await message.inputValue()}hello in the meeting`);
       await message.press('Enter');
       await expect(lead.getByTestId('chat-message')).toContainText('@Leo Lead hello in the meeting');
