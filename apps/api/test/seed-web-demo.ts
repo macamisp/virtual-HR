@@ -1,6 +1,7 @@
 /**
  * Seeds a demo organisation for clicking through apps/web locally (refuses NODE_ENV=production).
- * Re-running resets only this demo org.
+ * Re-running resets only this demo org. It uses one published password, so it refuses to run while
+ * any configured address (web, API, storage, CORS, tunnel) is public: use seed-internet-demo.ts.
  *
  * Run via: npm run seed:demo
  */
@@ -8,6 +9,7 @@ import './support/refuse-in-production.ts'; // must stay the first import
 import pg from 'pg';
 import argon2 from 'argon2';
 import { createHash, randomBytes } from 'node:crypto';
+import { assertDefaultPasswordsStayLocal } from './support/demo-guard.ts';
 
 const ORG_ID = '44440000-0000-4000-8000-000000000001';
 const ORG_SLUG = 'acme-demo';
@@ -23,6 +25,7 @@ const USERS = [
 ];
 
 async function main(): Promise<void> {
+  assertDefaultPasswordsStayLocal(process.env);
   const pool = new pg.Pool({
     host: process.env.PGHOST || 'localhost',
     port: Number(process.env.PGPORT || 5433),

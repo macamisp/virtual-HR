@@ -11,3 +11,8 @@ v8-coverage/
 
 # Load-test raw logs (summaries and accuracy results are kept)
 load/out/*.log
+
+# Internet demo (docs/runbooks/demo-internet.md): filled-in overrides, tunnel config and state
+.env.demo-internet
+infra/demo/cloudflared.yml
+.demo-internet/

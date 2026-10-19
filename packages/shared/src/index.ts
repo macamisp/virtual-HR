@@ -59,3 +59,4 @@ export * from './attendance/flags.ts';
 export * from './attendance/leave.ts';
 export * from './calendar/types.ts';
 export * from './documents/esign.ts';
+export * from './meetings/media-errors.ts';
