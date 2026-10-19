@@ -24,9 +24,9 @@ const AUTO_CLOSE_REASON: Partial<Record<string, string>> = {
 };
 const AUTO_CLOCK_OUT_BODY = (why: string) => `We clocked you out at your last activity because ${why}.`;
 
-/** ISO week like 2026-W42 (one "items to review" alert per person and week). */
-function isoWeek(d: Date): string {
-  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+/** ISO week of a local calendar date, like 2026-W42 (one "items to review" alert per person and week). */
+function isoWeek(localDay: string): string {
+  const t = new Date(`${localDay}T00:00:00Z`);
   const day = t.getUTCDay() || 7;
   t.setUTCDate(t.getUTCDate() + 4 - day);
   const year = t.getUTCFullYear();
@@ -478,7 +478,8 @@ export class ScheduledWorkService {
         const counts = await this.prisma.runWithTenantContext(org.id, async (db) => (await db.query<{ user_id: string; n: number }>(
           `SELECT user_id, count(*)::int AS n FROM attendance_flags WHERE status = 'OPEN' AND created_at > $1 GROUP BY user_id HAVING count(*) >= $2`,
           [new Date(now.getTime() - 7 * 86_400_000), guards.flagAlertThreshold])).rows);
-        const week = isoWeek(now);
+        // The organisation's week, not the UTC one: late on Sunday UTC it is already Monday in Colombo.
+        const week = isoWeek(localDate(now, org.timezone));
         for (const c of counts) {
           const person = byId.get(c.user_id);
           if (!person) continue;

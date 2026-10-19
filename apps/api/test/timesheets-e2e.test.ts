@@ -520,11 +520,14 @@ describe('Timesheets API (FR-TS-001..006, 009, 011)', { concurrency: false }, ()
       const reminder = await notes('sub2', 'TIMESHEET_SUBMIT_REMINDER');
       assert.equal(reminder.length, 1);
       assert.equal(reminder[0]!.title, `Submit your timesheet by ${sheet.submitDueDate}`);
-      await work.timesheetReminders(new Date());
-      await work.timesheetReminders(new Date());
+      // A fixed point past the due date, not "now": on the days right after a period ends (a Monday,
+      // for weekly sheets) the real date is not yet past the due date and nothing is overdue.
+      const afterDue = fromZonedTime(`${addDaysIso(sheet.submitDueDate, 1)}T12:00:00`, TZ);
+      await work.timesheetReminders(afterDue);
+      await work.timesheetReminders(afterDue);
       assert.equal((await notes('sub2', 'TIMESHEET_SUBMIT_REMINDER')).length, 1);
       const overdue = await notes('sub2', 'TIMESHEET_OVERDUE');
-      assert.equal(overdue.length, 1, `today (${today}) is past ${sheet.submitDueDate}`);
+      assert.equal(overdue.length, 1, `${addDaysIso(sheet.submitDueDate, 1)} is past ${sheet.submitDueDate}`);
       assert.equal(overdue[0]!.send_email, true);
     });
 

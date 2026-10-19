@@ -242,9 +242,14 @@ describe('Attendance safeguards (FR-ATT-017, 018, 021, 023)', { concurrency: fal
       assert.ok((await flagsOf('other')).some((f) => f.kind === 'PERIODIC_ACTIVITY' && f.session_id === sid));
     });
 
-    it('several open items alert the manager once per week', async () => {
-      await work().attendanceAlerts(new Date());
-      await work().attendanceAlerts(new Date());
+    it('several open items alert the manager once per week (the organisation\'s week, not the UTC one)', async () => {
+      // 04:40 on this week's Monday in Colombo is 23:10 UTC on Sunday, still the previous ISO week in
+      // UTC; noon is Monday in both. Both instants are in the same local week: one alert, not two.
+      const today = formatInTimeZone(new Date(), TZ, 'yyyy-MM-dd');
+      const dow = Number(formatInTimeZone(new Date(), TZ, 'i'));
+      const monday = formatInTimeZone(new Date(Date.parse(`${today}T12:00:00Z`) - (dow - 1) * 86_400_000), 'UTC', 'yyyy-MM-dd');
+      await work().attendanceAlerts(fromZonedTime(`${monday} 04:40:00`, TZ));
+      await work().attendanceAlerts(fromZonedTime(`${monday} 12:00:00`, TZ));
       const n = await notes('lead', 'ATTENDANCE_FLAGS_TO_REVIEW');
       assert.equal(n.length, 1);
       assert.match(n[0].title, /attendance items to review for Emma Emp/);

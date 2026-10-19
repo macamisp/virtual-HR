@@ -16,6 +16,7 @@ import type {
 } from '../../../../packages/shared/src/reports/types.ts';
 import { ensureRange, exportTable, hours, personLabel, reportScope, scopeSql, USER_REF_SELECT, userRef } from './report-scope.ts';
 import type { ExportFile, Scope } from './report-scope.ts';
+import { orgToday } from './report-scope.ts';
 
 const MAX_DAYS = 366;
 const APPROVED = ['APPROVED', 'LOCKED', 'PAID'];
@@ -200,10 +201,12 @@ export class ReportsService {
 
   // ---------------------------------------------------------------- FR-REP-004
 
-  async tasks(user: AuthenticatedUser, q: TaskReportQuery, today: string = new Date().toISOString().slice(0, 10)): Promise<TaskReport> {
+  /** `today` defaults to the organisation's local date: "overdue" is a local-calendar fact, not a UTC one. */
+  async tasks(user: AuthenticatedUser, q: TaskReportQuery, todayOverride?: string): Promise<TaskReport> {
     ensureRange(q.from, q.to, MAX_DAYS);
     const scope = reportScope(user);
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      const today = todayOverride ?? await orgToday(db, user.orgId);
       const params: unknown[] = [user.orgId];
       const who = scopeSql(user, scope, params, { teamId: q.teamId, userId: q.userId });
       const fromIdx = params.push(q.from);

@@ -14,6 +14,7 @@ import type { Cell } from '../common/export-format.ts';
 import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import type { ReportFormat, ReportUserRef } from '../../../../packages/shared/src/reports/types.ts';
+import { formatInTimeZone } from 'date-fns-tz';
 
 export type Scope = 'team' | 'all';
 
@@ -86,3 +87,9 @@ export async function exportTable(
 
 export const minutes = (seconds: number | string | null): number => Math.round(Number(seconds ?? 0) / 60);
 export const hours = (m: number): number => Math.round((m / 60) * 100) / 100;
+
+/** The organisation's local calendar date (YYYY-MM-DD); reports compare due and expiry dates with it, never with the UTC date. */
+export async function orgToday(db: { query<R extends object>(sql: string, params?: unknown[]): Promise<{ rows: R[] }> }, orgId: string, now: Date = new Date()): Promise<string> {
+  const tz = (await db.query<{ timezone: string }>(`SELECT timezone FROM organizations WHERE id = $1`, [orgId])).rows[0]?.timezone ?? 'UTC';
+  return formatInTimeZone(now, tz, 'yyyy-MM-dd');
+}
