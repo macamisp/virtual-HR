@@ -20,6 +20,7 @@ interface ChannelRow {
   created_by: string;
   archived_at: Date | null;
   member_role: string | null;
+  meeting_id: string | null;
 }
 
 interface MessageRow {
@@ -75,13 +76,48 @@ export class ChatService {
     private readonly notifications: NotificationsService,
   ) {}
 
+  private async mayReadMeeting(db: pg.PoolClient, meetingId: string, userId: string): Promise<boolean> {
+    return !!(await db.query(`SELECT 1 FROM meetings m WHERE m.id = $1 AND (
+      m.host_id = $2 OR (NOT EXISTS (SELECT 1 FROM meeting_lobby l WHERE l.meeting_id = m.id AND l.user_id = $2 AND l.state = 'DENIED') AND (
+        EXISTS (SELECT 1 FROM meeting_attendees a WHERE a.meeting_id = m.id AND a.user_id = $2)
+        OR EXISTS (SELECT 1 FROM meeting_participants p WHERE p.meeting_id = m.id AND p.user_id = $2)
+        OR EXISTS (SELECT 1 FROM meeting_lobby l WHERE l.meeting_id = m.id AND l.user_id = $2 AND l.state = 'ADMITTED'))))`, [meetingId, userId])).rows[0];
+  }
+
+  /** One persisted, private conversation per meeting, using the normal scanned-document path. */
+  async meetingChannel(user: AuthenticatedUser, meetingId: string): Promise<{ id: string }> {
+    return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      // Also serialises concurrent first opens and membership synchronisation.
+      const m = (await db.query<{ title: string; host_id: string }>(`SELECT title, host_id FROM meetings WHERE id = $1 FOR UPDATE`, [meetingId])).rows[0];
+      if (!m || !await this.mayReadMeeting(db, meetingId, user.id)) throw new NotFoundException('Meeting not found');
+      let id = (await db.query<{ id: string }>(`SELECT id FROM channels WHERE meeting_id = $1`, [meetingId])).rows[0]?.id;
+      if (!id) {
+        id = (await db.query<{ id: string }>(`INSERT INTO channels (org_id, kind, name, created_by, meeting_id) VALUES ($1, 'GROUP', $2, $3, $4) RETURNING id`, [user.orgId, m.title.slice(0, 60), m.host_id, meetingId])).rows[0]!.id;
+        await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'MEETING_CHAT_CREATED', entityType: 'MEETING', entityId: meetingId });
+      }
+      const candidates = (await db.query<{ id: string }>(`SELECT host_id AS id FROM meetings WHERE id = $1
+        UNION SELECT user_id FROM meeting_attendees WHERE meeting_id = $1
+        UNION SELECT user_id FROM meeting_participants WHERE meeting_id = $1
+        UNION SELECT user_id FROM meeting_lobby WHERE meeting_id = $1 AND state = 'ADMITTED'`, [meetingId])).rows;
+      const added: string[] = [];
+      for (const c of candidates) {
+        if (!await this.mayReadMeeting(db, meetingId, c.id)) continue;
+        const insert = await db.query(`INSERT INTO channel_members (org_id, channel_id, user_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING user_id`, [user.orgId, id, c.id]);
+        if (insert.rowCount) added.push(c.id);
+      }
+      if (added.length) await this.grantChannelFiles(db, user, id, added);
+      return { id };
+    });
+  }
+
   private async channelFor(db: pg.PoolClient, user: AuthenticatedUser, channelId: string, opts: { write?: boolean; manage?: boolean } = {}): Promise<ChannelRow> {
     const r = (await db.query<ChannelRow>(
-      `SELECT c.id, c.kind, c.name, c.topic, c.created_by, c.archived_at, cm.role AS member_role
+      `SELECT c.id, c.kind, c.name, c.topic, c.created_by, c.archived_at, c.meeting_id, cm.role AS member_role
        FROM channels c LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $2 WHERE c.id = $1`, [channelId, user.id],
     )).rows[0];
     const publicReader = r?.kind === 'PUBLIC' && userCan(user, Permission.CHAT_PUBLIC_CHANNELS);
     if (!r || (!r.member_role && !publicReader)) throw new NotFoundException('Channel not found');
+    if (r.meeting_id && !await this.mayReadMeeting(db, r.meeting_id, user.id)) throw new NotFoundException('Channel not found');
     if (opts.write) {
       if (r.archived_at) throw new ConflictException('This channel is archived');
       if (!r.member_role) throw new ForbiddenException('Join the channel to post');
@@ -173,6 +209,7 @@ export class ChatService {
   async leave(user: AuthenticatedUser, channelId: string): Promise<{ ok: true }> {
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const c = await this.channelFor(db, user, channelId);
+      if (c.meeting_id) throw new ForbiddenException('Meeting chat membership is managed by the meeting');
       if (c.kind === 'DM') throw new BadRequestException('Direct messages cannot be left');
       await db.query(`DELETE FROM channel_members WHERE channel_id = $1 AND user_id = $2`, [channelId, user.id]);
     });
@@ -182,6 +219,7 @@ export class ChatService {
   async setMembers(user: AuthenticatedUser, channelId: string, dto: MembersDto): Promise<{ ok: true }> {
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const c = await this.channelFor(db, user, channelId, { manage: true });
+      if (c.meeting_id) throw new ForbiddenException('Meeting chat membership is managed by the meeting');
       if (c.kind === 'DM') throw new BadRequestException('Direct messages have exactly two people');
       const add = [...new Set(dto.add ?? [])];
       if (add.length) {
@@ -198,9 +236,10 @@ export class ChatService {
 
   async archive(user: AuthenticatedUser, channelId: string): Promise<{ ok: true }> {
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      const c = (await db.query<{ kind: string; created_by: string; role: string | null }>(
-        `SELECT c.kind, c.created_by, cm.role FROM channels c LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $2 WHERE c.id = $1`, [channelId, user.id])).rows[0];
+      const c = (await db.query<{ kind: string; created_by: string; role: string | null; meeting_id: string | null }>(
+        `SELECT c.kind, c.created_by, c.meeting_id, cm.role FROM channels c LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $2 WHERE c.id = $1`, [channelId, user.id])).rows[0];
       if (!c || c.kind === 'DM') throw new NotFoundException('Channel not found');
+      if (c.meeting_id) throw new ForbiddenException('Meeting chats stay with their meeting');
       if (!(c.role === 'OWNER' || userCan(user, Permission.CHAT_MODERATE))) throw new ForbiddenException('Only the channel owner or a moderator can archive');
       await db.query(`UPDATE channels SET archived_at = now() WHERE id = $1 AND archived_at IS NULL`, [channelId]);
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'CHANNEL_ARCHIVED', entityType: 'CHANNEL', entityId: channelId });

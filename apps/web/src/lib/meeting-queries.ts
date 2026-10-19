@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
-import { JoinResultSchema, LobbySchema, MediaTokenSchema, MeetingListSchema, MeetingSchema } from '@hrvo/shared';
+import { CallListSchema, JoinResultSchema, LobbySchema, MediaTokenSchema, MeetingListSchema, MeetingSchema } from '@hrvo/shared';
 import type { ActionItemDto, MediaTokenRequest, MeetingCreateDto, MeetingUpdateDto } from '@hrvo/shared';
 import { apiDownload, apiFetch, saveBlob } from './api';
 import { useAuthStore } from './auth-store';
@@ -94,4 +94,14 @@ export function useAddActionItem(id: string) {
 export function useConvertToTask(id: string) {
   const set = useSetMeeting();
   return useMutation({ mutationFn: (itemId: string) => apiFetch(`/meetings/${enc(id)}/action-items/${enc(itemId)}/task`, { method: 'POST', schema: MeetingSchema }), onSuccess: set });
+}
+
+export function useIncomingCalls() {
+  return useQuery({ queryKey: ['meetings', 'incoming'], queryFn: () => apiFetch('/meetings/incoming', { schema: CallListSchema }), enabled: useSignedIn(), refetchInterval: 5_000 });
+}
+export function useCallResponses(id: string) {
+  return useQuery({ queryKey: ['meetings', 'calls', id], queryFn: () => apiFetch(`/meetings/${enc(id)}/calls`, { schema: CallListSchema }), enabled: useSignedIn() && !!id, refetchInterval: 2_000 });
+}
+export function useMeetingChat(id: string) {
+  return useQuery({ queryKey: ['meetings', 'chat', id], queryFn: () => apiFetch(`/meetings/${enc(id)}/chat`, { method: 'POST', schema: z.object({ id: z.string().uuid() }) }), enabled: useSignedIn() && !!id, retry: false });
 }

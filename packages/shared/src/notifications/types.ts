@@ -37,6 +37,7 @@ export const NotificationType = {
   CONTRACT_EXPIRING: 'CONTRACT_EXPIRING',
   // FR-MEET-012
   CHAT_MENTION: 'CHAT_MENTION',
+  CALL_MISSED: 'CALL_MISSED',
   // FR-ATT-021 (ADR 019)
   ATTENDANCE_NO_CLOCK_IN: 'ATTENDANCE_NO_CLOCK_IN',
   ATTENDANCE_AUTO_CLOCK_OUT: 'ATTENDANCE_AUTO_CLOCK_OUT',
@@ -113,6 +114,7 @@ export const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; g
   DOCUMENT_EXPIRING: { label: 'A document is expiring', group: 'Documents' },
   CONTRACT_EXPIRING: { label: 'A contract is ending soon', group: 'Documents' },
   CHAT_MENTION: { label: 'Mentioned in chat', group: 'Tasks' },
+  CALL_MISSED: { label: 'Missed call', group: 'Tasks' },
   ATTENDANCE_NO_CLOCK_IN: { label: 'Not clocked in by your start time', group: 'Attendance' },
   ATTENDANCE_AUTO_CLOCK_OUT: { label: 'Clocked out automatically', group: 'Attendance' },
   ATTENDANCE_LONG_IDLE: { label: 'Someone in your team is idle for long', group: 'Attendance' },

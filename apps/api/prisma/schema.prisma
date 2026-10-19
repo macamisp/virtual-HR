@@ -98,6 +98,7 @@ model Organization {
   meetingParticipants           MeetingParticipant[]
   meetingLobby                  MeetingLobby[]
   meetingActionItems            MeetingActionItem[]
+  meetingCalls                  MeetingCall[]
   channels                      Channel[]
   channelMembers                ChannelMember[]
   messages                      Message[]
@@ -205,6 +206,8 @@ model User {
   contracts               Contract[]               @relation("UserContracts")
   roomInvites             RoomInvite[]
   desk                    Desk?
+  callsMade               MeetingCall[] @relation("CallCaller")
+  callsReceived           MeetingCall[] @relation("CallCallee")
   hostedMeetings          Meeting[]                @relation("MeetingHost")
   meetingAttendance       MeetingAttendee[]
   meetingSessions         MeetingParticipant[]
@@ -1447,6 +1450,8 @@ model Meeting {
 
   calendarEventLinks CalendarEventLink[]
   recordings         MeetingRecording[]
+  calls              MeetingCall[]
+  chat               Channel?
 
   @@unique([livekitRoomName])
   @@index([orgId, status])
@@ -1529,6 +1534,8 @@ model MeetingActionItem {
 
 /// FR-MEET-012 / SRS 7.4 (ADR 017). DMs have dm_key = the two user ids, sorted, so one per pair.
 model Channel {
+  meetingId String? @unique @map("meeting_id") @db.Uuid
+  meeting Meeting? @relation(fields: [meetingId], references: [id], onDelete: Cascade)
   id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   orgId      String    @map("org_id") @db.Uuid
   kind       String    @db.VarChar(8)
@@ -1913,4 +1920,22 @@ model PublicHoliday {
 
   @@unique([orgId, date])
   @@map("public_holidays")
+}
+
+/// FR-VO-008; FR-MEET-001: durable ring-and-accept decisions (ADR 031).
+model MeetingCall {
+  orgId String @map("org_id") @db.Uuid
+  meetingId String @map("meeting_id") @db.Uuid
+  callerId String @map("caller_id") @db.Uuid
+  calleeId String @map("callee_id") @db.Uuid
+  state String @default("RINGING") @db.VarChar(10)
+  expiresAt DateTime @default(dbgenerated("(now() + '00:00:45'::interval)")) @map("expires_at") @db.Timestamptz()
+  decidedAt DateTime? @map("decided_at") @db.Timestamptz()
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  caller User @relation("CallCaller", fields: [callerId], references: [id], onDelete: Cascade)
+  callee User @relation("CallCallee", fields: [calleeId], references: [id], onDelete: Cascade)
+  @@id([meetingId, calleeId])
+  @@map("meeting_calls")
 }

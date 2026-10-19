@@ -11,6 +11,8 @@ import {
 } from '../../../../packages/shared/src/meetings/types.ts';
 import type { ActionItemDto, MeetingCreateDto, MeetingUpdateDto } from '../../../../packages/shared/src/meetings/types.ts';
 import { z } from 'zod';
+import { CallsService } from './calls.service.ts';
+import { ChatService } from '../chat/chat.service.ts';
 import { MeetingsService } from './meetings.service.ts';
 
 const id = new ParseUUIDPipe({ version: '4' });
@@ -21,7 +23,7 @@ type ListQuery = z.infer<typeof MeetingListQuerySchema>;
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @RequirePermissions(Permission.MEETINGS_USE)
 export class MeetingsController {
-  constructor(private readonly meetings: MeetingsService) {}
+  constructor(private readonly meetings: MeetingsService, private readonly calls: CallsService, private readonly chat: ChatService) {}
 
   @Get()
   list(@CurrentUser() user: AuthenticatedUser, @Query(new ZodValidationPipe(MeetingListQuerySchema)) q: ListQuery) {
@@ -31,6 +33,23 @@ export class MeetingsController {
   @Post()
   create(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(MeetingCreateDtoSchema)) dto: MeetingCreateDto) {
     return this.meetings.create(user, dto);
+  }
+
+  @Get('incoming')
+  incoming(@CurrentUser() user: AuthenticatedUser) {
+    return this.calls.incoming(user);
+  }
+
+  @Get(':id/calls')
+  callsFor(@CurrentUser() user: AuthenticatedUser, @Param('id', id) meetingId: string) {
+    return this.calls.list(user, meetingId);
+  }
+
+  @Post(':id/chat')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions(Permission.MEETINGS_USE, Permission.CHAT_USE)
+  meetingChat(@CurrentUser() user: AuthenticatedUser, @Param('id', id) meetingId: string) {
+    return this.chat.meetingChannel(user, meetingId);
   }
 
   @Get(':id')

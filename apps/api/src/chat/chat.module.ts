@@ -8,5 +8,6 @@ import { ChatService } from './chat.service.ts';
   imports: [AttendanceModule, NotificationsModule],
   controllers: [ChatController],
   providers: [ChatService],
+  exports: [ChatService],
 })
 export class ChatModule {}

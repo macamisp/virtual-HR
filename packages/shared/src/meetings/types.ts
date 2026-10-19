@@ -168,3 +168,12 @@ export const RemoveParticipantDtoSchema = z.object({ userId: z.string().uuid() }
 /** In-meeting data messages over LiveKit's data channel (raise hand, reactions). */
 export const MEETING_DATA_TOPIC = 'hrvo';
 export type MeetingDataMessage = { type: 'hand'; raised: boolean } | { type: 'muted-by-host' };
+
+/** FR-VO-008 / FR-MEET-001: server-owned ring and decision state. */
+export const CallStateSchema = z.object({
+  meetingId: z.string().uuid(), userId: z.string().uuid(), name: z.string(), title: z.string(),
+  state: z.enum(['RINGING', 'ACCEPTED', 'DECLINED', 'MISSED', 'BUSY', 'CANCELLED']),
+  expiresAt: z.string().datetime({ offset: true }),
+});
+export const CallListSchema = z.object({ items: z.array(CallStateSchema) });
+export type CallState = z.infer<typeof CallStateSchema>;

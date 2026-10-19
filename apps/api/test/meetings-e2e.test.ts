@@ -368,6 +368,60 @@ describe('Media and meetings (FR-VO-005, 009, 010; FR-MEET-001..003, 005, 008, 0
     });
   });
 
+  describe('Ring decisions and meeting chat (FR-VO-008; FR-MEET-001, 005, 012, 013)', () => {
+    it('persists incoming rings, decline and caller feedback, with tenant isolation', async () => {
+      const m = await ok(await api('host', '/meetings', { method: 'POST', body: { type: 'INSTANT', title: 'Ring decision', attendeeIds: [U.a.id] } }), 201, MeetingSchema);
+      const incoming = await ok<{ items: Array<{ meetingId: string }> }>(await api('a', '/meetings/incoming'), 200);
+      assert.ok(incoming.items.some((r) => r.meetingId === m.id));
+      assert.equal((await api('other', `/meetings/${m.id}/calls`)).status, 404);
+      assert.equal((await api('b', `/meetings/${m.id}/decline`, { method: 'POST' })).status, 404);
+      await ok(await api('a', `/meetings/${m.id}/decline`, { method: 'POST' }), 200);
+      const calls = await ok<{ items: Array<{ state: string }> }>(await api('host', `/meetings/${m.id}/calls`), 200);
+      assert.equal(calls.items[0]?.state, 'DECLINED');
+      assert.equal((await api('a', `/meetings/${m.id}/accept`, { method: 'POST' })).status, 409, 'decisions are final');
+    });
+
+    it('marks an unanswered call missed once, and rejects late acceptance', async () => {
+      const m = await ok(await api('host', '/meetings', { method: 'POST', body: { type: 'INSTANT', title: 'Unanswered', attendeeIds: [U.a.id] } }), 201, MeetingSchema);
+      await adminPool.query(`UPDATE meeting_calls SET expires_at = now() - interval '1 second' WHERE meeting_id = $1`, [m.id]);
+      assert.equal((await api('a', `/meetings/${m.id}/accept`, { method: 'POST' })).status, 409);
+      await api('a', '/meetings/incoming');
+      await api('a', '/meetings/incoming');
+      const notifications = await adminPool.query(`SELECT id FROM notifications WHERE user_id = $1 AND type = 'CALL_MISSED' AND entity_id = $2`, [U.a.id, m.id]);
+      assert.equal(notifications.rowCount, 1);
+    });
+
+    it('a person already connected to a meeting is busy and cannot accept a second call', async () => {
+      const m = await ok(await api('host', '/meetings', { method: 'POST', body: { type: 'INSTANT', title: 'Busy', attendeeIds: [U.a.id] } }), 201, MeetingSchema);
+      await ok(await api('a', `/meetings/${m.id}/accept`, { method: 'POST' }), 200);
+      await webhook({ event: 'participant_joined', room: { name: `meet-${ORG}-${m.id}` }, participant: { identity: U.a.id, sid: 'PA_BUSY' } });
+      const next = await ok(await api('b', '/meetings', { method: 'POST', body: { type: 'INSTANT', title: 'Second call', attendeeIds: [U.a.id] } }), 201, MeetingSchema);
+      const calls = await ok<{ items: Array<{ state: string }> }>(await api('b', `/meetings/${next.id}/calls`), 200);
+      assert.equal(calls.items[0]?.state, 'BUSY');
+      assert.equal((await api('a', `/meetings/${next.id}/accept`, { method: 'POST' })).status, 409);
+      await webhook({ event: 'participant_left', room: { name: `meet-${ORG}-${m.id}` }, participant: { identity: U.a.id, sid: 'PA_BUSY' } });
+    });
+
+    it('keeps one persisted chat per meeting, with mentions and member-only access', async () => {
+      const m = await ok(await api('host', '/meetings', { method: 'POST', body: { type: 'INSTANT', title: 'Chat sync', attendeeIds: [U.b.id] } }), 201, MeetingSchema);
+      const channel = await ok<{ id: string }>(await api('host', `/meetings/${m.id}/chat`, { method: 'POST' }), 200);
+      const again = await ok<{ id: string }>(await api('b', `/meetings/${m.id}/chat`, { method: 'POST' }), 200);
+      assert.equal(again.id, channel.id);
+      assert.equal((await api('c', `/meetings/${m.id}/chat`, { method: 'POST' })).status, 404);
+      assert.equal((await api('other', `/meetings/${m.id}/chat`, { method: 'POST' })).status, 404);
+      assert.equal((await fetch(`${base}/meetings/${m.id}/chat`, { method: 'POST' })).status, 401);
+      const sent = await ok<{ id: string; mentions: string[] }>(await api('host', `/channels/${channel.id}/messages`, { method: 'POST', body: { body: `@[Ben B](user:${U.b.id}) hello from the call` } }), 201);
+      assert.deepEqual(sent.mentions, [U.b.id]);
+      const messages = await ok<{ items: Array<{ id: string }> }>(await api('b', `/channels/${channel.id}/messages`), 200);
+      assert.equal(messages.items[0]?.id, sent.id);
+      assert.equal((await api('c', `/channels/${channel.id}/messages`)).status, 404);
+      assert.equal((await api('other', `/channels/${channel.id}/messages`)).status, 404);
+      assert.equal((await api('host', `/channels/${channel.id}/members`, { method: 'PUT', body: { add: [U.c.id] } })).status, 403, 'meeting membership cannot be bypassed');
+      const rls = await adminPool.query(`SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'meeting_calls'`);
+      assert.deepEqual(rls.rows[0], { relrowsecurity: true, relforcerowsecurity: true });
+    });
+  });
+
   describe('Announcements (FR-VO-010)', { concurrency: false }, () => {
     it('managers and admins broadcast to everyone online; employees cannot; audited', async () => {
       const listener = io(base, { transports: ['websocket'], reconnection: false, auth: { token: tokens.c } });
