@@ -8,6 +8,7 @@ import { addDaysIso } from '../planning/planning-rules.ts';
 import { NotificationsService } from './notifications.service.ts';
 import type { NewNotification } from './notifications.service.ts';
 import { dueInstant, escalationDue, localDate, reminderStage, weeklySummaryDue } from './reminder-rules.ts';
+import { weeklyCapNotifications } from './weekly-cap-notifications.ts';
 import { approversFor } from '../timesheets/timesheets.service.ts';
 import { AttendanceFlagsService } from '../attendance/attendance-flags.service.ts';
 import { mechanicalPatterns } from '../attendance/anti-spoofing.ts';
@@ -24,9 +25,9 @@ const AUTO_CLOSE_REASON: Partial<Record<string, string>> = {
 };
 const AUTO_CLOCK_OUT_BODY = (why: string) => `We clocked you out at your last activity because ${why}.`;
 
-/** ISO week like 2026-W42 (one "items to review" alert per person and week). */
-function isoWeek(d: Date): string {
-  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+/** ISO week of a local calendar date, like 2026-W42 (one "items to review" alert per person and week). */
+function isoWeek(localDay: string): string {
+  const t = new Date(`${localDay}T00:00:00Z`);
   const day = t.getUTCDay() || 7;
   t.setUTCDate(t.getUTCDate() + 4 - day);
   const year = t.getUTCFullYear();
@@ -240,6 +241,12 @@ export class ScheduledWorkService {
             link: '/timesheets/review', dedupeKey: `ts-approve:${today}`, email: true,
           });
         }
+
+        // FR-ORG-004 (ADR 034): a running timer can cross a weekly cap without any write.
+        const running = await db.query<{ user_id: string }>(
+          `SELECT DISTINCT e.user_id FROM time_entries e JOIN subcontractor_profiles p ON p.user_id = e.user_id
+           WHERE e.org_id = $1 AND e.ended_at IS NULL AND p.weekly_hours_cap IS NOT NULL`, [org.id]);
+        for (const r of running.rows) items.push(...await weeklyCapNotifications(db, org.id, r.user_id, null, now));
 
         const flagged = await db.query<{ user_id: string; timesheet_id: string; d: string; attendance_minutes: number; logged_minutes: number; variance_minutes: number; variance_pct: number | null; flags: string[] }>(
           `SELECT d.user_id, d.timesheet_id, to_char(d.work_date, 'YYYY-MM-DD') AS d, d.attendance_minutes, d.logged_minutes,
@@ -478,7 +485,8 @@ export class ScheduledWorkService {
         const counts = await this.prisma.runWithTenantContext(org.id, async (db) => (await db.query<{ user_id: string; n: number }>(
           `SELECT user_id, count(*)::int AS n FROM attendance_flags WHERE status = 'OPEN' AND created_at > $1 GROUP BY user_id HAVING count(*) >= $2`,
           [new Date(now.getTime() - 7 * 86_400_000), guards.flagAlertThreshold])).rows);
-        const week = isoWeek(now);
+        // The organisation's week, not the UTC one: late on Sunday UTC it is already Monday in Colombo.
+        const week = isoWeek(localDate(now, org.timezone));
         for (const c of counts) {
           const person = byId.get(c.user_id);
           if (!person) continue;

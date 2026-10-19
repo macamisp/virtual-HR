@@ -78,7 +78,8 @@ export interface IAttendanceRepository {
   
   // Work Schedules (FR-ATT-014)
   saveWorkSchedule(schedule: WorkSchedule): Promise<void>;
-  findWorkScheduleForUser(orgId: string, userId: string): Promise<WorkSchedule | null>;
+  /** FR-ORG-005: the schedule in force on `onDate` (YYYY-MM-DD; default today, UTC): own, else team, else organisation default. */
+  findWorkScheduleForUser(orgId: string, userId: string, onDate?: string): Promise<WorkSchedule | null>;
 
   // Corrections (FR-ATT-013)
   createCorrection(correction: AttendanceCorrection): Promise<void>;
@@ -574,8 +575,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
   public async saveWorkSchedule(schedule: WorkSchedule): Promise<void> {
     await this.queryWithRls(
       schedule.orgId,
-      `INSERT INTO work_schedules (id, org_id, user_id, team_id, days, flexible, grace_minutes, effective_from, effective_to)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO work_schedules (id, org_id, user_id, team_id, days, flexible, grace_minutes, effective_from, effective_to, early_leave_grace_minutes, break_allowance_minutes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (id) DO UPDATE SET
          user_id = EXCLUDED.user_id,
          team_id = EXCLUDED.team_id,
@@ -583,7 +584,9 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
          flexible = EXCLUDED.flexible,
          grace_minutes = EXCLUDED.grace_minutes,
          effective_from = EXCLUDED.effective_from,
-         effective_to = EXCLUDED.effective_to`,
+         effective_to = EXCLUDED.effective_to,
+         early_leave_grace_minutes = EXCLUDED.early_leave_grace_minutes,
+         break_allowance_minutes = EXCLUDED.break_allowance_minutes`,
       [
         schedule.id,
         schedule.orgId,
@@ -594,19 +597,26 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         schedule.graceMinutes,
         schedule.effectiveFrom,
         schedule.effectiveTo || null,
+        schedule.earlyLeaveGraceMinutes ?? null,
+        schedule.breakAllowanceMinutes ?? null,
       ],
     );
   }
 
-  public async findWorkScheduleForUser(orgId: string, userId: string): Promise<WorkSchedule | null> {
+  public async findWorkScheduleForUser(orgId: string, userId: string, onDate?: string): Promise<WorkSchedule | null> {
+    // Precedence: the person's own schedule, then their team's, then the organisation default;
+    // within one level, the latest version that has started and not ended on that date.
     const res = await this.queryWithRls(
       orgId,
       `SELECT ws.* FROM work_schedules ws
-       LEFT JOIN users u ON u.id = $2 AND u.team_id = ws.team_id
-       WHERE ws.org_id = $1 AND (ws.user_id = $2 OR (ws.team_id IS NOT NULL AND ws.team_id = u.team_id) OR (ws.user_id IS NULL AND ws.team_id IS NULL))
-       ORDER BY ws.user_id NULLS LAST, ws.team_id NULLS LAST
+       LEFT JOIN users u ON u.id = $2
+       WHERE ws.org_id = $1
+         AND ws.effective_from <= coalesce($3::date, CURRENT_DATE)
+         AND (ws.effective_to IS NULL OR ws.effective_to >= coalesce($3::date, CURRENT_DATE))
+         AND (ws.user_id = $2 OR (ws.user_id IS NULL AND ws.team_id IS NOT NULL AND ws.team_id = u.team_id) OR (ws.user_id IS NULL AND ws.team_id IS NULL))
+       ORDER BY (ws.user_id IS NOT NULL) DESC, (ws.team_id IS NOT NULL) DESC, ws.effective_from DESC, ws.created_at DESC
        LIMIT 1`,
-      [orgId, userId],
+      [orgId, userId, onDate ?? null],
     );
     if (res.rows.length === 0) return null;
     const r = res.rows[0];
@@ -618,6 +628,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       days: r.days,
       flexible: r.flexible,
       graceMinutes: r.grace_minutes,
+      earlyLeaveGraceMinutes: r.early_leave_grace_minutes,
+      breakAllowanceMinutes: r.break_allowance_minutes,
       effectiveFrom: r.effective_from instanceof Date
         ? `${r.effective_from.getFullYear()}-${String(r.effective_from.getMonth() + 1).padStart(2, '0')}-${String(r.effective_from.getDate()).padStart(2, '0')}`
         : r.effective_from,
@@ -724,8 +736,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       `INSERT INTO attendance_daily (
          org_id, user_id, work_date, first_in, last_out, active_seconds, idle_seconds,
          break_seconds, meeting_seconds, net_seconds, expected_seconds, late_minutes,
-         early_leave_minutes, overtime_minutes, day_status, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, CURRENT_TIMESTAMP)
+         early_leave_minutes, overtime_minutes, day_status, excess_break_minutes, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CURRENT_TIMESTAMP)
        ON CONFLICT (org_id, user_id, work_date) DO UPDATE SET
          first_in = EXCLUDED.first_in,
          last_out = EXCLUDED.last_out,
@@ -739,6 +751,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
          early_leave_minutes = EXCLUDED.early_leave_minutes,
          overtime_minutes = EXCLUDED.overtime_minutes,
          day_status = EXCLUDED.day_status,
+         excess_break_minutes = EXCLUDED.excess_break_minutes,
          updated_at = CURRENT_TIMESTAMP`,
       [
         r.orgId,
@@ -756,6 +769,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         r.earlyLeaveMinutes,
         r.overtimeMinutes,
         r.dayStatus,
+        r.excessBreakMinutes ?? 0,
       ],
     );
   }
@@ -859,6 +873,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       lateMinutes: row.late_minutes,
       earlyLeaveMinutes: row.early_leave_minutes,
       overtimeMinutes: row.overtime_minutes,
+      excessBreakMinutes: row.excess_break_minutes ?? 0,
       dayStatus: row.day_status,
       displayName: row.display_name,
       email: row.email,

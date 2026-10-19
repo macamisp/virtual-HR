@@ -5,6 +5,7 @@
  * idempotent batches, revocation (device, consent withdrawal), permissions and RLS.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -12,7 +13,6 @@ import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { io, type Socket } from 'socket.io-client';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
@@ -92,7 +92,7 @@ describe('Desktop agent (FR-ATT-011, FR-ATT-012)', { concurrency: false }, () =>
     configureApp(app);
     await app.listen(PORT);
     for (const who of Object.keys(U) as Who[]) {
-      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(U[who].mfa ? { totpCode: generateSync({ secret: SECRET }) } : {}) }) });
+      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(U[who].mfa ? { totpCode: await freshCode(SECRET) } : {}) }) });
       const body = (await res.json()) as { accessToken: string; sessionSecret: string; sessionId: string };
       tokens[who] = body.accessToken;
       webSecret[who] = body.sessionSecret;

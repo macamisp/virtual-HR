@@ -78,6 +78,14 @@ export const Permission = {
   LEAVE_APPROVE_ALL: 'leave.approve.all',
   /** FR-ORG-011: the public holiday calendar. */
   HOLIDAYS_MANAGE: 'holidays.manage',
+  /** FR-ORG-005: edit work schedules (organisation default, team, person). */
+  SCHEDULES_MANAGE: 'schedules.manage',
+  /** FR-ORG-002: read subcontractor profiles (identity, contact, emergency contact; tax and bank masked). */
+  SUBCONTRACTORS_READ: 'subcontractors.read',
+  /** FR-ORG-002: edit subcontractor profiles. */
+  SUBCONTRACTORS_MANAGE: 'subcontractors.manage',
+  /** FR-ORG-002: reveal anyone's tax ID and bank details in clear (audited). */
+  SUBCONTRACTORS_SENSITIVE_READ: 'subcontractors.sensitive.read',
 } as const;
 export type Permission = (typeof Permission)[keyof typeof Permission];
 
@@ -92,6 +100,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.LEAVE_USE,
     Permission.LEAVE_APPROVE_ALL,
     Permission.HOLIDAYS_MANAGE,
+    Permission.SCHEDULES_MANAGE,
+    Permission.SUBCONTRACTORS_READ,
+    Permission.SUBCONTRACTORS_MANAGE,
+    Permission.SUBCONTRACTORS_SENSITIVE_READ,
     Permission.MEETINGS_USE,
     Permission.CHAT_USE,
     Permission.TASKS_USE,
@@ -135,6 +147,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.LEAVE_USE,
     Permission.LEAVE_APPROVE_ALL,
     Permission.HOLIDAYS_MANAGE,
+    Permission.SCHEDULES_MANAGE,
+    Permission.SUBCONTRACTORS_READ,
+    Permission.SUBCONTRACTORS_MANAGE,
+    Permission.SUBCONTRACTORS_SENSITIVE_READ,
     Permission.MEETINGS_USE,
     Permission.CHAT_USE,
     Permission.TASKS_USE,
@@ -177,6 +193,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.LEAVE_USE,
     Permission.LEAVE_APPROVE_ALL,
     Permission.HOLIDAYS_MANAGE,
+    Permission.SCHEDULES_MANAGE,
+    Permission.SUBCONTRACTORS_READ,
+    Permission.SUBCONTRACTORS_MANAGE,
+    Permission.SUBCONTRACTORS_SENSITIVE_READ,
     Permission.MEETINGS_USE,
     Permission.CHAT_USE,
     Permission.TASKS_USE,
@@ -219,6 +239,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.LEAVE_USE,
     Permission.LEAVE_APPROVE_ALL,
     Permission.HOLIDAYS_MANAGE,
+    Permission.SCHEDULES_MANAGE,
+    Permission.SUBCONTRACTORS_READ,
+    Permission.SUBCONTRACTORS_MANAGE,
     Permission.MEETINGS_USE,
     Permission.CHAT_USE,
     Permission.TASKS_USE,
@@ -371,6 +394,7 @@ export const MFA_SENSITIVE_PERMISSIONS: readonly Permission[] = [
   Permission.ROLES_MANAGE,
   Permission.PRIVACY_MANAGE,
   Permission.VAULT_RECOVER,
+  Permission.SUBCONTRACTORS_SENSITIVE_READ,
 ];
 
 export function requiresMfa(role: string, permissions: readonly string[] = []): boolean {
@@ -414,6 +438,10 @@ export const PERMISSION_GROUPS: ReadonlyArray<{ group: string; items: ReadonlyAr
     { permission: Permission.LEAVE_APPROVE_TEAM, label: 'Decide the team\'s leave requests' },
     { permission: Permission.LEAVE_APPROVE_ALL, label: 'Decide everyone\'s leave requests' },
     { permission: Permission.HOLIDAYS_MANAGE, label: 'Manage the public holiday calendar' },
+    { permission: Permission.SCHEDULES_MANAGE, label: 'Manage work schedules' },
+    { permission: Permission.SUBCONTRACTORS_READ, label: 'Read subcontractor profiles (tax and bank masked)' },
+    { permission: Permission.SUBCONTRACTORS_MANAGE, label: 'Edit subcontractor profiles' },
+    { permission: Permission.SUBCONTRACTORS_SENSITIVE_READ, label: 'Reveal subcontractor tax ID and bank details' },
   ] },
   { group: 'Tasks', items: [
     { permission: Permission.TASKS_USE, label: 'Use tasks' },

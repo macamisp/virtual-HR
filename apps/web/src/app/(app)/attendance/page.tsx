@@ -200,6 +200,7 @@ function WeekList() {
                       <Badge key={f} variant="outline">{f in FLAG_META ? FLAG_META[f as keyof typeof FLAG_META].label : f}</Badge>
                     ))}
                     {d.lateMinutes ? <Badge variant="warning">Late {d.lateMinutes}m</Badge> : null}
+                    {d.excessBreakMinutes ? <Badge variant="warning" title="Break time beyond your schedule's allowance">Break +{d.excessBreakMinutes}m</Badge> : null}
                   </TableCell>
                 </TableRow>
               ))}

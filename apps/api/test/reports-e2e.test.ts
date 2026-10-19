@@ -4,13 +4,13 @@
  * organisation, an employee nothing.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
@@ -118,7 +118,7 @@ describe('Dashboard and reports (FR-REP-001..006, 008)', { concurrency: false },
     await app.listen(3096);
     base = 'http://localhost:3096';
     for (const who of Object.keys(U) as Who[]) {
-      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(who === 'hr' ? { totpCode: generateSync({ secret: SECRET }) } : {}) }) });
+      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(who === 'hr' ? { totpCode: await freshCode(SECRET) } : {}) }) });
       tokens[who] = ((await res.json()) as { accessToken: string }).accessToken;
       assert.ok(tokens[who], `login ${who}`);
     }

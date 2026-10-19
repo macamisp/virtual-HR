@@ -4,13 +4,13 @@
  * FR-AUD-004 consent records. Real Postgres with RLS; permissions and tenancy for every route.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
 import { AttendanceService } from '../src/attendance/attendance.service.ts';
@@ -95,7 +95,7 @@ describe('Administration (FR-ADM-001, 002, 004, 006; FR-AUD-004)', { concurrency
       const res = await fetch(`${base}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(U[who].mfa ? { totpCode: generateSync({ secret: SECRET }) } : {}) }),
+        body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(U[who].mfa ? { totpCode: await freshCode(SECRET) } : {}) }),
       });
       const body = (await res.json()) as { accessToken: string };
       assert.ok(body.accessToken, `login ${who}`);

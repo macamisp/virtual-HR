@@ -1,6 +1,6 @@
 # HRVO project status
 
-**As of:** 17 October 2026. Sections 7 and 8 record the attendance fixes. Section 2 retains the prior audit counts; section 8 links the follow-up evidence.
+**As of:** 19 October 2026. Sections 7 and 8 record the attendance fixes; section 9 the organisation and people work (FR-ORG-002, 004, 005, 006). The section 2 counts include section 9.
 **Prepared for:** the product owner.
 **Method:**
 - Every requirement ID in `docs/SRS.md` was checked against the code and the automated tests, not against documentation claims.
@@ -36,7 +36,7 @@ The SRS has 151 functional requirement IDs.
 | Module | IDs | DONE | PARTIAL | MISSING | Missing IDs |
 | --- | ---: | ---: | ---: | ---: | --- |
 | AUTH | 12 | 6 | 3 | 3 | FR-AUTH-005, 009, 012 |
-| ORG | 12 | 2 | 6 | 2 | FR-ORG-007, 008 |
+| ORG | 12 | 5 | 3 | 2 | FR-ORG-007, 008 |
 | VO | 14 | 10 | 2 | 2 | FR-VO-011, 014 |
 | MEET | 14 | 8 | 5 | 1 | FR-MEET-014 |
 | ATT | 23 | 21 | 2 | 0 | none |
@@ -55,10 +55,10 @@ The SRS has 151 functional requirement IDs.
 
 | Phase | IDs | DONE | PARTIAL | MISSING | % DONE | Weighted |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| P1 | 74 | 57 | 16 | 1 | 77 % | 88 % |
+| P1 | 74 | 60 | 13 | 1 | 81 % | 90 % |
 | P2 | 60 | 32 | 17 | 11 | 53 % | 68 % |
 | P3 | 17 | 6 | 1 | 10 | 35 % | 38 % |
-| **All** | **151** | **95** | **34** | **22** | **63 %** | **74 %** |
+| **All** | **151** | **98** | **31** | **22** | **65 %** | **75 %** |
 
 The only P1 requirement that is MISSING is FR-ORG-008 (onboarding checklist).
 
@@ -71,11 +71,8 @@ The only P1 requirement that is MISSING is FR-ORG-008 (onboarding checklist).
 
 **ORG (no organisation-management slice has been built yet; leave and holidays, FR-ORG-010 and 011, are DONE since section 7)**
 - **FR-ORG-001:** the organisation has only a name and timezone; there is no profile screen.
-- **FR-ORG-002:** a subcontractor profile has rates only. There is no legal name, tax ID, bank details or emergency contact.
 - **FR-ORG-003:** contract alerts fire at 60/30/7/0 days instead of 30/14/7, and a contract has no rate.
-- **FR-ORG-004:** there are no 80 % / 100 % weekly-cap warnings.
-- **FR-ORG-005:** schedules are stored, but there is no screen or API to edit them, and no break allowance.
-- **FR-ORG-006:** there is no screen to manage teams or the manager hierarchy.
+- **FR-ORG-004:** the subcontractor weekly cap warns at 80 % and 100 % (section 9); there is no per-project cap.
 - **FR-ORG-009:** nothing sets a user to OFFBOARDED, and there are no off-boarding steps.
 - **FR-ORG-012:** the office people search exists, but there is no directory with profile cards.
 
@@ -124,7 +121,7 @@ Two documentation pointers are out of date:
 | --- | --- | --- | --- | --- |
 | 1 | Automatic detection of in and out times | **PASS** | e2e `02-clock-in-heartbeat` › "monitoring notice blocks the app; after acceptance the worker clocks in automatically"; `attendance-service` › "Reconciler closes sessions when heartbeats are missing for > 90s"; e2e `19-desktop-agent` (tray, offline OFFLINE_SYNCED); screens `/attendance`, `/live` | Nothing. Logout now closes the session at once (section 7). |
 | 2 | Document handling and storage | **PARTIAL** | e2e `10-documents` (upload, scan, preview, versions, sharing); `documents-e2e` (access log, 60/30/7 reminders); `21-esign`; `vault-e2e` (trash and crypto-shredding); screens `/documents`, `/documents/access-log`, `/documents/retention`, `/signatures` | Search covers title and tags only (FR-DOC-016). No policy acknowledgement (FR-DOC-018), no Office preview (FR-DOC-019), no bulk ZIP download (FR-DOC-020). |
-| 3 | Timesheets and task management for each subcontractor | **PARTIAL** | e2e `09-timesheets` (timer, manual time, return, resubmit, approve and lock, report and CSV); e2e `06-tasks` › "the subcontractor must accept before working"; `timesheets-e2e` rates and reopen; screens `/timesheets`, `/timesheets/review`, `/timesheets/rates`, `/tasks` | No multi-level approval (FR-TS-007) and no invoice (FR-TS-010). No recurring tasks, dependencies or CSV import (FR-TASK-009, 014, 015). The subcontractor profile lacks legal and bank details (FR-ORG-002), and there are no cap warnings (FR-ORG-004). |
+| 3 | Timesheets and task management for each subcontractor | **PARTIAL** | e2e `09-timesheets` (timer, manual time, return, resubmit, approve and lock, report and CSV); e2e `06-tasks` › "the subcontractor must accept before working"; `timesheets-e2e` rates and reopen; screens `/timesheets`, `/timesheets/review`, `/timesheets/rates`, `/tasks` | No multi-level approval (FR-TS-007) and no invoice (FR-TS-010). No recurring tasks, dependencies or CSV import (FR-TASK-009, 014, 015). The subcontractor profile is complete (FR-ORG-002) and the weekly cap warns at 80 % and 100 %; there is no per-project cap (FR-ORG-004). |
 | 4 | Meetings and connecting with each other | **PARTIAL** | e2e `16-office` (map, WASD, knock rooms, 200 avatars); e2e `17-meetings` (ring, lobby, proximity call, screen share); e2e `18-chat`; e2e `22-recording`; screens `/office`, `/meetings`, `/chat` | No map editor (FR-VO-006), no guest links (FR-VO-011), no in-meeting chat (FR-MEET-005), no background blur (FR-MEET-010), no AI summary (FR-MEET-014). |
 | 5 | Daily and weekly task lists | **PASS** | e2e `07-planning` › "the worker plans the day, confirms it and submits an end-of-day report", "the weekly planner schedules by drag and by keyboard, shows capacity and keeps goals"; `notifications-e2e` weekly summary and carry-over; screens `/tasks/today`, `/tasks/week`, `/tasks/workload` | Nothing. |
 | 6 | Password-protected documents for contracts and similar | **PASS** | e2e `11-vault` › "a confidential document asks the owner to confirm it is them, then a document password", share links, watermarked view; `vault-e2e` › "a database dump plus a bucket dump contain no content, file name or confidential title" | Encryption in transit (FR-DOC-008) is configuration only, with no test. |
@@ -320,3 +317,22 @@ two logins with NOTIFY suppressed took 189.3 ms; admin session revoke without NO
 51.2 ms. These are local results; CI wiring now preserves measurement logs but remote CI
 has not been run for the follow-up commits. Shared-auth-session logout scope remains pending
 owner clarification, as explained in the linked report.
+
+## 9. Organisation and people (19 October 2026)
+
+Four slices on branch `feat/org-people`, each with migration, API, screens, tests and an ADR. Owner's decisions on the open points are recorded in the ADRs.
+
+| Requirement | Before | After |
+| --- | --- | --- |
+| FR-ORG-006 teams and manager hierarchy | `teams` and `manager_id` existed and drove approvals; no API or screen to change them | `/admin/teams` and `/admin/org-chart` (HR, admins): teams, leads, each person's team and manager; loops refused (direct, indirect, and two opposite changes at once); team names unique per organisation; every change audited. ADR 031 |
+| FR-ORG-005 work schedules | No editor; the engine ignored effective dates and `flexible`, used one grace for late and early, had no break allowance | `/admin/schedules` (`schedules.manage`): organisation default, team or person, versions from today on; engine uses the schedule in force on the day, no late/early flags for flexible hours, separate early-leave grace, break allowance flagged (`EXCESS_BREAK`, net unchanged) on the day, the live board and "My days"; the replay checks the new field. ADR 032 |
+| FR-ORG-002 subcontractor profile | Rates only | Legal name, company, country, contact, emergency contact; tax ID and bank details AES-256-GCM under a per-profile key wrapped by the KeyProvider; masked for HR, clear only through the audited reveal (the person, or HR manager/admin); every read audited without values. ADR 033 |
+| FR-ORG-004 weekly cap warnings | Cap used only for overtime pay | 80 % and 100 % warnings to the subcontractor, their approvers and HR, once per threshold per week; banner on the timesheet page; running timers checked every 15 minutes. Per-project cap not done. ADR 034 |
+| FR-ORG-008 onboarding | Missing | Still missing (owner: a separate slice) |
+
+Proofs asked for: `subcontractor-profile-e2e` › "a subcontractor cannot read, reveal, edit or list another person's profile…" and › "a database dump does not reveal tax or bank values: every row of every table, as text, in plain, hex or base64 form" (with a positive control), plus a log-capture test. Engine and crypto tests were written first (`schedule-compliance`, `profile-crypto`).
+
+Gates on the branch (19 October 2026): lint and typecheck clean; API **743 / 744** with coverage 97.2 % lines, 80.8 % branches, 95.5 % functions (the one failure is the date-dependent timesheet reminder test below); Playwright **67 passed, 2 skipped** (recording needs Egress), 1 failed and 1 not run in the full run: `11-vault` › "a share link opens one document…" got a generic download file name under load and passes alone (3 / 3). Two suites also hit a Postgres deadlock in their setup (`DELETE FROM organizations` racing another suite's `presence_events` inserts); existing, load-dependent, not touched by this work.
+
+Found on the way, not fixed here: three tests fail on `main` as well on 19 October 2026 (`timesheets-e2e` › "owners are reminded to submit on the last day…", `reports-e2e` › "per assignee…", `attendance-guards-e2e` › "several open items alert the manager once per week"); they look date-dependent and need their own fix. The server accepts a 2FA code only inside its own 30-second step (no tolerance); the new e2e admin sign-in waits for a fresh step.
+

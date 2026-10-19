@@ -9,6 +9,7 @@ import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts
 import type { ComplianceQuery, ComplianceReport, ComplianceRequirements, ComplianceRequirementsDto, ComplianceRow } from '../../../../packages/shared/src/reports/types.ts';
 import { exportTable, personLabel, reportScope, scopeSql, USER_REF_SELECT, userRef } from './report-scope.ts';
 import type { ExportFile } from './report-scope.ts';
+import { orgToday } from './report-scope.ts';
 
 const SOON_DAYS = 30;
 
@@ -50,9 +51,11 @@ export class ComplianceService {
     return await this.requirements(user);
   }
 
-  async report(user: AuthenticatedUser, q: ComplianceQuery, today: string = new Date().toISOString().slice(0, 10)): Promise<ComplianceReport> {
+  /** `today` defaults to the organisation's local date (expired / expiring are local-calendar facts). */
+  async report(user: AuthenticatedUser, q: ComplianceQuery, todayOverride?: string): Promise<ComplianceReport> {
     const scope = reportScope(user);
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      const today = todayOverride ?? await orgToday(db, user.orgId);
       const required = await db.query<{ role: string; category: DocumentCategory }>(`SELECT role, category FROM required_document_categories`);
       const byRole = new Map<string, DocumentCategory[]>();
       for (const r of required.rows) byRole.set(r.role, [...(byRole.get(r.role) ?? []), r.category]);

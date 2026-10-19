@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { DoorOpen, Lock, Megaphone, Map as MapIcon, Minus, Navigation, Plus, Users } from 'lucide-react';
 import { ACCESS_MODES, VO_STATUS_LABEL } from '@hrvo/shared';
 import type { AccessMode, OfficeSnapshot, Room, VoStatus } from '@hrvo/shared';
@@ -13,6 +13,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { NativeSelect } from '@/components/ui/select';
 import { OfficeMedia } from '@/components/media/office-media';
+import { AvatarActions } from '@/components/office/avatar-actions';
+import { CallPerson } from '@/components/call-person';
 import { OfficeClient } from '@/lib/office/office-client';
 import { STATUS_COLOUR } from '@/lib/office/office-renderer';
 import type { OfficeRenderer } from '@/lib/office/office-renderer';
@@ -55,6 +57,7 @@ const zero = () => 0;
 function MapView({ client }: { client: OfficeClient }) {
   const host = useRef<HTMLDivElement | null>(null);
   const renderer = useRef<OfficeRenderer | null>(null);
+  const getRenderer = useCallback(() => renderer.current, []);
   const [fps, setFps] = useState(0);
   useEffect(() => {
     let r: OfficeRenderer | null = null;
@@ -104,6 +107,7 @@ function MapView({ client }: { client: OfficeClient }) {
         onBlur={() => { pressed.current.clear(); updateKeys(); }}
         onPointerDown={() => host.current?.focus()}
       />
+      <AvatarActions client={client} renderer={getRenderer} />
       <div className="absolute right-2 top-2 flex flex-col gap-1">
         <Button size="sm" variant="outline" aria-label="Zoom in" onClick={() => renderer.current?.zoomBy(1.2)}><Plus aria-hidden="true" /></Button>
         <Button size="sm" variant="outline" aria-label="Zoom out" onClick={() => renderer.current?.zoomBy(1 / 1.2)}><Minus aria-hidden="true" /></Button>
@@ -213,7 +217,10 @@ function People({ client }: { client: OfficeClient }) {
                 <div className="flex items-center gap-2 truncate"><StatusDot status={status} /><span className="truncate font-medium">{p.displayName ?? p.email}</span>{p.id === meId ? <span className="text-xs text-muted-foreground">(you)</span> : null}</div>
                 <div className="truncate text-xs text-muted-foreground">{VO_STATUS_LABEL[status]} · {where}{p.deskLabel ? ` · desk ${p.deskLabel}` : ''}{(live?.statusMessage ?? p.statusMessage) ? ` · “${live?.statusMessage ?? p.statusMessage}”` : ''}</div>
               </div>
-              {live && p.id !== meId ? <Button size="sm" variant="outline" aria-label={`Go to ${p.displayName ?? p.email}`} onClick={() => void client.teleport({ kind: 'user', userId: p.id })}><Navigation aria-hidden="true" /></Button> : null}
+              <div className="flex shrink-0 items-center gap-1">
+                {p.id !== meId ? <CallPerson userId={p.id} name={p.displayName ?? p.email} /> : null}
+                {live && p.id !== meId ? <Button size="sm" variant="outline" aria-label={`Go to ${p.displayName ?? p.email}`} onClick={() => void client.teleport({ kind: 'user', userId: p.id })}><Navigation aria-hidden="true" /></Button> : null}
+              </div>
             </li>
           );
         })}

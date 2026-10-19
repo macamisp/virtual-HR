@@ -19,6 +19,8 @@ export interface TimesheetEventMap {
   'timesheet.approved': Base;
   'timesheet.rejected': Base & { comment: string };
   'timesheet.reopened': Base & { reason: string };
+  /** FR-ORG-004: time was logged or stopped; workDate null means today (a timer). */
+  'time.logged': { orgId: string; userId: string; workDate: string | null };
 }
 
 @Injectable()

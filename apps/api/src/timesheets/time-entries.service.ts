@@ -27,6 +27,9 @@ import { ensureTimesheet, isEditable, orgSettings, refreshDay, TimesheetLockedEr
 import type { OrgTimesheetSettings } from './timesheet-store.ts';
 import { inApprovalScope } from './timesheet-policy.ts';
 import { ENTRY_SELECT, actorOf, mapEntry, mapTimeDbError } from './timesheets.sql.ts';
+import { TimesheetEvents } from './timesheet-events.ts';
+import { weeklyCapStatus } from './weekly-cap.ts';
+import type { WeeklyCap } from '../../../../packages/shared/src/index.ts';
 import type { EntryRow } from './timesheets.sql.ts';
 
 type Db = pg.PoolClient;
@@ -43,7 +46,21 @@ export class TimeEntriesService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly tasks: TasksService,
     private readonly attendance: PostgresAttendanceRepository,
+    private readonly events: TimesheetEvents,
   ) {}
+
+  /** FR-ORG-004 (ADR 034): after commit, so the weekly cap check sees the new time. */
+  private logged(orgId: string, userId: string, workDate: string | null): void {
+    this.events.emit('time.logged', { orgId, userId, workDate });
+  }
+
+  /** FR-ORG-004: this week's logged hours against the caller's weekly cap. */
+  async weeklyCap(user: AuthenticatedUser): Promise<WeeklyCap> {
+    return this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      const { name: _name, ...status } = await weeklyCapStatus(db, user.orgId, user.id, null, this.now());
+      return status;
+    });
+  }
 
   onModuleInit(): void {
     // FR-TS-003: the running timer stops automatically at clock-out.
@@ -105,7 +122,7 @@ export class TimeEntriesService implements OnModuleInit {
 
   /** Stops the running timer; with `taskId`, only if it runs on that task. */
   async stopTimer(user: AuthenticatedUser, taskId?: string): Promise<TimerState> {
-    return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+    const state = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       await db.query(`SELECT pg_advisory_xact_lock(hashtext('timer:' || $1::text))`, [user.id]);
       const current = await this.runningEntry(db, user.id, user.id);
       if (!current || (taskId && current.taskId !== taskId)) throw new NotFoundException('No timer is running on this task');
@@ -115,6 +132,8 @@ export class TimeEntriesService implements OnModuleInit {
     }).catch((err: unknown) => {
       throw mapTimeDbError(err);
     });
+    this.logged(user.orgId, user.id, null);
+    return state;
   }
 
   /**
@@ -165,6 +184,7 @@ export class TimeEntriesService implements OnModuleInit {
       // Ends at the clock-out time (last valid heartbeat); a timer started after it gets 0 minutes.
       await this.stopRunning(db, session.orgId, session.userId, clockOut, true);
     });
+    this.logged(session.orgId, session.userId, null);
   }
 
   // ---------------------------------------------------------------- manual entries
@@ -177,7 +197,7 @@ export class TimeEntriesService implements OnModuleInit {
       if (projectId && task.projectId !== projectId) throw new BadRequestException('The task belongs to another project');
       projectId = task.projectId;
     }
-    return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+    const entry = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const settings = await orgSettings(db, user.orgId);
       this.assertNotFuture(dto.workDate, settings);
       if (projectId && !dto.taskId) await this.assertProjectAccess(db, user, projectId);
@@ -194,10 +214,13 @@ export class TimeEntriesService implements OnModuleInit {
     }).catch((err: unknown) => {
       throw mapTimeDbError(err);
     });
+    this.logged(user.orgId, user.id, dto.workDate);
+    return entry;
   }
 
   async update(user: AuthenticatedUser, entryId: string, dto: UpdateEntryDto): Promise<TimeEntry> {
-    return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+    let workDate = '';
+    const entry = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const e = await this.ownEditableEntry(db, user, entryId);
       if (e.source !== 'MANUAL' && (dto.minutes !== undefined || dto.reason !== undefined)) {
         throw new BadRequestException('Only manual entries can change their minutes or reason');
@@ -211,10 +234,13 @@ export class TimeEntriesService implements OnModuleInit {
         [entryId, dto.minutes ?? null, dto.note ?? null, dto.reason ?? null, dto.billable ?? null],
       );
       await refreshDay(db, user.orgId, user.id, e.work_date);
+      workDate = e.work_date;
       return (await this.entryById(db, entryId, user.id))!;
     }).catch((err: unknown) => {
       throw mapTimeDbError(err);
     });
+    this.logged(user.orgId, user.id, workDate);
+    return entry;
   }
 
   async remove(user: AuthenticatedUser, entryId: string): Promise<{ deleted: true }> {

@@ -17,12 +17,13 @@
 
 import './support/refuse-in-production.ts'; // must stay the first import
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { NestFactory } from '@nestjs/core';
 import pg from 'pg';
 import { io } from 'socket.io-client';
 import { randomBytes } from 'node:crypto';
 import argon2 from 'argon2';
-import { generateSecret, generateSync } from 'otplib';
+import { generateSecret } from 'otplib';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
 import { HeartbeatValidator } from '../src/attendance/heartbeat-validator.ts';
@@ -164,7 +165,7 @@ async function runDemo() {
     console.log(`  Message: ${step3.body.message}`);
 
     logStep(4, 'TOTP Second-Factor Verification', 'Admin submits email, password, and 6-digit TOTP code');
-    const totpToken = generateSync({ secret: adminTotpSecret });
+    const totpToken = await freshCode(adminTotpSecret);
     const step4 = await apiRequest('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email: 'admin@demo-acme.com', password: defaultPassword, totpCode: totpToken }),

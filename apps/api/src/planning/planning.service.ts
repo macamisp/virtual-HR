@@ -52,14 +52,14 @@ export class PlanningService {
     return { today: formatInTimeZone(now, timezone, 'yyyy-MM-dd'), timezone };
   }
 
-  /** Effective work schedule days for a user (user schedule wins over team schedule). */
+  /** Effective work schedule days on a date: own, else team, else organisation default (as findWorkScheduleForUser). */
   async scheduleDays(db: Client, orgId: string, userId: string, onDate: string): Promise<ScheduleDays> {
     const res = await db.query<{ days: ScheduleDays }>(
       `SELECT ws.days FROM work_schedules ws
        LEFT JOIN users u ON u.id = $2
-       WHERE ws.org_id = $1 AND (ws.user_id = $2 OR (ws.user_id IS NULL AND ws.team_id = u.team_id))
+       WHERE ws.org_id = $1 AND (ws.user_id = $2 OR (ws.user_id IS NULL AND ws.team_id = u.team_id) OR (ws.user_id IS NULL AND ws.team_id IS NULL))
          AND ws.effective_from <= $3::date AND (ws.effective_to IS NULL OR ws.effective_to >= $3::date)
-       ORDER BY (ws.user_id IS NOT NULL) DESC, ws.effective_from DESC LIMIT 1`,
+       ORDER BY (ws.user_id IS NOT NULL) DESC, (ws.team_id IS NOT NULL) DESC, ws.effective_from DESC LIMIT 1`,
       [orgId, userId, onDate],
     );
     return res.rows[0]?.days ?? null;

@@ -62,8 +62,9 @@ export class DashboardService {
          LEFT JOIN teams t ON t.id = u.team_id
          LEFT JOIN LATERAL (
            SELECT ws.days, ws.grace_minutes, ws.flexible FROM work_schedules ws
-           WHERE ws.org_id = $1 AND (ws.user_id = u.id OR (ws.team_id IS NOT NULL AND ws.team_id = u.team_id) OR (ws.user_id IS NULL AND ws.team_id IS NULL))
-           ORDER BY ws.user_id NULLS LAST, ws.team_id NULLS LAST LIMIT 1) ws ON TRUE`,
+           WHERE ws.org_id = $1 AND (ws.user_id = u.id OR (ws.user_id IS NULL AND ws.team_id IS NOT NULL AND ws.team_id = u.team_id) OR (ws.user_id IS NULL AND ws.team_id IS NULL))
+             AND ws.effective_from <= $2::date AND (ws.effective_to IS NULL OR ws.effective_to >= $2::date)
+           ORDER BY (ws.user_id IS NOT NULL) DESC, (ws.team_id IS NOT NULL) DESC, ws.effective_from DESC LIMIT 1) ws ON TRUE`,
         [user.orgId, today, ids],
       );
       const lateArrivals: Dashboard['lateArrivals'] = [];

@@ -1,29 +1,59 @@
 'use client';
 
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
+import { useIncomingCalls, useRespond } from '@/lib/meeting-queries';
 import { useEffect, useState } from 'react';
 import { Megaphone, PhoneIncoming, X } from 'lucide-react';
 import type { BroadcastMessage } from '@hrvo/shared';
 import { Button } from '@/components/ui/button';
 import { closeUiSocket, onUiEvent } from '@/lib/ui-socket';
+import type { CallState } from '@hrvo/shared';
 
 interface Ring { meetingId: string; title: string }
+
+function RingAlert({ ring }: { ring: CallState }) {
+  const respond = useRespond(ring.meetingId);
+  const router = useRouter();
+  const qc = useQueryClient();
+  // mutateAsync, not mutate(…, { onSuccess }): the server's call-state event can remove this ring
+  // (unmounting the alert) before the response arrives, and per-call callbacks of an unmounted
+  // component never run. The promise still resolves, so the navigation always happens.
+  const meetingId = ring.meetingId;
+  const answer = (accept: boolean) => {
+    respond.mutateAsync(accept).then(() => {
+      void qc.invalidateQueries({ queryKey: ['meetings', 'incoming'] });
+      if (accept) router.push(`/meetings/${meetingId}?join=1`);
+    }).catch(() => undefined); // the error is shown from respond.error while the alert is mounted
+  };
+  return <div role="alert" data-testid="ring" className="rounded border border-primary bg-background p-3 shadow-lg">
+    <p className="flex items-center gap-2 text-sm font-medium"><PhoneIncoming className="h-4 w-4" aria-hidden="true" /> Incoming call</p>
+    <p className="text-sm"><span className="font-medium">{ring.callerName}</span> is calling you</p>
+    <p className="text-xs text-muted-foreground">{ring.title}</p>
+    <div className="mt-2 flex gap-2">
+      <Button size="sm" disabled={respond.isPending} onClick={() => answer(true)}>Accept</Button>
+      <Button size="sm" variant="ghost" disabled={respond.isPending} onClick={() => answer(false)}>Decline</Button>
+    </div>
+    {respond.isError ? <p role="alert" className="text-sm text-destructive">{respond.error.message}</p> : null}
+  </div>;
+}
 
 /**
  * App-wide live alerts over the UI socket (ADR 016): incoming calls (FR-MEET-001) and office
  * broadcasts (FR-VO-010). Rings disappear after 45 s.
  */
 export function LiveAlerts() {
-  const [rings, setRings] = useState<Ring[]>([]);
+  const incoming = useIncomingCalls();
+  const qc = useQueryClient();
+  const rings = incoming.data?.items ?? [];
   const [broadcasts, setBroadcasts] = useState<Array<BroadcastMessage & { key: number }>>([]);
   useEffect(() => {
-    const offRing = onUiEvent<Ring>('meeting:ring', (r) => {
-      setRings((rs) => [...rs.filter((x) => x.meetingId !== r.meetingId), r]);
-      setTimeout(() => setRings((rs) => rs.filter((x) => x.meetingId !== r.meetingId)), 45_000);
-    });
+    const refresh = () => { void qc.invalidateQueries({ queryKey: ['meetings', 'incoming'] }); };
+    const offRing = onUiEvent<Ring>('meeting:ring', refresh);
+    const offState = onUiEvent('meeting:call-state', refresh);
     const offCast = onUiEvent<BroadcastMessage>('office:broadcast', (b) => setBroadcasts((bs) => [...bs.slice(-2), { ...b, key: Date.now() }]));
-    return () => { offRing(); offCast(); closeUiSocket(); };
-  }, []);
+    return () => { offRing(); offState(); offCast(); closeUiSocket(); };
+  }, [qc]);
   if (!rings.length && !broadcasts.length) return null;
   return (
     <div className="fixed bottom-4 right-4 z-50 w-80 space-y-2" aria-live="assertive">
@@ -36,16 +66,7 @@ export function LiveAlerts() {
           </div>
         </div>
       ))}
-      {rings.map((r) => (
-        <div key={r.meetingId} role="alert" data-testid="ring" className="rounded border border-primary bg-background p-3 shadow-lg">
-          <p className="flex items-center gap-2 text-sm font-medium"><PhoneIncoming className="h-4 w-4" aria-hidden="true" /> Incoming call</p>
-          <p className="text-sm">{r.title}</p>
-          <div className="mt-2 flex gap-2">
-            <Button size="sm" asChild onClick={() => setRings((rs) => rs.filter((x) => x.meetingId !== r.meetingId))}><Link href={`/meetings/${r.meetingId}?join=1`}>Join</Link></Button>
-            <Button size="sm" variant="ghost" onClick={() => setRings((rs) => rs.filter((x) => x.meetingId !== r.meetingId))}>Dismiss</Button>
-          </div>
-        </div>
-      ))}
+      {rings.map((r) => <RingAlert key={r.meetingId} ring={r} />)}
     </div>
   );
 }

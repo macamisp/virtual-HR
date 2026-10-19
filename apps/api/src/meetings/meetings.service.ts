@@ -14,6 +14,7 @@ import type {
 } from '../../../../packages/shared/src/meetings/types.ts';
 import { MediaService } from '../media/media.service.ts';
 import { liveKitConfig, roomNames, roomService } from '../media/livekit.ts';
+import { CallsService } from './calls.service.ts';
 import { RecordingsService } from './recordings.service.ts';
 import type { LkParticipant } from '../media/livekit.ts';
 import { buildIcs, nextOccurrence, rruleOf } from './ics.ts';
@@ -56,6 +57,7 @@ export class MeetingsService {
     private readonly tasks: TasksService,
     @Inject(MAIL_TRANSPORT) private readonly mailer: MailTransport,
     private readonly recordings: RecordingsService,
+    private readonly calls: CallsService,
   ) {}
 
   private webUrl(): string {
@@ -109,11 +111,12 @@ export class MeetingsService {
       for (const a of attendeeIds) {
         await db.query(`INSERT INTO meeting_attendees (org_id, meeting_id, user_id, role) VALUES ($1, $2, $3, $4)`, [user.orgId, id, a, cohosts.has(a) ? 'COHOST' : 'ATTENDEE']);
       }
+      if (!scheduled) await this.calls.start(db, user, id, attendeeIds);
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'MEETING_CREATED', entityType: 'MEETING', entityId: id, after: { type: dto.type, attendees: attendeeIds.length, recurring: !!rrule } });
     });
     if (dto.type === 'INSTANT') {
       // FR-MEET-001: ring the people invited to an instant call.
-      for (const a of attendeeIds) this.gateway.notifyUser(a, 'meeting:ring', { meetingId: id, title: dto.title, from: user.id });
+      await this.calls.announce(user.orgId, id);
     } else if (dto.sendInvites !== false) await this.sendInvites(user, id, 'REQUEST');
     return await this.get(user, id);
   }
@@ -232,6 +235,12 @@ export class MeetingsService {
   }
 
   async respond(user: AuthenticatedUser, id: string, accept: boolean): Promise<Meeting> {
+    const instant = await this.prisma.runWithTenantContext(user.orgId, async (db) => (await this.row(db, id)).type === 'INSTANT');
+    if (instant) {
+      await this.calls.respond(user, id, accept);
+      await this.calls.cancel(user, id);
+    return this.get(user, id);
+    }
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const res = await db.query(`UPDATE meeting_attendees SET response = $3 WHERE meeting_id = $1 AND user_id = $2`, [id, user.id, accept ? 'ACCEPTED' : 'DECLINED']);
       if (res.rowCount === 0) throw new NotFoundException('You are not invited to this meeting');
@@ -367,6 +376,7 @@ export class MeetingsService {
       if (userId === row.host_id) throw new ForbiddenException('The host cannot be removed');
       await db.query(`INSERT INTO meeting_lobby (org_id, meeting_id, user_id, state, decided_by, decided_at) VALUES ($1, $2, $3, 'DENIED', $4, now())
                       ON CONFLICT (meeting_id, user_id) DO UPDATE SET state = 'DENIED', decided_by = EXCLUDED.decided_by, decided_at = now()`, [user.orgId, id, userId, user.id]).catch(() => undefined);
+      await db.query(`DELETE FROM channel_members WHERE user_id = $1 AND channel_id IN (SELECT id FROM channels WHERE meeting_id = $2)`, [userId, id]);
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'MEETING_PARTICIPANT_REMOVED', entityType: 'MEETING', entityId: id, after: { userId } });
       return row;
     });

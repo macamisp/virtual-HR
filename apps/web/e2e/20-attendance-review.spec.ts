@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { expect, test } from '@playwright/test';
+import { expect, test, type WebSocket } from '@playwright/test';
 import { io } from 'socket.io-client';
 import { signHeartbeatPayload } from '../../../packages/shared/src/attendance/heartbeat-signer.ts';
 import { adminPool, ORG_ID, PASSWORD, USERS } from './fixtures';
@@ -80,6 +80,21 @@ test.describe.serial('Attendance review and presence challenge', () => {
     await pool.query(`UPDATE attendance_sessions SET status = 'CLOSED', clock_out_at = now(), clock_out_source = 'LOGOUT', current_state = 'OFFLINE' WHERE org_id = $1 AND user_id = $2 AND status = 'OPEN'`, [ORG_ID, USERS.worker.id]);
     // Set in the database here, so wait out the API's 30-second policy cache (the admin page clears it at once).
     await new Promise((r) => setTimeout(r, 31_000));
+    // The page's own heartbeat carries real activity (the sign-in clicks) and correctly resets the
+    // idle counter; landing inside the burst below it prevented the challenge (CI run 39206159860).
+    // So the burst starts right after one of the page's heartbeats, 30 s before the next.
+    const pageSockets: WebSocket[] = [];
+    page.on('websocket', (ws) => pageSockets.push(ws));
+    // Listens on the page's current sockets and on any it opens meanwhile (the heartbeat worker can
+    // reconnect). Alignment only lowers the chance of the race; it never fails the test by itself.
+    const nextPageHeartbeat = () => new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (why: string) => { if (done) return; done = true; clearTimeout(t); page.off('websocket', watch); if (why) console.log(why); resolve(); };
+      const watch = (ws: WebSocket) => ws.on('framesent', (f) => { if (String(f.payload).includes('presence:heartbeat')) finish(''); });
+      const t = setTimeout(() => finish('spec 20: no page heartbeat seen within 45 s; sending the idle burst unaligned'), 45_000);
+      for (const ws of pageSockets) watch(ws);
+      page.on('websocket', watch);
+    });
     try {
       await signIn(page, USERS.worker.email);
       await passNoticeGate(page);
@@ -89,6 +104,7 @@ test.describe.serial('Attendance review and presence challenge', () => {
       const login = (await (await fetch(`${API}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: USERS.worker.email, password: PASSWORD }) })).json()) as { accessToken: string; sessionId: string; sessionSecret: string };
       const s = io(API, { transports: ['websocket'], reconnection: false, auth: { token: login.accessToken } });
       await new Promise<void>((res) => s.once('connect', () => res()));
+      await nextPageHeartbeat();
       let seq = Math.floor(Date.now() / 1000) + 100;
       for (let i = 0; i < 31; i += 1) {
         seq += 1;

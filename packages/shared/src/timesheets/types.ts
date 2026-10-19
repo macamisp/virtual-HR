@@ -289,3 +289,18 @@ export const TimesheetReportSchema = z.object({
   rows: z.array(ReportRowSchema),
 });
 export type TimesheetReport = z.infer<typeof TimesheetReportSchema>;
+
+/**
+ * FR-ORG-004 (ADR 034): hours logged this week (Monday to Sunday, organisation time) against a
+ * subcontractor's weekly cap. WARN from 80 %, OVER from 100 %; NONE when there is no cap.
+ */
+export const WEEKLY_CAP_WARN_PERCENT = 80;
+export const WeeklyCapSchema = z.object({
+  capHours: z.number().nullable(),
+  weekStart: z.string(),
+  weekEnd: z.string(),
+  loggedMinutes: z.number().int(),
+  percent: z.number().nullable(),
+  level: z.enum(['NONE', 'UNDER', 'WARN', 'OVER']),
+});
+export type WeeklyCap = z.infer<typeof WeeklyCapSchema>;

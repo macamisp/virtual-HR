@@ -1,3 +1,5 @@
+import { CallsService } from './calls.service.ts';
+import { ChatModule } from '../chat/chat.module.ts';
 import { Module } from '@nestjs/common';
 import { MailModule } from '../common/mail.module.ts';
 import { AttendanceModule } from '../attendance/attendance.module.ts';
@@ -17,15 +19,15 @@ import { OBJECT_STORE, objectStoreFromEnv } from '../documents/object-store.ts';
 
 /** Media (LiveKit tokens, webhooks), meetings and their recordings live together: a meeting token is a media token (ADR 016, 024). */
 @Module({
-  imports: [MailModule, AttendanceModule, TasksModule, OfficeModule, NotificationsModule],
+  imports: [MailModule, AttendanceModule, TasksModule, OfficeModule, NotificationsModule, ChatModule],
   controllers: [MeetingsController, MediaController, LiveKitWebhookController, RecordingsController],
   providers: [
-    MediaService, MeetingsService, RecordingsService,
+    MediaService, MeetingsService, RecordingsService, CallsService,
     // FR-MEET-007: recordings are encrypted like documents (same key provider and bucket, ADR 024).
     { provide: KEY_PROVIDER, useFactory: () => keyProviderFromEnv() },
     { provide: OBJECT_STORE, useFactory: () => objectStoreFromEnv() },
     { provide: RECORDING_DISPATCHER, useExisting: JobsService },
   ],
-  exports: [MeetingsService, MediaService, RecordingsService],
+  exports: [MeetingsService, MediaService, RecordingsService, CallsService],
 })
 export class MeetingsModule {}

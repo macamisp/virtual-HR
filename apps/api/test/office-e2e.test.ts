@@ -6,6 +6,7 @@
  * attendance session alive.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
@@ -13,7 +14,6 @@ import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { io, type Socket } from 'socket.io-client';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
@@ -22,6 +22,7 @@ import { signHeartbeatPayload } from '../../../packages/shared/src/attendance/he
 import { centre, generateDefaultFloor, OfficeSnapshotSchema, PeopleListSchema, TILE_SIZE } from '../../../packages/shared/src/office/index.ts';
 import type { JoinAck, MoveAck, OfficeSnapshot, PositionsMessage, ProximityMessage, RosterEntry, TeleportAck } from '../../../packages/shared/src/office/index.ts';
 import type { StateMachineTransitionResult } from '../../../packages/shared/src/index.ts';
+import { resetOrgs } from './support/reset-orgs.ts';
 
 const ORG = 'f0f00000-0000-4000-8000-000000000001';
 const OTHER = 'f0f00000-0000-4000-8000-000000000002';
@@ -101,7 +102,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
     process.env.RATE_LIMIT_LOGIN = '1000';
     process.env.JOBS_ENABLED = 'false';
     adminPool = new pg.Pool({ host: process.env.PGHOST || 'localhost', port: Number(process.env.PGPORT || 5433), database: process.env.PGDATABASE || 'hrvo_dev', user: process.env.PGADMIN_USER || 'postgres', password: process.env.PGADMIN_PASSWORD || 'postgres' });
-    await adminPool.query(`DELETE FROM organizations WHERE id = ANY($1::uuid[])`, [[ORG, OTHER]]);
+    await resetOrgs(adminPool, [ORG, OTHER]);
     await adminPool.query(`INSERT INTO organizations (id, name, slug) VALUES ($1, 'VO Ltd', 'vo-e2e'), ($2, 'Other Ltd', 'vo-other-e2e')`, [ORG, OTHER]);
     const hash = await argon2.hash(PASSWORD, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 });
     for (const u of Object.values(U)) {
@@ -112,7 +113,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
     configureApp(app);
     await app.listen(PORT);
     for (const who of Object.keys(U) as Who[]) {
-      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(U[who].mfa ? { totpCode: generateSync({ secret: SECRET }) } : {}) }) });
+      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(U[who].mfa ? { totpCode: await freshCode(SECRET) } : {}) }) });
       sessions[who] = (await res.json()) as Session;
       assert.ok(sessions[who].accessToken, `login ${who}`);
     }
@@ -121,7 +122,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
   after(async () => {
     for (const s of sockets) s.disconnect();
     await app?.close();
-    await adminPool.query(`DELETE FROM organizations WHERE id = ANY($1::uuid[])`, [[ORG, OTHER]]);
+    await resetOrgs(adminPool, [ORG, OTHER]);
     await adminPool.end();
   });
 

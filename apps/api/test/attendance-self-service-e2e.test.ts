@@ -4,6 +4,7 @@
  * FR-ATT-007, 013, 015, 016, 020; FR-AUD-004.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
@@ -216,11 +217,18 @@ describe('Attendance self-service API (apps/web contract)', { concurrency: false
   });
 
   it('corrections: requester sees own list; queue is scoped to the requester\'s manager (FR-ATT-013)', async () => {
+    // Yesterday 09:00-17:00 in Colombo: corrections older than 7 days are refused, so no fixed date.
+    const yesterday = formatInTimeZone(new Date(Date.now() - 86_400_000), 'Asia/Colombo', 'yyyy-MM-dd');
     const create = await api(emp.accessToken, '/attendance/corrections', {
       method: 'POST',
-      body: JSON.stringify({ requestedIn: '2026-10-12T03:30:00.000Z', requestedOut: '2026-10-12T11:30:00.000Z', reason: 'Forgot laptop at home' }),
+      body: JSON.stringify({ requestedIn: new Date(`${yesterday}T09:00:00+05:30`).toISOString(), requestedOut: new Date(`${yesterday}T17:00:00+05:30`).toISOString(), reason: 'Forgot laptop at home' }),
     });
     assert.equal(create.status, 201);
+    const tooOld = await api(emp.accessToken, '/attendance/corrections', {
+      method: 'POST',
+      body: JSON.stringify({ requestedIn: new Date(Date.now() - 9 * 86_400_000).toISOString(), requestedOut: new Date(Date.now() - 9 * 86_400_000 + 3_600_000).toISOString(), reason: 'Much too late' }),
+    });
+    assert.equal(tooOld.status, 400, 'older than 7 days is a client error, not a 500');
     // The web client validates this body; every contract field must be present (nulls included).
     const created = CorrectionSchema.parse(await create.json());
     assert.equal(created.reviewerId, null);
@@ -269,11 +277,10 @@ describe('Attendance self-service API (apps/web contract)', { concurrency: false
     assert.equal(otherRow?.hasClockedInToday, false);
     assert.ok(!board.some((r) => r.userId === U.hrm.id), 'team-scoped');
 
-    const { generateSync } = await import('otplib');
     const res = await fetch(`${base}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: U.hrm.email, password: PASSWORD, totpCode: generateSync({ secret: 'KVKFKRCPNZQUYMLXOVYDSQKJKZDTSRLD' }) }),
+      body: JSON.stringify({ email: U.hrm.email, password: PASSWORD, totpCode: await freshCode('KVKFKRCPNZQUYMLXOVYDSQKJKZDTSRLD') }),
     });
     const hrm = (await res.json()) as Login;
     const orgBoard = await api(hrm.accessToken, '/attendance/live');

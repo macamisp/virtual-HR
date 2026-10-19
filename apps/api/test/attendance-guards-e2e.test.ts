@@ -3,6 +3,7 @@
  * (FR-ATT-017, 018, 021, 023; ADR 019). Flags never change recorded time; that is asserted too.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +11,6 @@ import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { io, type Socket } from 'socket.io-client';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import { AppModule } from '../src/app.module.ts';
@@ -89,7 +89,7 @@ describe('Attendance safeguards (FR-ATT-017, 018, 021, 023)', { concurrency: fal
     configureApp(app);
     await app.listen(PORT);
     for (const who of Object.keys(U) as Who[]) {
-      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(U[who].mfa ? { totpCode: generateSync({ secret: SECRET }) } : {}) }) });
+      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(U[who].mfa ? { totpCode: await freshCode(SECRET) } : {}) }) });
       login[who] = (await res.json()) as { accessToken: string; sessionId: string; sessionSecret: string };
     }
   });
@@ -242,9 +242,14 @@ describe('Attendance safeguards (FR-ATT-017, 018, 021, 023)', { concurrency: fal
       assert.ok((await flagsOf('other')).some((f) => f.kind === 'PERIODIC_ACTIVITY' && f.session_id === sid));
     });
 
-    it('several open items alert the manager once per week', async () => {
-      await work().attendanceAlerts(new Date());
-      await work().attendanceAlerts(new Date());
+    it('several open items alert the manager once per week (the organisation\'s week, not the UTC one)', async () => {
+      // 04:40 on this week's Monday in Colombo is 23:10 UTC on Sunday, still the previous ISO week in
+      // UTC; noon is Monday in both. Both instants are in the same local week: one alert, not two.
+      const today = formatInTimeZone(new Date(), TZ, 'yyyy-MM-dd');
+      const dow = Number(formatInTimeZone(new Date(), TZ, 'i'));
+      const monday = formatInTimeZone(new Date(Date.parse(`${today}T12:00:00Z`) - (dow - 1) * 86_400_000), 'UTC', 'yyyy-MM-dd');
+      await work().attendanceAlerts(fromZonedTime(`${monday} 04:40:00`, TZ));
+      await work().attendanceAlerts(fromZonedTime(`${monday} 12:00:00`, TZ));
       const n = await notes('lead', 'ATTENDANCE_FLAGS_TO_REVIEW');
       assert.equal(n.length, 1);
       assert.match(n[0].title, /attendance items to review for Emma Emp/);

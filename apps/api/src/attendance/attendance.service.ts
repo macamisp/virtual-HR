@@ -2,6 +2,8 @@ import { replayAttendanceInputs, type AttendanceInput } from './attendance-repla
 /** FR-ATT-021: a session the server closed itself (timeout, lost connection, maximum length). */
 /** NFR-ACC-004: one field of one person's day that does not recompute to its stored value. */
 export interface ReplayMismatch { userId: string; field: string; stored: string | number | null; recomputed: string | number | null }
+/** NFR-ACC-004: every computed field of a day, compared by the nightly replay. */
+export const REPLAY_FIELDS = ['firstIn', 'lastOut', 'activeSeconds', 'idleSeconds', 'breakSeconds', 'meetingSeconds', 'netSeconds', 'expectedSeconds', 'lateMinutes', 'earlyLeaveMinutes', 'overtimeMinutes', 'excessBreakMinutes', 'dayStatus'] as const satisfies ReadonlyArray<keyof AttendanceDaily>;
 export interface AutoClosed { userId: string; sessionId: string; source: string; clockOutAt: Date; workDate: string }
 
 /**
@@ -1060,7 +1062,7 @@ export class AttendanceService {
     if (!this.repository) return no;
     if (this.holidayProvider && await this.holidayProvider.isHoliday(orgId, workDate)) return no;
     if (this.leaveProvider && await this.leaveProvider.isUserOnApprovedLeave(orgId, userId, workDate)) return no;
-    const schedule = await this.repository.findWorkScheduleForUser(orgId, userId);
+    const schedule = await this.repository.findWorkScheduleForUser(orgId, userId, workDate);
     if (!schedule || schedule.flexible) return no;
     const day = schedule.days[formatInTimeZone(now, tz, 'i')];
     if (!day) return no;
@@ -1099,13 +1101,14 @@ export class AttendanceService {
         lateArrivalMinutes: 0,
         earlyLeaveMinutes: 0,
         overtimeMinutes: 0,
+        excessBreakMinutes: 0,
         isAbsent: false,
         flags: isHoliday ? ['HOLIDAY'] : ['ON_LEAVE'],
       };
     }
 
     const schedule = this.repository
-      ? await this.repository.findWorkScheduleForUser(params.orgId, params.userId)
+      ? await this.repository.findWorkScheduleForUser(params.orgId, params.userId, params.workDate)
       : null;
 
     // Determine day of week in org timezone: 1 = Monday ... 7 = Sunday
@@ -1115,12 +1118,18 @@ export class AttendanceService {
     const dayConfig = schedule?.days ? schedule.days[dayOfWeek] : null;
     const isWorkingDay = dayConfig != null;
     const expectedSeconds = isWorkingDay ? dayConfig.expectedHours * 3600 : 0;
+    // FR-ORG-005: late arrival and early leave have their own grace; without an early-leave grace
+    // the late-arrival grace covers both, as before. Flexible hours have no fixed start or end.
     const graceMinutes = schedule?.graceMinutes ?? 10;
+    const earlyLeaveGraceMinutes = schedule?.earlyLeaveGraceMinutes ?? graceMinutes;
+    const flexible = schedule?.flexible ?? false;
+    const breakAllowanceMinutes = schedule?.breakAllowanceMinutes ?? null;
 
     const flags: string[] = [];
     let lateArrivalMinutes = 0;
     let earlyLeaveMinutes = 0;
     let overtimeMinutes = 0;
+    let excessBreakMinutes = 0;
     let isAbsent = false;
 
     if (isWorkingDay && params.sessions.length === 0) {
@@ -1144,16 +1153,16 @@ export class AttendanceService {
 
       // Late arrival: clockIn > scheduledStart + graceMinutes
       const lateThreshold = scheduledStartUtc.getTime() + graceMinutes * 60 * 1000;
-      if (firstIn.getTime() > lateThreshold) {
+      if (!flexible && firstIn.getTime() > lateThreshold) {
         lateArrivalMinutes = Math.floor(
           (firstIn.getTime() - scheduledStartUtc.getTime()) / 60000,
         );
         flags.push('LATE_ARRIVAL');
       }
 
-      // Early leave: lastOut < scheduledEnd - graceMinutes
-      if (lastOut) {
-        const earlyThreshold = scheduledEndUtc.getTime() - graceMinutes * 60 * 1000;
+      // Early leave: lastOut < scheduledEnd - earlyLeaveGraceMinutes
+      if (!flexible && lastOut) {
+        const earlyThreshold = scheduledEndUtc.getTime() - earlyLeaveGraceMinutes * 60 * 1000;
         if (lastOut.getTime() < earlyThreshold) {
           earlyLeaveMinutes = Math.floor(
             (scheduledEndUtc.getTime() - lastOut.getTime()) / 60000,
@@ -1166,6 +1175,13 @@ export class AttendanceService {
       if (actualSeconds > expectedSeconds) {
         overtimeMinutes = Math.floor((actualSeconds - expectedSeconds) / 60);
         flags.push('OVERTIME');
+      }
+
+      // FR-ORG-005 break allowance: flag only. Break time is already outside net time.
+      if (breakAllowanceMinutes !== null) {
+        const breakSeconds = params.sessions.reduce((sum, s) => sum + s.breakSeconds, 0);
+        excessBreakMinutes = Math.max(0, Math.floor((breakSeconds - breakAllowanceMinutes * 60) / 60));
+        if (excessBreakMinutes > 0) flags.push('EXCESS_BREAK');
       }
     }
 
@@ -1180,6 +1196,7 @@ export class AttendanceService {
       lateArrivalMinutes,
       earlyLeaveMinutes,
       overtimeMinutes,
+      excessBreakMinutes,
       isAbsent,
       flags,
     };
@@ -1248,6 +1265,7 @@ export class AttendanceService {
       lateMinutes: compliance.lateArrivalMinutes,
       earlyLeaveMinutes: compliance.earlyLeaveMinutes,
       overtimeMinutes: compliance.overtimeMinutes,
+      excessBreakMinutes: compliance.excessBreakMinutes,
       dayStatus,
     };
   }
@@ -1288,7 +1306,7 @@ export class AttendanceService {
     );
     const users = new Set([...byUser.keys(), ...withSessions, ...await this.repository.findUsersForReplay(orgId, workDate)]);
     const mismatches: ReplayMismatch[] = [];
-    const fields: Array<keyof AttendanceDaily> = ['firstIn', 'lastOut', 'activeSeconds', 'idleSeconds', 'breakSeconds', 'meetingSeconds', 'netSeconds', 'expectedSeconds', 'lateMinutes', 'earlyLeaveMinutes', 'overtimeMinutes', 'dayStatus'];
+    const fields = REPLAY_FIELDS;
     const norm = (v: unknown): string | number | null => (v instanceof Date ? v.toISOString() : v === undefined ? null : (v as string | number | null));
     for (const userId of users) {
       const row = byUser.get(userId);
@@ -1372,11 +1390,9 @@ export class AttendanceService {
     const users = await this.repository.findAllUsers(params.orgId, targetTeamId);
     const openSessions = await this.repository.findAllOpenSessions(params.orgId);
     const todayStr = formatInTimeZone(this.clock.now(), this.config.orgTimezone, 'yyyy-MM-dd');
-    const clockedInToday = new Set(
-      (await this.repository.findSessionsByDate(params.orgId, todayStr))
-        .filter((s) => s.status !== SessionStatus.ADJUSTED && s.status !== SessionStatus.CANCELLED)
-        .map((s) => s.userId),
-    );
+    const todaySessions = (await this.repository.findSessionsByDate(params.orgId, todayStr))
+      .filter((s) => s.status !== SessionStatus.ADJUSTED && s.status !== SessionStatus.CANCELLED);
+    const clockedInToday = new Set(todaySessions.map((s) => s.userId));
 
     const board: LiveBoardUser[] = [];
 
@@ -1422,6 +1438,15 @@ export class AttendanceService {
         }
       }
 
+      // FR-ORG-005: today's break time (the open session as loaded above, plus closed ones), and
+      // the allowance in force today, looked up only for people who took a break.
+      const todayBreakSeconds = todaySessions
+        .filter((s) => s.userId === u.id && s.id !== openSession?.id)
+        .reduce((sum, s) => sum + s.breakSeconds, openSession?.breakSeconds ?? 0);
+      const allowance = todayBreakSeconds > 0
+        ? (await this.repository.findWorkScheduleForUser(params.orgId, u.id, todayStr))?.breakAllowanceMinutes ?? null
+        : null;
+
       board.push({
         userId: u.id,
         displayName: u.displayName,
@@ -1434,6 +1459,8 @@ export class AttendanceService {
         lastHeartbeatAt,
         todayNetSeconds,
         hasClockedInToday: clockedInToday.has(u.id) || !!openSession,
+        todayBreakSeconds,
+        breakAllowanceSeconds: allowance === null ? null : allowance * 60,
       });
     }
 
@@ -1762,6 +1789,7 @@ export class AttendanceService {
           flags: [...new Set(list.flatMap((s) => s.flags))],
           dayStatus: d?.dayStatus ?? null,
           lateMinutes: d ? d.lateMinutes : null,
+          excessBreakMinutes: d ? d.excessBreakMinutes : null,
         };
       });
   }

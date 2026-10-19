@@ -72,6 +72,7 @@ model Organization {
   notificationPreferences       NotificationPreference[]
   jobRuns                       JobRun[]
   subcontractorProfiles         SubcontractorProfile[]
+  subcontractorDetails          SubcontractorDetail[]
   timesheets                    Timesheet[]
   timesheetDays                 TimesheetDay[]
   timeEntries                   TimeEntry[]
@@ -98,6 +99,7 @@ model Organization {
   meetingParticipants           MeetingParticipant[]
   meetingLobby                  MeetingLobby[]
   meetingActionItems            MeetingActionItem[]
+  meetingCalls                  MeetingCall[]
   channels                      Channel[]
   channelMembers                ChannelMember[]
   messages                      Message[]
@@ -195,6 +197,7 @@ model User {
   privacySubjectOf        PrivacyRequest[]         @relation("PrivacySubject")
   privacyRequested        PrivacyRequest[]         @relation("PrivacyRequester")
   rateProfile             SubcontractorProfile?
+  subcontractorDetail     SubcontractorDetail?
   timesheets              Timesheet[]
   timesheetDays           TimesheetDay[]
   timeEntries             TimeEntry[]
@@ -205,6 +208,8 @@ model User {
   contracts               Contract[]               @relation("UserContracts")
   roomInvites             RoomInvite[]
   desk                    Desk?
+  callsMade               MeetingCall[] @relation("CallCaller")
+  callsReceived           MeetingCall[] @relation("CallCallee")
   hostedMeetings          Meeting[]                @relation("MeetingHost")
   meetingAttendance       MeetingAttendee[]
   meetingSessions         MeetingParticipant[]
@@ -259,6 +264,8 @@ model WorkSchedule {
   days          Json
   flexible      Boolean   @default(false)
   graceMinutes  Int       @default(10) @map("grace_minutes")
+  earlyLeaveGraceMinutes Int? @map("early_leave_grace_minutes")
+  breakAllowanceMinutes  Int? @map("break_allowance_minutes")
   effectiveFrom DateTime  @map("effective_from") @db.Date
   effectiveTo   DateTime? @map("effective_to") @db.Date
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
@@ -413,6 +420,7 @@ model AttendanceDaily {
   lateMinutes       Int       @default(0) @map("late_minutes")
   earlyLeaveMinutes Int       @default(0) @map("early_leave_minutes")
   overtimeMinutes   Int       @default(0) @map("overtime_minutes")
+  excessBreakMinutes Int      @default(0) @map("excess_break_minutes")
   dayStatus         String    @default("PRESENT") @map("day_status") @db.VarChar(20)
   createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
@@ -936,6 +944,32 @@ model SubcontractorProfile {
   @@map("subcontractor_profiles")
 }
 
+/// FR-ORG-002 (ADR 033): who the subcontractor is and how to pay them. Tax ID and bank details are
+/// AES-256-GCM ciphertext under a per-profile data key wrapped by the KeyProvider; never plaintext.
+model SubcontractorDetail {
+  userId           String   @id @map("user_id") @db.Uuid
+  orgId            String   @map("org_id") @db.Uuid
+  legalName        String   @default("") @map("legal_name") @db.VarChar(200)
+  companyName      String   @default("") @map("company_name") @db.VarChar(200)
+  country          String?  @db.Char(2)
+  contactEmail     String?  @map("contact_email") @db.VarChar(255)
+  contactPhone     String?  @map("contact_phone") @db.VarChar(40)
+  address          String   @default("") @db.VarChar(500)
+  emergencyContact Json?    @map("emergency_contact")
+  taxIdEnc         Bytes?   @map("tax_id_enc")
+  bankDetailsEnc   Bytes?   @map("bank_details_enc")
+  dekWrapped       Bytes?   @map("dek_wrapped")
+  dekKeyId         String?  @map("dek_key_id") @db.VarChar(200)
+  updatedBy        String?  @map("updated_by") @db.Uuid
+  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("subcontractor_details")
+}
+
 /// FR-TS-002 / FR-TS-006: periodic, approvable timesheet per user.
 model Timesheet {
   id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -1447,6 +1481,8 @@ model Meeting {
 
   calendarEventLinks CalendarEventLink[]
   recordings         MeetingRecording[]
+  calls              MeetingCall[]
+  chat               Channel?
 
   @@unique([livekitRoomName])
   @@index([orgId, status])
@@ -1529,6 +1565,8 @@ model MeetingActionItem {
 
 /// FR-MEET-012 / SRS 7.4 (ADR 017). DMs have dm_key = the two user ids, sorted, so one per pair.
 model Channel {
+  meetingId String? @unique @map("meeting_id") @db.Uuid
+  meeting Meeting? @relation(fields: [meetingId], references: [id], onDelete: Cascade)
   id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   orgId      String    @map("org_id") @db.Uuid
   kind       String    @db.VarChar(8)
@@ -1913,4 +1951,22 @@ model PublicHoliday {
 
   @@unique([orgId, date])
   @@map("public_holidays")
+}
+
+/// FR-VO-008; FR-MEET-001: durable ring-and-accept decisions (ADR 031).
+model MeetingCall {
+  orgId String @map("org_id") @db.Uuid
+  meetingId String @map("meeting_id") @db.Uuid
+  callerId String @map("caller_id") @db.Uuid
+  calleeId String @map("callee_id") @db.Uuid
+  state String @default("RINGING") @db.VarChar(10)
+  expiresAt DateTime @default(dbgenerated("(now() + '00:00:45'::interval)")) @map("expires_at") @db.Timestamptz()
+  decidedAt DateTime? @map("decided_at") @db.Timestamptz()
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  caller User @relation("CallCaller", fields: [callerId], references: [id], onDelete: Cascade)
+  callee User @relation("CallCallee", fields: [calleeId], references: [id], onDelete: Cascade)
+  @@id([meetingId, calleeId])
+  @@map("meeting_calls")
 }

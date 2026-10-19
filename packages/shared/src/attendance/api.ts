@@ -55,6 +55,8 @@ export const MyDaySchema = TimeTotalsSchema.extend({
   flags: z.array(z.string()),
   dayStatus: z.string().nullable(),
   lateMinutes: z.number().int().nullable(),
+  /** FR-ORG-005: break minutes beyond the schedule's allowance on a closed day. */
+  excessBreakMinutes: z.number().int().nullable(),
 });
 export type MyDay = z.infer<typeof MyDaySchema>;
 export const MyDaysSchema = z.array(MyDaySchema);
@@ -110,6 +112,9 @@ export const LiveBoardEntrySchema = z.object({
   lastHeartbeatAt: isoDate.nullable(),
   todayNetSeconds: z.number(),
   hasClockedInToday: z.boolean(),
+  /** FR-ORG-005: break time today and the allowance in force today (null: no limit). */
+  todayBreakSeconds: z.number(),
+  breakAllowanceSeconds: z.number().nullable(),
 });
 export type LiveBoardEntry = z.infer<typeof LiveBoardEntrySchema>;
 export const LiveBoardSchema = z.array(LiveBoardEntrySchema);

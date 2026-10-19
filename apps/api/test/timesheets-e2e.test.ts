@@ -6,13 +6,13 @@
  * per-route permissions and RLS.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import ExcelJSModule from 'exceljs';
 import { AppModule } from '../src/app.module.ts';
@@ -135,7 +135,7 @@ describe('Timesheets API (FR-TS-001..006, 009, 011)', { concurrency: false }, ()
       const res = await fetch(`${base}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email(who), password: PASSWORD, ...(MFA_ROLES.includes(U[who].role) ? { totpCode: generateSync({ secret: MFA_SECRET }) } : {}) }),
+        body: JSON.stringify({ email: email(who), password: PASSWORD, ...(MFA_ROLES.includes(U[who].role) ? { totpCode: await freshCode(MFA_SECRET) } : {}) }),
       });
       const body = (await res.json()) as { accessToken?: string };
       assert.ok(body.accessToken, `login ${who}`);
@@ -520,11 +520,14 @@ describe('Timesheets API (FR-TS-001..006, 009, 011)', { concurrency: false }, ()
       const reminder = await notes('sub2', 'TIMESHEET_SUBMIT_REMINDER');
       assert.equal(reminder.length, 1);
       assert.equal(reminder[0]!.title, `Submit your timesheet by ${sheet.submitDueDate}`);
-      await work.timesheetReminders(new Date());
-      await work.timesheetReminders(new Date());
+      // A fixed point past the due date, not "now": on the days right after a period ends (a Monday,
+      // for weekly sheets) the real date is not yet past the due date and nothing is overdue.
+      const afterDue = fromZonedTime(`${addDaysIso(sheet.submitDueDate, 1)}T12:00:00`, TZ);
+      await work.timesheetReminders(afterDue);
+      await work.timesheetReminders(afterDue);
       assert.equal((await notes('sub2', 'TIMESHEET_SUBMIT_REMINDER')).length, 1);
       const overdue = await notes('sub2', 'TIMESHEET_OVERDUE');
-      assert.equal(overdue.length, 1, `today (${today}) is past ${sheet.submitDueDate}`);
+      assert.equal(overdue.length, 1, `${addDaysIso(sheet.submitDueDate, 1)} is past ${sheet.submitDueDate}`);
       assert.equal(overdue[0]!.send_email, true);
     });
 

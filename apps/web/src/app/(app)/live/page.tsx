@@ -130,6 +130,9 @@ export default function LiveBoardPage() {
                       </TableCell>
                       <TableCell>
                         <Badge variant={b.variant} data-testid="board-status">{b.label}</Badge>
+                        {r.breakAllowanceSeconds !== null && r.todayBreakSeconds > r.breakAllowanceSeconds ? (
+                          <Badge variant="warning" className="ml-1" data-testid="break-over" title={`Break today ${formatDuration(r.todayBreakSeconds)}; allowance ${formatDuration(r.breakAllowanceSeconds)}`}>Break over allowance</Badge>
+                        ) : null}
                       </TableCell>
                       <TableCell>{formatClock(r.clockInAt)}</TableCell>
                       <TableCell>{formatClock(r.lastHeartbeatAt)}</TableCell>

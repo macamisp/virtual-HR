@@ -186,6 +186,7 @@ export class AnonymisationService {
       await run('weeklyPlans', `DELETE FROM weekly_plans WHERE user_id = $1`);
       await run('savedViews', `DELETE FROM task_saved_views WHERE user_id = $1`);
       await run('schedules', `DELETE FROM work_schedules WHERE user_id = $1`);
+      await run('subcontractorDetails', `DELETE FROM subcontractor_details WHERE user_id = $1`);
       await run('notificationPreferences', `DELETE FROM notification_preferences WHERE user_id = $1`);
       await run('documentGrants', `DELETE FROM document_acl WHERE principal_type = 'USER' AND principal_id = $1`);
       await run('deviceState', `DELETE FROM device_sequences WHERE user_id = $1`);

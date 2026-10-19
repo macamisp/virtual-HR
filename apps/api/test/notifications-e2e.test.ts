@@ -4,13 +4,13 @@
  * Jobs are driven directly with a fixed clock; BullMQ wiring is tested in jobs-bullmq-e2e.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { io, type Socket } from 'socket.io-client';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import { AppModule } from '../src/app.module.ts';
@@ -99,7 +99,7 @@ describe('Notifications and scheduled work', { concurrency: false }, () => {
       const res = await fetch(`${base}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(who === 'hr' ? { totpCode: generateSync({ secret: HR_SECRET }) } : {}) }),
+        body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(who === 'hr' ? { totpCode: await freshCode(HR_SECRET) } : {}) }),
       });
       const body = (await res.json()) as { accessToken: string; sessionId: string };
       tokens[who] = body.accessToken;
@@ -266,15 +266,18 @@ describe('Notifications and scheduled work', { concurrency: false }, () => {
       const early = fromZonedTime(`${today}T00:10:00`, TZ);
       const later = fromZonedTime(`${today}T01:00:00`, TZ);
       const yesterdayKey = addDaysIso(today, -1);
-      const markers = async () =>
-        (await adminPool.query(`SELECT 1 FROM job_runs WHERE org_id = $1 AND job = 'attendance-daily-close' AND run_key = $2`, [ORG, yesterdayKey])).rowCount;
-      const before = await markers();
-      assert.equal(await work.attendanceDailyClose(early), 0);
-      if (before === 0) assert.equal(await markers(), 0, 'nothing runs before 00:30 local');
+      // Only this organisation's run is asserted: the job also closes the days of other suites'
+      // organisations running in parallel, some in other time zones (00:10 in Colombo is 18:40 UTC).
+      const marker = async () =>
+        (await adminPool.query<{ created_at: Date }>(`SELECT created_at FROM job_runs WHERE org_id = $1 AND job = 'attendance-daily-close' AND run_key = $2`, [ORG, yesterdayKey])).rows[0]?.created_at ?? null;
+      const before = await marker();
+      await work.attendanceDailyClose(early);
+      if (before === null) assert.equal(await marker(), null, 'nothing runs before 00:30 local');
       await work.attendanceDailyClose(later);
-      assert.equal(await work.attendanceDailyClose(new Date(later.getTime() + 3_600_000)), 0, 'once per day');
-      const marker = await adminPool.query(`SELECT 1 FROM job_runs WHERE org_id = $1 AND job = 'attendance-daily-close' AND run_key = $2`, [ORG, addDaysIso(today, -1)]);
-      assert.equal(marker.rowCount, 1);
+      const ran = await marker();
+      assert.ok(ran, 'runs after 00:30 local');
+      await work.attendanceDailyClose(new Date(later.getTime() + 3_600_000));
+      assert.equal((await marker())?.getTime(), ran.getTime(), 'once per day: the run is not repeated');
     });
 
     it('presence retention deletes events older than 90 days, once per day', async () => {

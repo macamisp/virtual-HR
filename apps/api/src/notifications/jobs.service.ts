@@ -10,17 +10,19 @@ import { DocumentScannerService } from '../documents/document-scanner.service.ts
 import { DocumentMaintenanceService } from '../documents/document-maintenance.service.ts';
 import { CalendarService } from '../calendar/calendar.service.ts';
 import type { ScanDispatcher } from '../documents/scan-dispatcher.ts';
+import { CallsService } from '../meetings/calls.service.ts';
 import { RecordingsService } from '../meetings/recordings.service.ts';
 import type { RecordingDispatcher } from '../meetings/recording-dispatcher.ts';
 
 export const JOBS_QUEUE = 'hrvo-jobs';
 
-type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attendance-reconcile' | 'attendance-daily-close' | 'presence-retention' | 'timesheet-reminders' | 'document-maintenance' | 'deferred-emails' | 'attendance-alerts' | 'calendar-sync' | 'recording-maintenance' | 'attendance-replay';
+type ScheduledJob = 'task-reminders' | 'carry-over' | 'weekly-summary' | 'attendance-reconcile' | 'attendance-daily-close' | 'presence-retention' | 'timesheet-reminders' | 'document-maintenance' | 'deferred-emails' | 'attendance-alerts' | 'calendar-sync' | 'recording-maintenance' | 'attendance-replay' | 'call-expiry';
 
 /** Repeatable jobs. BullMQ job schedulers are de-duplicated in Redis, so N API instances run each tick once. */
 export const SCHEDULES: ReadonlyArray<{ name: ScheduledJob; everyMs?: number; pattern?: string }> = [
   // AC-02: a dropped client must be closed within 30 s of its grace window ending.
   { name: 'attendance-reconcile', everyMs: 15_000 },
+  { name: 'call-expiry', everyMs: 5_000 },
   { name: 'task-reminders', everyMs: 5 * 60_000 },
   { name: 'carry-over', everyMs: 15 * 60_000 },
   { name: 'weekly-summary', everyMs: 15 * 60_000 },
@@ -112,6 +114,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy, EmailDispatch
     const work = this.moduleRef.get(ScheduledWorkService, { strict: false });
     const now = new Date();
     switch (job.name) {
+      case 'call-expiry': return await this.moduleRef.get(CallsService, { strict: false }).maintenance();
       case 'task-reminders': return await work.taskReminders(now);
       case 'carry-over': return await work.carryOver(now);
       case 'weekly-summary': return await work.weeklySummary(now);

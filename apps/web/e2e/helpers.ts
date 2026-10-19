@@ -1,5 +1,6 @@
 import { expect, type Page } from '@playwright/test';
-import { PASSWORD } from './fixtures';
+import { generateSync } from 'otplib';
+import { ADMIN_USER, PASSWORD } from './fixtures';
 
 export async function signIn(page: Page, email: string, password = PASSWORD): Promise<void> {
   await page.goto('/login');
@@ -35,4 +36,24 @@ export function traceSockets(page: Page): void {
     ws.on('framereceived', (f) => log('WS <', String(f.payload).slice(0, 140)));
     ws.on('close', () => log('WS closed'));
   });
+}
+
+/**
+ * A valid TOTP code that will still be valid when it arrives. The server accepts a code only inside
+ * its own 30-second step (no tolerance), so a code made in a step's last seconds can expire on the
+ * way: wait for a fresh step first.
+ */
+export async function freshTotp(page: Page, secret: string): Promise<string> {
+  const left = 30 - (Math.floor(Date.now() / 1000) % 30);
+  if (left < 5) await page.waitForTimeout(left * 1000 + 250);
+  return generateSync({ secret });
+}
+
+/** The admin signs in with 2FA; waits for the code screen first so the code is not typed mid-navigation. */
+export async function signInAdmin(page: Page): Promise<void> {
+  await signIn(page, ADMIN_USER.email);
+  await expect(page.getByRole('heading', { name: 'Two-factor authentication' })).toBeVisible();
+  await page.getByLabel('Authentication code').fill(await freshTotp(page, ADMIN_USER.totp));
+  await page.getByRole('button', { name: 'Verify' }).click();
+  await passNoticeGate(page);
 }

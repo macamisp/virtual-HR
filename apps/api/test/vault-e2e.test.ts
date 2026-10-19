@@ -9,6 +9,7 @@
  *     documents.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { inflateSync } from 'node:zlib';
@@ -16,7 +17,6 @@ import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { PDFDocument } from 'pdf-lib';
 import { AppModule } from '../src/app.module.ts';
@@ -124,8 +124,8 @@ describe('Confidential vault (FR-DOC-005, 006, 007, 010, 011, 017)', { concurren
     }
     return await ok(await api(who, `/documents/uploads/${t.versionId}/complete`, { method: 'POST', body: { parts } }), 200, DocumentDetailSchema);
   }
-  const reauth = (who: Who) =>
-    api(who, '/vault/reauth', { method: 'POST', body: MFA.includes(who) ? { totpCode: generateSync({ secret: MFA_SECRET }) } : { password: PASSWORD } });
+  const reauth = async (who: Who) =>
+    api(who, '/vault/reauth', { method: 'POST', body: MFA.includes(who) ? { totpCode: await freshCode(MFA_SECRET) } : { password: PASSWORD } });
   const notes = async (who: Who, type: string) =>
     (await adminPool.query<{ title: string; body: string }>(`SELECT title, body FROM notifications WHERE user_id = $1 AND type = $2 ORDER BY created_at`, [U[who].id, type])).rows;
   const logActions = async (documentId: string) =>
@@ -159,7 +159,7 @@ describe('Confidential vault (FR-DOC-005, 006, 007, 010, 011, 017)', { concurren
     for (const who of Object.keys(U) as Who[]) {
       const res = await fetch(`${base}/auth/login`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email(who), password: PASSWORD, ...(MFA.includes(who) ? { totpCode: generateSync({ secret: MFA_SECRET }) } : {}) }),
+        body: JSON.stringify({ email: email(who), password: PASSWORD, ...(MFA.includes(who) ? { totpCode: await freshCode(MFA_SECRET) } : {}) }),
       });
       const body = (await res.json()) as { accessToken?: string };
       assert.ok(body.accessToken, `login ${who}`);

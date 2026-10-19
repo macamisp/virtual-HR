@@ -30,6 +30,7 @@ const PUBLIC_BY_DESIGN = new Set([
 const SELF_SERVICE = new Set([
   'GET /users/me', 'GET /me/access', 'GET /me/consents', 'POST /me/consents', 'GET /me/export', 'GET /notifications/preferences', 'PUT /notifications/preferences',
   'POST /auth/2fa/verify', 'POST /auth/2fa/setup', 'GET /attendance/consent', 'GET /attendance/me/events', 'POST /auth/logout',
+  'GET /me/subcontractor-profile', 'PUT /me/subcontractor-profile', 'POST /me/subcontractor-profile/reveal',
 ]);
 
 function* files(dir) {

@@ -9,6 +9,7 @@ import {
   TimesheetListSchema,
   TimesheetReportSchema,
   TimesheetSettingsSchema,
+  WeeklyCapSchema,
 } from '@hrvo/shared';
 import type { ManualEntryDto, ProjectRateDto, RateProfileDto, TimesheetDetail, TimesheetSettingsDto, UpdateEntryDto } from '@hrvo/shared';
 import { apiFetch } from './api';
@@ -22,6 +23,7 @@ export const timesheetKeys = {
   list: (q: string) => ['timesheets', 'list', q] as const,
   rates: ['timesheets', 'rates'] as const,
   settings: ['timesheets', 'settings'] as const,
+  weeklyCap: ['timesheets', 'weekly-cap'] as const,
 };
 
 const useSignedIn = () => useAuthStore((s) => s.status === 'authenticated');
@@ -58,6 +60,11 @@ export function useTimerAction() {
       invalidate();
     },
   });
+}
+
+/** FR-ORG-004 (ADR 034): this week's logged hours against my weekly cap; refreshed with every time change. */
+export function useWeeklyCap(enabled: boolean) {
+  return useQuery({ queryKey: timesheetKeys.weeklyCap, queryFn: () => apiFetch('/timesheets/weekly-cap', { schema: WeeklyCapSchema }), enabled: useSignedIn() && enabled, refetchInterval: 5 * 60_000 });
 }
 
 export function useCurrentTimesheet(enabled: boolean) {

@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BadgeDollarSign, Building2, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, PenLine, ScrollText, CalendarOff, ClipboardCheck, Clock, Eye, FolderKanban, CalendarCheck, Laptop, ListChecks, ShieldAlert, LogOut, Menu, MessagesSquare, Video, Timer, Users } from 'lucide-react';
+import { Archive, BadgeDollarSign, Building2, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, PenLine, ScrollText, CalendarClock, CalendarOff, ClipboardCheck, Clock, Eye, FolderKanban, CalendarCheck, Laptop, ListChecks, ShieldAlert, LogOut, Menu, MessagesSquare, Network, IdCard, BriefcaseBusiness, UserCog, Video, Timer, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { NotificationBell } from '@/components/notification-bell';
@@ -97,6 +97,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canDecideLeaveAll = useCan(Permission.LEAVE_APPROVE_ALL);
   const canDecideLeave = canDecideLeaveTeam || canDecideLeaveAll;
   const canHolidays = useCan(Permission.HOLIDAYS_MANAGE);
+  const canManageUsers = useCan(Permission.USERS_MANAGE);
+  const canSchedules = useCan(Permission.SCHEDULES_MANAGE);
+  const canSubcontractors = useCan(Permission.SUBCONTRACTORS_READ);
   const canReportsTeam = useCan(Permission.REPORTS_TEAM);
   const canReportsAll = useCan(Permission.REPORTS_ALL);
   const canReports = canReportsTeam || canReportsAll;
@@ -299,12 +302,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <li>
               <NavLink href="/account/privacy" icon={FileLock2}>My data</NavLink>
             </li>
+            {user?.role === 'SUBCONTRACTOR' ? (
+              <li>
+                <NavLink href="/account/contractor-profile" icon={IdCard}>My contractor profile</NavLink>
+              </li>
+            ) : null}
             {canAgent ? (
               <li>
                 <NavLink href="/account/agents" icon={Laptop}>My desktop agents</NavLink>
               </li>
             ) : null}
-            {canManageOrg || canManageRoles || canAudit || canPrivacy ? (
+            {canManageOrg || canManageUsers || canSchedules || canSubcontractors || canManageRoles || canAudit || canPrivacy ? (
               <li className="px-2 pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground" aria-hidden="true">Administration</li>
             ) : null}
             {canManageOrg ? (
@@ -315,6 +323,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {canManageOrg ? (
               <li>
                 <NavLink href="/admin/retention" icon={Archive}>Data retention</NavLink>
+              </li>
+            ) : null}
+            {canManageUsers ? (
+              <li>
+                <NavLink href="/admin/teams" icon={UserCog}>Teams and managers</NavLink>
+              </li>
+            ) : null}
+            {canManageUsers ? (
+              <li>
+                <NavLink href="/admin/org-chart" icon={Network}>Organisation chart</NavLink>
+              </li>
+            ) : null}
+            {canSchedules ? (
+              <li>
+                <NavLink href="/admin/schedules" icon={CalendarClock}>Work schedules</NavLink>
+              </li>
+            ) : null}
+            {canSubcontractors ? (
+              <li>
+                <NavLink href="/admin/subcontractors" icon={BriefcaseBusiness}>Subcontractors</NavLink>
               </li>
             ) : null}
             {canHolidays ? (

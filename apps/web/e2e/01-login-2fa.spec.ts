@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { generateSync } from 'otplib';
 import { otpauthQrDataUrl } from '../src/lib/qr';
 import { USERS } from './fixtures';
-import { passNoticeGate, signIn, signOut } from './helpers';
+import { freshTotp, passNoticeGate, signIn, signOut } from './helpers';
 
 test.describe('Login with mandatory TOTP (FR-AUTH-004)', () => {
   test('HR enrolls 2FA on first login, then signs in with a TOTP code', async ({ page }) => {
@@ -25,7 +25,7 @@ test.describe('Login with mandatory TOTP (FR-AUTH-004)', () => {
     await page.getByRole('button', { name: 'Verify and enable' }).click();
     await expect(page.getByRole('alert').filter({ hasText: /Invalid 2FA verification code/i })).toBeVisible();
 
-    await page.getByLabel('Authentication code').fill(generateSync({ secret }));
+    await page.getByLabel('Authentication code').fill(await freshTotp(page, secret));
     await page.getByRole('button', { name: 'Verify and enable' }).click();
     await expect(page.getByTestId('recovery-codes').locator('li')).toHaveCount(10);
     const continueBtn = page.getByRole('button', { name: 'Continue' });
@@ -48,7 +48,7 @@ test.describe('Login with mandatory TOTP (FR-AUTH-004)', () => {
     await page.getByLabel('Authentication code').fill('000000' === generateSync({ secret }) ? '111111' : '000000');
     await page.getByRole('button', { name: 'Verify' }).click();
     await expect(page.getByRole('alert').filter({ hasText: /Invalid 2FA code/i })).toBeVisible();
-    await page.getByLabel('Authentication code').fill(generateSync({ secret }));
+    await page.getByLabel('Authentication code').fill(await freshTotp(page, secret));
     await page.getByRole('button', { name: 'Verify' }).click();
     await expect(page.getByTestId('tracking-badge')).toBeVisible();
     await expect(page.getByTestId('current-user')).toContainText('Hana HR');

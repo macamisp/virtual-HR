@@ -1,7 +1,6 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
-import { generateSync } from 'otplib';
 import { ADMIN_USER, adminPool, ORG_ID, USERS } from './fixtures';
-import { passNoticeGate, signIn } from './helpers';
+import { freshTotp, passNoticeGate, signIn } from './helpers';
 
 /**
  * Meeting recording with consent over a real LiveKit and a real LiveKit Egress (FR-MEET-007,
@@ -30,7 +29,7 @@ test.describe.serial('Meeting recording with consent (FR-MEET-007)', () => {
 
   test('an admin allows recording (off by default)', async ({ page }) => {
     await signIn(page, ADMIN_USER.email);
-    await page.getByLabel('Authentication code').fill(generateSync({ secret: ADMIN_USER.totp }));
+    await page.getByLabel('Authentication code').fill(await freshTotp(page, ADMIN_USER.totp));
     await page.getByRole('button', { name: 'Verify' }).click();
     await passNoticeGate(page);
     await page.goto('/admin/retention');

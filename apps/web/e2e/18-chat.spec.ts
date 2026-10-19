@@ -32,6 +32,9 @@ test.describe.serial('Chat: channels, mentions, threads, DMs', () => {
     await worker.getByRole('button', { name: 'Mention someone' }).click();
     await worker.getByRole('searchbox', { name: 'Mention someone' }).fill('Leo');
     await worker.getByRole('button', { name: new RegExp(USERS.lead.name) }).click();
+    // The picked mention is inserted by an effect after the click: wait for it, then type after it.
+    await expect(box).toHaveValue(new RegExp(USERS.lead.name));
+    await box.press('End');
     await box.pressSequentially('hello team');
     await box.press('Enter');
     const leadMsg = lead.getByTestId('chat-message').filter({ hasText: 'hello team' });

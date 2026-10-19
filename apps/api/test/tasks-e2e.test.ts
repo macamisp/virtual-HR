@@ -3,13 +3,13 @@
  * (acceptance), visibility rules, RLS and per-route permissions.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
 import { TaskEvents } from '../src/tasks/task-events.ts';
@@ -110,7 +110,7 @@ describe('Tasks core API (FR-TASK-001/002/005/006/007, visibility, RLS)', { conc
       const res = await fetch(`${base}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(who === 'hr' ? { totpCode: generateSync({ secret: HR_SECRET }) } : {}) }),
+        body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(who === 'hr' ? { totpCode: await freshCode(HR_SECRET) } : {}) }),
       });
       const body = (await res.json()) as { accessToken: string };
       assert.ok(body.accessToken, `login ${who}`);
