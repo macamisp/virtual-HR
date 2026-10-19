@@ -122,3 +122,7 @@ npm run e2e                   # Playwright: builds the API and web, runs on port
 ```
 
 The first `npm run e2e` needs `npx playwright install chromium` (inside `apps/web`).
+
+## Showing the demo on the internet
+
+See [demo-internet.md](demo-internet.md): tunnels, LiveKit Cloud, a seed with generated passwords, and teardown. The local seed above refuses to run when any address is public.

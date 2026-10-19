@@ -1,0 +1,15 @@
+# Named Cloudflare tunnel for the internet demo (docs/runbooks/demo-internet.md, step 1, option B1).
+# Copy to infra/demo/cloudflared.yml (gitignored) and replace the placeholders.
+# All three hostnames must share one registrable domain you own (same "site"), so the
+# SameSite=Strict refresh cookie from the API reaches the web app.
+tunnel: hrvo-demo
+credentials-file: /home/YOU/.cloudflared/TUNNEL-ID.json
+ingress:
+  - hostname: app.demo.example.com     # web (Next.js)
+    service: http://localhost:3000
+  - hostname: api.demo.example.com     # API, including Socket.IO (WebSockets pass through)
+    service: http://localhost:3001
+  - hostname: files.demo.example.com   # S3-compatible storage (presigned uploads)
+    service: http://localhost:9000    # MinIO S3 API only; never expose the 9001 console
+  # Nothing else is exposed: Postgres, Redis, ClamAV and the KMS emulator stay local.
+  - service: http_status:404

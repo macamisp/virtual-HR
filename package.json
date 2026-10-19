@@ -24,6 +24,9 @@
     "web:typecheck": "npm run typecheck -w @hrvo/web",
     "e2e": "tsc && npm run e2e -w @hrvo/web",
     "seed:demo": "node --env-file-if-exists=.env --experimental-strip-types apps/api/test/seed-web-demo.ts",
+    "seed:demo:internet": "node --env-file-if-exists=.env --experimental-strip-types apps/api/test/seed-internet-demo.ts",
+    "demo:internet": "bash scripts/demo-internet.sh",
+    "demo:internet:teardown": "bash scripts/demo-internet.sh teardown",
     "test:attendance": "tsc && node --test --test-concurrency=4 dist/apps/api/test/attendance-*.test.js dist/apps/api/test/leave-e2e.test.js",
     "e2e:attendance": "tsc && npm run e2e -w @hrvo/web -- 23-accuracy.spec.ts 24-leave.spec.ts"
   },

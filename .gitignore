@@ -13,3 +13,7 @@ v8-coverage/
 load/out/*.log
 
 verify-logs/
+# Internet demo (docs/runbooks/demo-internet.md): filled-in overrides, tunnel config and state
+.env.demo-internet
+infra/demo/cloudflared.yml
+.demo-internet/

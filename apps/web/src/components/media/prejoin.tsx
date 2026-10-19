@@ -9,12 +9,18 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { NativeSelect } from '@/components/ui/select';
 import { loadPrefs, savePrefs } from '@/lib/media/devices';
+import { mediaErrorMessage } from '@hrvo/shared';
+import type { MediaDevice } from '@hrvo/shared';
 import type { DevicePrefs } from '@/lib/media/devices';
 
 /**
  * FR-MEET-011: camera preview, microphone level and a speaker test, with device selection.
  * Choices are remembered in this browser.
  */
+/** Why a device failed, naming the HTTPS requirement when the page is not a secure context. */
+const explain = (err: unknown, device: MediaDevice) =>
+  mediaErrorMessage(err, device, { secure: window.isSecureContext, hasMediaDevices: !!navigator.mediaDevices, origin: window.location.origin });
+
 export function PreJoin({ title, onJoin, onCancel, joinLabel = 'Join' }: { title: string; onJoin: (p: DevicePrefs) => void; onCancel?: () => void; joinLabel?: string }) {
   const [prefs, setPrefs] = useState<DevicePrefs>(() => loadPrefs());
   const [devices, setDevices] = useState<{ audioinput: MediaDeviceInfo[]; videoinput: MediaDeviceInfo[]; audiooutput: MediaDeviceInfo[] }>({ audioinput: [], videoinput: [], audiooutput: [] });
@@ -27,7 +33,7 @@ export function PreJoin({ title, onJoin, onCancel, joinLabel = 'Join' }: { title
     let cancelled = false;
     void Promise.all([Room.getLocalDevices('audioinput', true), Room.getLocalDevices('videoinput', true), Room.getLocalDevices('audiooutput', false)])
       .then(([a, v, o]) => { if (!cancelled) setDevices({ audioinput: a, videoinput: v, audiooutput: o }); })
-      .catch(() => setError('The browser did not allow access to the camera or microphone.'));
+      .catch((err: unknown) => setError(explain(err, 'camera or microphone')));
     return () => { cancelled = true; };
   }, []);
 
@@ -38,7 +44,7 @@ export function PreJoin({ title, onJoin, onCancel, joinLabel = 'Join' }: { title
     let cancelled = false;
     void createLocalVideoTrack({ deviceId: prefs.videoInput === 'default' ? undefined : prefs.videoInput, resolution: { width: 640, height: 360 } })
       .then((t) => { if (cancelled) { t.stop(); return; } track = t; if (video.current) t.attach(video.current); })
-      .catch(() => setError('The camera could not be started.'));
+      .catch((err: unknown) => setError(explain(err, 'camera')));
     return () => { cancelled = true; track?.stop(); };
   }, [prefs.camOn, prefs.videoInput]);
 
@@ -61,7 +67,7 @@ export function PreJoin({ title, onJoin, onCancel, joinLabel = 'Join' }: { title
         const tick = () => { analyser.getByteTimeDomainData(data); let peak = 0; for (const v of data) peak = Math.max(peak, Math.abs(v - 128)); setLevel(Math.min(1, peak / 64)); raf = requestAnimationFrame(tick); };
         tick();
       })
-      .catch(() => setError('The microphone could not be started.'));
+      .catch((err: unknown) => setError(explain(err, 'microphone')));
     return () => { cancelled = true; cancelAnimationFrame(raf); track?.stop(); void ctx?.close(); };
   }, [prefs.micOn, prefs.audioInput]);
 
@@ -104,7 +110,7 @@ export function PreJoin({ title, onJoin, onCancel, joinLabel = 'Join' }: { title
           <div className="space-y-1"><Label htmlFor={ids.spk}>Speaker</Label>
             <NativeSelect id={ids.spk} value={prefs.audioOutput} onChange={(e) => set({ audioOutput: e.target.value })}><option value="default">Default</option>{devices.audiooutput.filter((d) => d.deviceId !== 'default').map((d, i) => <option key={d.deviceId} value={d.deviceId}>{label(d, i, 'Speaker')}</option>)}</NativeSelect></div>
         </div>
-        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+        {error ? <Alert variant="destructive" data-testid="prejoin-error"><AlertDescription>{error}</AlertDescription></Alert> : null}
         <div className="flex gap-2">
           <Button onClick={() => { savePrefs(prefs); onJoin(prefs); }}>{joinLabel}</Button>
           {onCancel ? <Button variant="ghost" onClick={onCancel}>Cancel</Button> : null}
