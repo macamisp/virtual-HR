@@ -94,6 +94,7 @@ describe('Nightly replay of daily totals (NFR-ACC-004)', { concurrency: false },
     const net = r.mismatches.find((m) => m.field === 'netSeconds')!;
     assert.equal(Number(net.recomputed) - Number(net.stored), 600);
     assert.equal((await daily(U.emp)).net_seconds, Number(net.stored), 'the replay only reports; it does not rewrite history');
+    console.log(`# NFR-ACC-004 drift: a total altered by 600 s was reported (${fields.join(', ')}), the stored row left untouched`);
   });
 
   it('a person with sessions but no daily row is a difference too', async () => {
