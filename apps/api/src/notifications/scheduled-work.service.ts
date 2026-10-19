@@ -8,6 +8,7 @@ import { addDaysIso } from '../planning/planning-rules.ts';
 import { NotificationsService } from './notifications.service.ts';
 import type { NewNotification } from './notifications.service.ts';
 import { dueInstant, escalationDue, localDate, reminderStage, weeklySummaryDue } from './reminder-rules.ts';
+import { weeklyCapNotifications } from './weekly-cap-notifications.ts';
 import { approversFor } from '../timesheets/timesheets.service.ts';
 import { AttendanceFlagsService } from '../attendance/attendance-flags.service.ts';
 import { mechanicalPatterns } from '../attendance/anti-spoofing.ts';
@@ -240,6 +241,12 @@ export class ScheduledWorkService {
             link: '/timesheets/review', dedupeKey: `ts-approve:${today}`, email: true,
           });
         }
+
+        // FR-ORG-004 (ADR 034): a running timer can cross a weekly cap without any write.
+        const running = await db.query<{ user_id: string }>(
+          `SELECT DISTINCT e.user_id FROM time_entries e JOIN subcontractor_profiles p ON p.user_id = e.user_id
+           WHERE e.org_id = $1 AND e.ended_at IS NULL AND p.weekly_hours_cap IS NOT NULL`, [org.id]);
+        for (const r of running.rows) items.push(...await weeklyCapNotifications(db, org.id, r.user_id, null, now));
 
         const flagged = await db.query<{ user_id: string; timesheet_id: string; d: string; attendance_minutes: number; logged_minutes: number; variance_minutes: number; variance_pct: number | null; flags: string[] }>(
           `SELECT d.user_id, d.timesheet_id, to_char(d.work_date, 'YYYY-MM-DD') AS d, d.attendance_minutes, d.logged_minutes,

@@ -25,6 +25,9 @@ export const NotificationType = {
   TIMESHEET_OVERDUE: 'TIMESHEET_OVERDUE',
   TIMESHEET_APPROVAL_REMINDER: 'TIMESHEET_APPROVAL_REMINDER',
   TIMESHEET_VARIANCE: 'TIMESHEET_VARIANCE',
+  // FR-ORG-004 (ADR 034): a subcontractor's weekly hours cap
+  WEEKLY_CAP_WARNING: 'WEEKLY_CAP_WARNING',
+  WEEKLY_CAP_REACHED: 'WEEKLY_CAP_REACHED',
   // FR-DOC-013 / FR-DOC-015
   DOCUMENT_INFECTED: 'DOCUMENT_INFECTED',
   DOCUMENT_REJECTED: 'DOCUMENT_REJECTED',
@@ -107,6 +110,8 @@ export const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; g
   TIMESHEET_OVERDUE: { label: 'My timesheet is overdue', group: 'Timesheets' },
   TIMESHEET_APPROVAL_REMINDER: { label: 'Reminder to approve timesheets', group: 'Timesheets' },
   TIMESHEET_VARIANCE: { label: 'Timesheet differs from attendance', group: 'Timesheets' },
+  WEEKLY_CAP_WARNING: { label: 'A subcontractor reached 80% of their weekly hours cap', group: 'Timesheets' },
+  WEEKLY_CAP_REACHED: { label: 'A subcontractor reached their weekly hours cap', group: 'Timesheets' },
   DOCUMENT_REJECTED: { label: 'My upload was rejected', group: 'Documents' },
   SIGNATURE_REQUESTED: { label: 'Signature requested from you', group: 'Documents' },
   SIGNATURE_COMPLETED: { label: 'A document was signed by everyone', group: 'Documents' },

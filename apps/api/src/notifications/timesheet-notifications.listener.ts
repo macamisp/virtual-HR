@@ -2,6 +2,7 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service.ts';
 import { TimesheetEvents } from '../timesheets/timesheet-events.ts';
 import { NotificationsService } from './notifications.service.ts';
+import { weeklyCapNotifications } from './weekly-cap-notifications.ts';
 
 /**
  * FR-TS-006 / FR-TS-012: timesheet decisions reach the right people. Submissions go to the
@@ -24,6 +25,12 @@ export class TimesheetNotificationsListener implements OnModuleInit {
   }
 
   onModuleInit(): void {
+    // FR-ORG-004 (ADR 034): 80 % and 100 % of a weekly hours cap, once each per week (dedupe key).
+    this.events.on('time.logged', async (e) => {
+      const items = await this.prisma.runWithTenantContext(e.orgId, (db) => weeklyCapNotifications(db, e.orgId, e.userId, e.workDate, new Date()));
+      await this.notifications.notify(e.orgId, items);
+    });
+
     this.events.on('timesheet.submitted', async (e) => {
       const who = await this.name(e.orgId, e.ownerId);
       await this.notifications.notify(e.orgId, e.approverIds.map((userId) => ({

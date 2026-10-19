@@ -6,7 +6,23 @@ import { TimesheetView, TimesheetStatusBadge, periodLabel } from '@/components/t
 import { minutesLabel } from '@/components/tasks/badges';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Permission, useCan } from '@/lib/permissions';
-import { useCurrentTimesheet, useTimesheets } from '@/lib/timesheet-queries';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { useCurrentTimesheet, useTimesheets, useWeeklyCap } from '@/lib/timesheet-queries';
+import type { WeeklyCap } from '@hrvo/shared';
+
+/** FR-ORG-004 (ADR 034): the weekly hours cap, a warning from 80 %, an alert from 100 %. */
+function WeeklyCapBanner({ cap }: { cap: WeeklyCap }) {
+  if (cap.level === 'NONE' || cap.capHours === null) return null;
+  const hours = `${Math.round((cap.loggedMinutes / 60) * 10) / 10} h of your ${cap.capHours} h weekly cap (${cap.percent}%)`;
+  if (cap.level === 'UNDER') return <p className="text-sm text-muted-foreground" data-testid="weekly-cap">This week: {hours}.</p>;
+  const over = cap.level === 'OVER';
+  return (
+    <Alert variant={over ? 'destructive' : 'warning'} data-testid="weekly-cap">
+      <AlertTitle>{over ? 'Weekly hours cap reached' : 'Close to your weekly hours cap'}</AlertTitle>
+      <AlertDescription>This week ({cap.weekStart} – {cap.weekEnd}) you have logged {hours}.{over ? ' Talk to your manager before logging more.' : ''} Your manager and HR are told at 80 % and 100 %.</AlertDescription>
+    </Alert>
+  );
+}
 
 /** FR-TS-001/002: my timesheet for the current period, plus earlier periods. */
 export default function MyTimesheetPage() {
@@ -14,6 +30,7 @@ export default function MyTimesheetPage() {
   const canReadAll = useCan(Permission.TIMESHEETS_READ_ALL);
   const current = useCurrentTimesheet(canUse);
   const history = useTimesheets({ scope: 'mine' }, canUse);
+  const cap = useWeeklyCap(canUse);
 
   if (!canUse) {
     return canReadAll ? (
@@ -28,6 +45,7 @@ export default function MyTimesheetPage() {
 
   return (
     <div className="space-y-6">
+      {cap.data ? <WeeklyCapBanner cap={cap.data} /> : null}
       <TimesheetView sheet={current.data} heading="My timesheet" />
       <Card>
         <CardHeader><CardTitle className="text-base">Other periods</CardTitle></CardHeader>

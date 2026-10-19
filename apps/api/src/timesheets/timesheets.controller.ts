@@ -30,6 +30,7 @@ import type {
   TimesheetSettingsDto,
 } from '../../../../packages/shared/src/timesheets/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
+import { TimeEntriesService } from './time-entries.service.ts';
 import { TimesheetsService } from './timesheets.service.ts';
 import { RatesService } from './rates.service.ts';
 import { TimesheetReportsService } from './reports.service.ts';
@@ -48,6 +49,7 @@ export class TimesheetsController {
     private readonly timesheets: TimesheetsService,
     private readonly rates: RatesService,
     private readonly reports: TimesheetReportsService,
+    private readonly entries: TimeEntriesService,
   ) {}
 
   @Get('timesheets')
@@ -60,6 +62,13 @@ export class TimesheetsController {
   @RequirePermissions(Permission.TIMESHEETS_USE)
   current(@CurrentUser() user: AuthenticatedUser) {
     return this.timesheets.current(user);
+  }
+
+  /** FR-ORG-004 (ADR 034): this week's hours against the caller's weekly cap. */
+  @Get('timesheets/weekly-cap')
+  @RequirePermissions(Permission.TIMESHEETS_USE)
+  weeklyCap(@CurrentUser() user: AuthenticatedUser) {
+    return this.entries.weeklyCap(user);
   }
 
   @Get('timesheets/settings')
