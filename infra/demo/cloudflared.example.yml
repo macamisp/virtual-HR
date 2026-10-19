@@ -10,6 +10,6 @@ ingress:
   - hostname: api.demo.example.com     # API, including Socket.IO (WebSockets pass through)
     service: http://localhost:3001
   - hostname: files.demo.example.com   # S3-compatible storage (presigned uploads)
-    service: http://localhost:9000    # MinIO S3 API only; never expose the 9001 console
+    service: http://localhost:9000    # the S3 API of compose service "storage" only
   # Nothing else is exposed: Postgres, Redis, ClamAV and the KMS emulator stay local.
   - service: http_status:404

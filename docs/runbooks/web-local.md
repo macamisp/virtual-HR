@@ -4,17 +4,33 @@ For the product owner and developers. Takes about 10 minutes the first time.
 
 ## What you need
 
-- Node.js 22, Docker (or Podman) with Compose
-- An authenticator app on your phone (Google Authenticator, Microsoft Authenticator, 1Password…) for the HR account
+- Node.js 22 and Docker (or Podman) with Compose. With Podman, type `podman compose` wherever this guide says `docker compose`. About 6 GB of free disk for the images.
+- An authenticator app on your phone (Google Authenticator, Microsoft Authenticator, 1Password…) for the HR and admin accounts
 - Two browser windows, one of them private/incognito, to be two people at once
+- For the browser tests only: `npx playwright install chromium` (once)
+
+Windows: use WSL 2. The commands are for a Linux or macOS shell.
 
 ## 1. Start the infrastructure (once per session)
 
 ```bash
-docker compose up -d          # Postgres :5433, Redis, MinIO, ClamAV, Mailhog (http://localhost:8025)
-cp -n .env.example .env       # first time only
+docker compose up -d          # starts the services listed below
 npm install                   # first time only
+npm run setup                 # first time only
+npm run verify -- --preflight # shows which services answer
 ```
+
+| Service | Port | What it is for |
+| --- | --- | --- |
+| Postgres | 5433 | the database |
+| Redis | 6379 | background jobs, rate limits, coordination |
+| storage | 9000 (this computer only) | document files, S3-compatible (SeaweedFS). Its keys are `S3_ACCESS_KEY` / `S3_SECRET_KEY` in `.env` |
+| ClamAV | 3310 | virus scan of every upload. **The first start needs a few minutes to load its signatures**; uploads wait in "Scanning for viruses" until then |
+| kms | 4566 | an AWS KMS look-alike, used by the tests and to try the cloud key mode |
+| LiveKit | 7880 | audio and video for meetings and the office |
+| Mailhog | 1025 / 8025 | catches all emails; read them at http://localhost:8025 |
+
+`npm run setup` creates `.env` from `.env.example` if you have none, generates the two **document-encryption keys** (`DOCUMENT_KMS_LOCAL_KEY` and `DOCUMENT_KMS_RECOVERY_KEY`) and the database client. The API refuses to start without those keys, and documents cannot be opened without them: **keep your `.env`** (it is never committed). Running `npm run setup` again changes nothing that is already set.
 
 Background jobs (task reminders, carry-over, weekly summary, attendance close) run on BullMQ in
 Redis when `JOBS_ENABLED=true` (the default). Set `JOBS_ENABLED=false` to run the API without
@@ -22,15 +38,7 @@ Redis; notification emails are then sent inline and nothing is scheduled. Withou
 closes a dropped attendance session, so also set `ATTENDANCE_RECONCILE_INLINE_MS=15000` to run the
 reconciler inside the API (ADR 026). Emails land in Mailhog.
 
-Documents (ADR 009) need three more things in `.env`: a KMS key for encryption at rest
-(`DOCUMENT_KMS_LOCAL_KEY=$(openssl rand -base64 32)`; the API will not start without it),
-S3-compatible storage (`S3_*`, plus `NEXT_PUBLIC_STORAGE_URL` set to the storage origin the browser
-uploads to) and clamd (`CLAMAV_HOST`/`CLAMAV_PORT`). Uploads stay "Scanning for viruses" until
-clamd has loaded its signatures (a few minutes after its first start).
-
-The confidential vault (ADR 010) also needs a separate recovery key:
-`DOCUMENT_KMS_RECOVERY_KEY=$(openssl rand -base64 32)` (different from the data key). Share links
-point at `APP_WEB_URL`.
+Documents (ADR 009) also need `NEXT_PUBLIC_STORAGE_URL` to be the storage address the browser uploads to (the default, `http://localhost:9000`, matches the compose file). The confidential vault (ADR 010) uses the separate recovery key from `npm run setup`. Share links point at `APP_WEB_URL`.
 
 ## 2. Prepare the database (first time, or after pulling new migrations)
 
@@ -53,7 +61,8 @@ It prints the accounts (password for all: `DemoPassword123!`) and an invitation 
 
 | Role | Email | What they can do |
 | --- | --- | --- |
-| HR | hr@acme.demo | Everything; must set up 2FA on first sign-in |
+| Admin | admin@acme.demo | Everything, including policy, roles and the audit log; must set up 2FA on first sign-in |
+| HR | hr@acme.demo | People, leave, documents, reports; must set up 2FA on first sign-in |
 | Team lead | lead@acme.demo | Live board for the Support team, approves corrections |
 | Employee | worker@acme.demo | Own attendance only |
 | Subcontractor | sam@acme.demo | Own attendance only |
@@ -115,14 +124,32 @@ npm run web                   # http://localhost:3000
 ## 6. Automated checks
 
 ```bash
-npm run lint                  # ESLint: API, shared, web
-npm run typecheck && npm run web:typecheck
-npm test                      # API unit + e2e (needs Postgres)
-npm run e2e                   # Playwright: builds the API and web, runs on ports 3101/3100
+npm run verify                # everything below, then one summary table (30 to 40 minutes)
+npm run verify -- --skip=e2e  # without the browser tests (about 15 minutes)
 ```
 
-The first `npm run e2e` needs `npx playwright install chromium` (inside `apps/web`).
+`npm run verify` first checks that every service answers, because some test suites **skip themselves** when document storage or the virus scanner is missing, which would look like a pass. It then runs lint, the type checks, the API tests and the browser tests (Playwright, on ports 3101/3100, so your running copy on 3000/3001 is not disturbed), and prints passed / failed / skipped per step plus the measured clock-in and clock-out delays. Logs are written to `verify-logs/`.
 
-## Showing the demo on the internet
+The single steps, if you need them: `npm run lint`, `npm run typecheck && npm run web:typecheck`, `npm test` (API; needs the services and the environment `npm run verify` sets up), `npm run e2e` (browser).
 
-See [demo-internet.md](demo-internet.md): tunnels, LiveKit Cloud, a seed with generated passwords, and teardown. The local seed above refuses to run when any address is public.
+## 7. If something goes wrong
+
+| What you see | Why | What to do |
+| --- | --- | --- |
+| `docker compose up -d` fails with "address already in use" | another program uses 5433, 6379, 9000, 3310, 4566 or 7880 | stop it, or stop an old HRVO stack (`docker compose down`) |
+| A container name "is already in use" | a stopped container from an older copy of this project | `docker rm <name>` for the old one, then `docker compose up -d` again |
+| LiveKit exits at once with "permission denied" (Fedora, RHEL, Podman) | SELinux blocked the mounted config | already fixed in the compose file (`:z`); update your copy |
+| `npm run api`: "DOCUMENT_KMS_LOCAL_KEY is required" or "@prisma/client did not initialize" | `npm run setup` was not run | `npm run setup` |
+| `db:provision-roles`: "DIRECT_DATABASE_URL must be set" | an older copy of the script did not read `.env` | update; the script now reads `.env` |
+| Sign-in: "Invalid 2FA code" although the code looks right | a code is accepted only during its own 30 seconds, with no tolerance; your computer's clock may be off | wait for the next code; turn on automatic time on the computer and phone |
+| Uploads stay at "Scanning for viruses" | ClamAV is still loading its signatures (first start: several minutes) | wait; `docker compose logs clamav` shows progress |
+| Camera or microphone is blocked on a phone or another computer | browsers allow them only on HTTPS or `http://localhost` | use `localhost` on the same computer, or see [demo-internet.md](demo-internet.md) |
+| `npm run verify` stops with "a required service is missing" | something in section 1 is not running | the message names the service and the fix |
+| Everything worked yesterday, now the API will not connect | the machine restarted and the containers stopped | `docker compose up -d` |
+
+## 8. Next
+
+- Accept the product: [uat.md](uat.md) (exact clicks for the seven client requirements and AC-01 to AC-16).
+- What is not tested automatically, and what is skipped: [../verification/untested-and-skipped.md](../verification/untested-and-skipped.md).
+- Known problems and limits: [../verification/known-issues.md](../verification/known-issues.md).
+- Show it to people outside your network: [demo-internet.md](demo-internet.md). The seed above (`npm run seed:demo`) has one published password and **refuses to run** while any configured address is public; the internet demo has its own seed with a new random password per person each time.

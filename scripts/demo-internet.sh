@@ -7,7 +7,7 @@
 #   scripts/demo-internet.sh tunnels-stop
 #   scripts/demo-internet.sh teardown                            # stop the tunnels and delete the demo organisation
 #
-# Only web (3000), API (3001) and storage (9000, MinIO S3 API; never the 9001 console) are tunnelled. Postgres, Redis, ClamAV and the
+# Only web (3000), API (3001) and storage (9000, the S3 API of compose service "storage") are tunnelled. Postgres, Redis, ClamAV and the
 # KMS emulator are never exposed. Shut the demo down whenever it is not in use.
 set -euo pipefail
 
@@ -15,7 +15,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE="$ROOT/.demo-internet" # process ids and logs; gitignored
 WEB_PORT="${WEB_PORT:-3000}"
 API_PORT="${API_PORT:-3001}"
-S3_PORT="${S3_PORT:-9000}" # MinIO from docker-compose; 8333 for SeaweedFS
+S3_PORT="${S3_PORT:-9000}" # the compose service "storage" publishes its S3 API on 127.0.0.1:9000
 mkdir -p "$STATE"
 
 need_cloudflared() {

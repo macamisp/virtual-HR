@@ -5,6 +5,7 @@
  *   npm run verify                     all four steps
  *   npm run verify -- --skip=e2e       leave out a step (lint, typecheck, api, e2e; comma-separated)
  *   npm run verify -- --only=api       run just these
+ *   npm run verify -- --preflight      only check that the services answer, then stop
  *   npm run verify -- --no-preflight   do not check the services first (not recommended)
  *
  * What it does:
@@ -166,6 +167,13 @@ function accuracy(apiOut, e2eOut) {
 const pad = (v, n) => String(v).padEnd(n);
 const lines = [];
 const out = (l = '') => { lines.push(l); console.log(l); };
+
+if (args.includes('--preflight')) {
+  const checks = await preflight();
+  for (const c of checks) out(`  ${c.ok ? 'OK     ' : 'MISSING'}  ${pad(c.name, 26)} ${c.detail}${c.ok ? '' : `\n           fix: ${c.fix}`}`);
+  out(checks.every((c) => c.ok) ? '\nAll services answer. You can run: npm run verify' : '\nSomething is missing. See docs/runbooks/web-local.md, section 1 and 7.');
+  process.exit(checks.every((c) => c.ok) ? 0 : 2);
+}
 
 console.error(`HRVO verify: ${wanted.join(', ')}`);
 if (!args.includes('--no-preflight') && wanted.some((s) => s === 'api' || s === 'e2e')) {

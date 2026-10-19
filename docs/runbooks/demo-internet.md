@@ -10,8 +10,8 @@ Show HRVO to people outside your network, from your own machine, for a few hours
 | --- | --- | --- | --- |
 | Web app (Next.js) | 3000 | yes, `https://app…` | the pages |
 | API (NestJS + Socket.IO) | 3001 | yes, `https://api…` | the browser calls it; LiveKit Cloud sends webhooks to it |
-| Storage S3 API (MinIO) | 9000 | yes, `https://files…` | browsers upload documents with 5-minute presigned URLs |
-| MinIO console | 9001 | **no** | |
+| Document storage, S3 API (SeaweedFS, compose service `storage`) | 9000 | yes, `https://files…` | browsers upload documents with 5-minute presigned URLs |
+| Storage internals (master and volume ports) | not published | **no** | the compose file publishes only the S3 port, on 127.0.0.1 |
 | Postgres, Redis, ClamAV, KMS emulator | — | **no** | never tunnel these |
 | LiveKit | — | LiveKit Cloud | a local LiveKit cannot carry media through an HTTP tunnel |
 
@@ -63,7 +63,7 @@ Fill it in:
 | `CORS_ORIGINS` | `https://app.demo.example.com` | exactly the web origin; no `*` |
 | `NEXT_PUBLIC_API_URL` | `https://api.demo.example.com` | baked into the web build |
 | `NEXT_PUBLIC_STORAGE_URL` | `https://files.demo.example.com` | baked into the web build (Content-Security-Policy) |
-| `S3_PUBLIC_ENDPOINT` | `https://files.demo.example.com` | the API signs upload URLs for this host; it still talks to MinIO on localhost |
+| `S3_PUBLIC_ENDPOINT` | `https://files.demo.example.com` | the API signs upload URLs for this host; it still talks to the storage on localhost |
 | `NEXT_PUBLIC_LIVEKIT_URL` | `wss://<project>.livekit.cloud` | baked into the web build |
 | `LIVEKIT_URL` / `LIVEKIT_HTTP_URL` | `wss://<project>.livekit.cloud` / `https://<project>.livekit.cloud` | the API mints room tokens and calls LiveKit's API |
 | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | from LiveKit Cloud > Settings > Keys | create a key for this demo only |
@@ -72,10 +72,10 @@ Fill it in:
 | `JWT_SECRET` | `openssl rand -hex 32` | new for the demo |
 | `AUTH_MFA_ENFORCEMENT`, `BREACHED_PASSWORD_CHECK` | empty | 2FA stays enforced for HR and admins; new passwords are checked against Have I Been Pwned |
 
-Storage keys: in `.env` set `S3_SECRET_KEY` to a fresh value (`openssl rand -hex 24`) and start MinIO with the same value, because the storage endpoint itself is public:
+Storage keys: in `.env` set `S3_SECRET_KEY` to a fresh value (`openssl rand -hex 24`) and recreate the storage with it, because the storage endpoint itself is public and its keys are the only lock (it accepts requests from any website origin, which uploads from your web address need):
 
 ```bash
-MINIO_ROOT_PASSWORD='<the same value>' docker compose up -d minio
+docker compose up -d --force-recreate storage    # reads S3_ACCESS_KEY / S3_SECRET_KEY from .env
 ```
 
 Load the overrides in **every terminal** you use for the demo. Exported variables take precedence over `.env`, so `.env` itself does not change:
@@ -140,7 +140,7 @@ curl -si -X OPTIONS https://files.demo.example.com/hrvo-documents/check \
   -H 'Origin: https://app.demo.example.com' -H 'Access-Control-Request-Method: PUT' | grep -i access-control-allow-origin
 ```
 
-The second command must print an `Access-Control-Allow-Origin` header (MinIO allows browser uploads by default). Then, in a private browser window:
+The second command must print an `Access-Control-Allow-Origin` header (the storage answers browser preflight requests for any origin). Then, in a private browser window:
 
 1. Open `https://app.demo.example.com`, sign in as the worker: the tracking badge turns "Active".
 2. Sign in as HR in another browser: 2FA enrolment appears.
@@ -160,7 +160,7 @@ This stops the tunnels and deletes the demo organisation with all its users, ses
 - stop the API and web processes (Ctrl+C);
 - LiveKit Cloud: delete the webhook and revoke the demo API key;
 - named tunnel: remove the three hostnames in Cloudflare DNS (or `cloudflared tunnel delete hrvo-demo`);
-- optional: remove uploaded demo objects (`docker compose down` and remove the `minio_data` volume) if nothing else uses this local storage.
+- optional: remove uploaded demo objects (`docker compose down`, then remove the `storage_data` volume) if nothing else uses this local storage.
 
 ## Known limitations
 

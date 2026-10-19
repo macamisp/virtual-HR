@@ -35,10 +35,10 @@ The SRS has 151 functional requirement IDs.
 
 | Module | IDs | DONE | PARTIAL | MISSING | Missing IDs |
 | --- | ---: | ---: | ---: | ---: | --- |
-| AUTH | 12 | 6 | 3 | 3 | FR-AUTH-005, 009, 012 |
-| ORG | 12 | 5 | 3 | 2 | FR-ORG-007, 008 |
-| VO | 14 | 10 | 2 | 2 | FR-VO-011, 014 |
-| MEET | 14 | 8 | 5 | 1 | FR-MEET-014 |
+| AUTH | 12 | 6 | 4 | 2 | FR-AUTH-005, 012 |
+| ORG | 12 | 5 | 5 | 2 | FR-ORG-007, 008 |
+| VO | 14 | 11 | 1 | 2 | FR-VO-011, 014 |
+| MEET | 14 | 9 | 4 | 1 | FR-MEET-014 |
 | ATT | 23 | 21 | 2 | 0 | none |
 | TS | 13 | 10 | 2 | 1 | FR-TS-007 |
 | TASK | 16 | 7 | 5 | 4 | FR-TASK-009, 012, 014, 015 |
@@ -47,7 +47,7 @@ The SRS has 151 functional requirement IDs.
 | REP | 8 | 6 | 1 | 1 | FR-REP-007 |
 | ADM | 8 | 3 | 2 | 3 | FR-ADM-003, 005, 008 |
 | AUD | 5 | 4 | 1 | 0 | none |
-| **Total** | **151** | **95** | **34** | **22** | |
+| **Total** | **151** | **100** | **30** | **21** | |
 
 ### By phase
 
@@ -56,20 +56,23 @@ The SRS has 151 functional requirement IDs.
 | Phase | IDs | DONE | PARTIAL | MISSING | % DONE | Weighted |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | P1 | 74 | 60 | 13 | 1 | 81 % | 90 % |
-| P2 | 60 | 32 | 17 | 11 | 53 % | 68 % |
+| P2 | 60 | 34 | 16 | 10 | 57 % | 70 % |
 | P3 | 17 | 6 | 1 | 10 | 35 % | 38 % |
-| **All** | **151** | **98** | **31** | **22** | **65 %** | **75 %** |
+| **All** | **151** | **100** | **30** | **21** | **66 %** | **76 %** |
 
 The only P1 requirement that is MISSING is FR-ORG-008 (onboarding checklist).
+
+**What changed in the counts on 19 October (re-checked against the code):** FR-VO-008 (ring a colleague: from the people list and an avatar, accept, decline, missed, busy) and FR-MEET-005 (chat inside a meeting) went from PARTIAL to DONE; FR-AUTH-009 went from MISSING to PARTIAL (an administrator can end a session through the API, but a person has no list of their own devices). Net: 98 → 100 DONE, 31 → 30 PARTIAL, 22 → 21 MISSING; phase 2 moved from 53 % to 57 % done (weighted 68 % → 70 %), and all phases from 65 % to 66 % (weighted 75 % → 76 %). Two arithmetic slips in the previous version were also corrected: the module table's Total row still showed the old 95 / 34 / 22, and the ORG row listed 3 partial requirements where its twelve requirements give 5 (so the rows added up to 149, not 151). Every row now adds up to its ID count, and the columns to 100 / 30 / 21.
 
 ### What makes each PARTIAL partial
 
 **AUTH**
+- **FR-AUTH-009:** an administrator can end a session through the API (`DELETE /auth/sessions/:id`); a person has no screen or list of their own devices and sessions.
 - **FR-AUTH-001:** the invitation link is returned by the API, not e-mailed.
 - **FR-AUTH-007:** lockout works, but there is no CAPTCHA and no lockout e-mail.
 - **FR-AUTH-011:** login and logout audit rows are written but not asserted by any test. A failed login for an unknown e-mail is not audited.
 
-**ORG (no organisation-management slice has been built yet; leave and holidays, FR-ORG-010 and 011, are DONE since section 7)**
+**ORG (leave and holidays, FR-ORG-010 and 011, are DONE since section 7; subcontractor profile, schedules and teams since section 9)**
 - **FR-ORG-001:** the organisation has only a name and timezone; there is no profile screen.
 - **FR-ORG-003:** contract alerts fire at 60/30/7/0 days instead of 30/14/7, and a contract has no rate.
 - **FR-ORG-004:** the subcontractor weekly cap warns at 80 % and 100 % (section 9); there is no per-project cap.
@@ -78,10 +81,8 @@ The only P1 requirement that is MISSING is FR-ORG-008 (onboarding checklist).
 
 **VO and MEET**
 - **FR-VO-006:** there is no map editor screen; maps can only be replaced as JSON through the API.
-- **FR-VO-008:** you cannot ring a colleague from the office.
-- **FR-MEET-001:** an instant call can only be started from `/meetings`.
+- **FR-MEET-001:** an instant call can be started from an avatar, from the people list and from `/meetings`, but not from a chat message, and from the list one person at a time.
 - **FR-MEET-004:** the 50-participant limit and simulcast are neither enforced nor tested.
-- **FR-MEET-005:** there is no chat inside a meeting.
 - **FR-MEET-009:** meeting time is counted as ordinary active time, not as a separate segment.
 - **FR-MEET-010:** there is no background blur.
 
@@ -111,9 +112,7 @@ The only P1 requirement that is MISSING is FR-ORG-008 (onboarding checklist).
 - **FR-ADM-007:** there is no map editor, and no browser test of room administration.
 - **FR-AUD-005:** there is no single privacy dashboard.
 
-Two documentation pointers are out of date:
-- `docs/traceability/auth.md` still lists FR-AUTH-006 as partial and role changes as not audited; both are done now.
-- `docs/runbooks/uat.md` §7 still says the office, meetings and the desktop agent are "not expected yet".
+One documentation pointer is out of date: `docs/traceability/auth.md` still lists FR-AUTH-006 as partial and role changes as not audited; both are done now. (`docs/runbooks/uat.md` was rewritten on 19 October and no longer says the office, meetings and desktop agent are "not expected yet".)
 
 ## 3. Client HR requirements (SRS §2.7)
 
@@ -122,7 +121,7 @@ Two documentation pointers are out of date:
 | 1 | Automatic detection of in and out times | **PASS** | e2e `02-clock-in-heartbeat` › "monitoring notice blocks the app; after acceptance the worker clocks in automatically"; `attendance-service` › "Reconciler closes sessions when heartbeats are missing for > 90s"; e2e `19-desktop-agent` (tray, offline OFFLINE_SYNCED); screens `/attendance`, `/live` | Nothing. Logout now closes the session at once (section 7). |
 | 2 | Document handling and storage | **PARTIAL** | e2e `10-documents` (upload, scan, preview, versions, sharing); `documents-e2e` (access log, 60/30/7 reminders); `21-esign`; `vault-e2e` (trash and crypto-shredding); screens `/documents`, `/documents/access-log`, `/documents/retention`, `/signatures` | Search covers title and tags only (FR-DOC-016). No policy acknowledgement (FR-DOC-018), no Office preview (FR-DOC-019), no bulk ZIP download (FR-DOC-020). |
 | 3 | Timesheets and task management for each subcontractor | **PARTIAL** | e2e `09-timesheets` (timer, manual time, return, resubmit, approve and lock, report and CSV); e2e `06-tasks` › "the subcontractor must accept before working"; `timesheets-e2e` rates and reopen; screens `/timesheets`, `/timesheets/review`, `/timesheets/rates`, `/tasks` | No multi-level approval (FR-TS-007) and no invoice (FR-TS-010). No recurring tasks, dependencies or CSV import (FR-TASK-009, 014, 015). The subcontractor profile is complete (FR-ORG-002) and the weekly cap warns at 80 % and 100 %; there is no per-project cap (FR-ORG-004). |
-| 4 | Meetings and connecting with each other | **PARTIAL** | e2e `16-office` (map, WASD, knock rooms, 200 avatars); e2e `17-meetings` (ring, lobby, proximity call, screen share); e2e `18-chat`; e2e `22-recording`; screens `/office`, `/meetings`, `/chat` | No map editor (FR-VO-006), no guest links (FR-VO-011), no in-meeting chat (FR-MEET-005), no background blur (FR-MEET-010), no AI summary (FR-MEET-014). |
+| 4 | Meetings and connecting with each other | **PARTIAL** | e2e `16-office` (map, WASD, knock rooms, 200 avatars); e2e `17-meetings` (ring, lobby, proximity call, screen share); e2e `25-office-calls` (people list and avatar-menu calls, accept and decline, meeting chat); e2e `18-chat`; e2e `22-recording`; screens `/office`, `/meetings`, `/chat` | No map editor (FR-VO-006), no guest links (FR-VO-011), no background blur (FR-MEET-010), no AI summary (FR-MEET-014), no call from a chat message (FR-MEET-001). Calling a colleague (people list, avatar menu) and the chat inside a meeting exist since 19 October (e2e `25-office-calls`). |
 | 5 | Daily and weekly task lists | **PASS** | e2e `07-planning` › "the worker plans the day, confirms it and submits an end-of-day report", "the weekly planner schedules by drag and by keyboard, shows capacity and keeps goals"; `notifications-e2e` weekly summary and carry-over; screens `/tasks/today`, `/tasks/week`, `/tasks/workload` | Nothing. |
 | 6 | Password-protected documents for contracts and similar | **PASS** | e2e `11-vault` › "a confidential document asks the owner to confirm it is them, then a document password", share links, watermarked view; `vault-e2e` › "a database dump plus a bucket dump contain no content, file name or confidential title" | Encryption in transit (FR-DOC-008) is configuration only, with no test. |
 | 7 | Accurate detection of in and out times | **PASS** (one caveat) | Playwright `23-accuracy` prints the measurements: clock-in p50 230 ms, max 281 ms, 20/20 within 5 s; clock-out error 4.3–4.4 s for logout, tab close and network loss; two devices never counted more than the wall clock. `attendance-replay` › "the nightly job checks yesterday…alerts HR once…"; `attendance-logout-e2e`; `attendance-state-machine` › "Accuracy strictly ignores client timestamps…" | Laptop sleep is not emulated separately (from the server it is the network-loss case). NFR-ACC-005 (clock drift monitoring) is an infrastructure alert, not a test. |
@@ -197,7 +196,7 @@ cp .env.example .env
 #   DOCUMENT_KMS_RECOVERY_KEY=$(openssl rand -base64 32)   # must differ from the data key
 #   BREACHED_PASSWORD_CHECK=local                           # if offline
 # The JWT_SECRET in .env.example is a development value; production refuses it.
-docker compose up -d            # Postgres, Redis, MinIO, ClamAV, moto (KMS), LiveKit, Mailhog
+docker compose up -d            # Postgres, Redis, storage (SeaweedFS), ClamAV, moto (KMS), LiveKit, Mailhog
 npm run db:migrate              # tables, RLS, roles
 npm run db:provision-roles      # passwords for hrvo_app / hrvo_retention from .env
 npm run seed:demo               # demo organisation "Acme Demo"
@@ -217,7 +216,7 @@ npm run web                     # terminal 2 → http://localhost:3000
 | 3001 | API |
 | 5433 | Postgres |
 | 6379 | Redis (LiveKit uses database 5) |
-| 9000 / 9001 | MinIO S3 / MinIO console |
+| 9000 | Document storage (S3 API, localhost only) |
 | 3310 | ClamAV |
 | 4566 | moto (KMS) |
 | 7880 / 7881 / 7882 | LiveKit (HTTP and WebSocket / TCP / UDP) |
