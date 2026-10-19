@@ -7,6 +7,7 @@
  * Needs S3_ENDPOINT (+ keys, S3_CREATE_BUCKET=true) and CLAMAV_HOST/PORT; skipped otherwise.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -14,7 +15,6 @@ import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { GetObjectCommand, HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { formatInTimeZone } from 'date-fns-tz';
 import { AppModule } from '../src/app.module.ts';
@@ -145,7 +145,7 @@ describe('Documents API (FR-DOC-001..004, 007, 009, 012, 013, 015, 019)', { conc
       const res = await fetch(`${base}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email(who), password: PASSWORD, ...(who === 'hr' ? { totpCode: generateSync({ secret: MFA_SECRET }) } : {}) }),
+        body: JSON.stringify({ email: email(who), password: PASSWORD, ...(who === 'hr' ? { totpCode: await freshCode(MFA_SECRET) } : {}) }),
       });
       const body = (await res.json()) as { accessToken?: string };
       assert.ok(body.accessToken, `login ${who}`);

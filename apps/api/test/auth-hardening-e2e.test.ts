@@ -5,6 +5,7 @@
  * breached-password checker (FR-AUTH-002). See ADR 005.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
@@ -268,7 +269,7 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       const good = await fetch(`${base}/auth/2fa/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${enrollmentToken}` },
-        body: JSON.stringify({ code: generateSync({ secret }) }),
+        body: JSON.stringify({ code: await freshCode(secret) }),
       });
       assert.equal(good.status, 200);
       const enrolled = (await good.json()) as LoginResult & { recoveryCodes: string[] };
@@ -303,7 +304,7 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       assert.equal(res.status, 401);
       const row = await adminPool.query(`SELECT failed_login_attempts FROM users WHERE id = $1`, [U.admin.id]);
       assert.equal(row.rows[0].failed_login_attempts, 1);
-      const ok = await login(U.admin.email, PASSWORD, { totpCode: generateSync({ secret }) });
+      const ok = await login(U.admin.email, PASSWORD, { totpCode: await freshCode(secret) });
       assert.equal(ok.res.status, 200);
       assert.ok(ok.body.accessToken);
     });
@@ -699,7 +700,7 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       const verify = await fetch(`${base}/auth/2fa/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${first.body.enrollmentToken}` },
-        body: JSON.stringify({ code: generateSync({ secret }) }),
+        body: JSON.stringify({ code: await freshCode(secret) }),
       });
       assert.equal(verify.status, 200);
       await assertNoRefreshTokenInBody(verify, true);

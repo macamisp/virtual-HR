@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
@@ -188,11 +189,10 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
       assert.equal(setupRes.status, 200);
       const { secret } = await setupRes.json();
 
-      const { generateSync } = await import('otplib');
       const verifyRes = await fetch(`${baseUrl}/auth/2fa/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.enrollmentToken}` },
-        body: JSON.stringify({ code: generateSync({ secret }) }),
+        body: JSON.stringify({ code: await freshCode(secret) }),
       });
       assert.equal(verifyRes.status, 200);
       const enrolled = await verifyRes.json();
@@ -225,7 +225,7 @@ describe('HRVO Application Shell E2E (Auth, RBAC, RLS, Real-Time Socket Gateway,
       await adminPool.query(`UPDATE users SET failed_login_attempts = 0 WHERE id = '${adminAId}'`);
 
       // Login with valid TOTP code succeeds
-      const validCode = generateSync({ secret });
+      const validCode = await freshCode(secret);
       const resMfaSuccess = await fetch(`${baseUrl}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

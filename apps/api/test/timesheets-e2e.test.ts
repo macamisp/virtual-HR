@@ -6,13 +6,13 @@
  * per-route permissions and RLS.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import ExcelJSModule from 'exceljs';
 import { AppModule } from '../src/app.module.ts';
@@ -135,7 +135,7 @@ describe('Timesheets API (FR-TS-001..006, 009, 011)', { concurrency: false }, ()
       const res = await fetch(`${base}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email(who), password: PASSWORD, ...(MFA_ROLES.includes(U[who].role) ? { totpCode: generateSync({ secret: MFA_SECRET }) } : {}) }),
+        body: JSON.stringify({ email: email(who), password: PASSWORD, ...(MFA_ROLES.includes(U[who].role) ? { totpCode: await freshCode(MFA_SECRET) } : {}) }),
       });
       const body = (await res.json()) as { accessToken?: string };
       assert.ok(body.accessToken, `login ${who}`);

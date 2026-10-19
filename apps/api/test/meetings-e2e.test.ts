@@ -5,6 +5,7 @@
  * with .ics invites, the lobby, host controls, action items to tasks, instant calls and broadcasts.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
@@ -12,7 +13,6 @@ import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
 import jwt from 'jsonwebtoken';
-import { generateSync } from 'otplib';
 import { io, type Socket } from 'socket.io-client';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
@@ -93,7 +93,7 @@ describe('Media and meetings (FR-VO-005, 009, 010; FR-MEET-001..003, 005, 008, 0
     await app.listen(PORT);
     outbox = app.get<InMemoryMailTransport>(MAIL_TRANSPORT, { strict: false });
     for (const who of Object.keys(U) as Who[]) {
-      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(U[who].mfa ? { totpCode: generateSync({ secret: SECRET }) } : {}) }) });
+      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(U[who].mfa ? { totpCode: await freshCode(SECRET) } : {}) }) });
       tokens[who] = ((await res.json()) as { accessToken: string }).accessToken;
       assert.ok(tokens[who], `login ${who}`);
     }

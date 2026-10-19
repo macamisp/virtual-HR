@@ -4,13 +4,13 @@
  * Jobs are driven directly with a fixed clock; BullMQ wiring is tested in jobs-bullmq-e2e.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { io, type Socket } from 'socket.io-client';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import { AppModule } from '../src/app.module.ts';
@@ -99,7 +99,7 @@ describe('Notifications and scheduled work', { concurrency: false }, () => {
       const res = await fetch(`${base}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(who === 'hr' ? { totpCode: generateSync({ secret: HR_SECRET }) } : {}) }),
+        body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(who === 'hr' ? { totpCode: await freshCode(HR_SECRET) } : {}) }),
       });
       const body = (await res.json()) as { accessToken: string; sessionId: string };
       tokens[who] = body.accessToken;

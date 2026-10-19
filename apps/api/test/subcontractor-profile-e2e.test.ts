@@ -7,13 +7,13 @@
  * that every read is audited without values; and that nothing is logged in plain text.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
 import { SubcontractorListSchema, SubcontractorProfileSchema, SubcontractorSensitiveSchema } from '../../../packages/shared/src/org/subcontractors.ts';
@@ -83,7 +83,7 @@ describe('Subcontractor profiles (FR-ORG-002)', { concurrency: false }, () => {
     configureApp(app);
     await app.listen(PORT);
     for (const who of Object.keys(U).filter((k) => k !== 'far') as Who[]) {
-      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(MFA.has(who) ? { totpCode: generateSync({ secret: MFA_SECRET }) } : {}) }) });
+      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(MFA.has(who) ? { totpCode: await freshCode(MFA_SECRET) } : {}) }) });
       tokens[who] = ((await res.json()) as { accessToken: string }).accessToken;
       assert.ok(tokens[who], `login ${who}`);
     }

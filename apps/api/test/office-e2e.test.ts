@@ -6,6 +6,7 @@
  * attendance session alive.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
@@ -13,7 +14,6 @@ import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { io, type Socket } from 'socket.io-client';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
@@ -113,7 +113,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
     configureApp(app);
     await app.listen(PORT);
     for (const who of Object.keys(U) as Who[]) {
-      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(U[who].mfa ? { totpCode: generateSync({ secret: SECRET }) } : {}) }) });
+      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(U[who].mfa ? { totpCode: await freshCode(SECRET) } : {}) }) });
       sessions[who] = (await res.json()) as Session;
       assert.ok(sessions[who].accessToken, `login ${who}`);
     }

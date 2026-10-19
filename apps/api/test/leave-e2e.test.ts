@@ -1,4 +1,5 @@
 import { AttendanceStateMachine } from '../src/attendance/attendance-state-machine.ts';
+import { freshCode } from './support/totp.ts';
 import { PgLeaveProvider, PgHolidayProvider } from '../src/attendance/leave-providers.ts';
 import { PrismaService } from '../src/common/prisma.service.ts';
 /**
@@ -16,7 +17,6 @@ import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { formatInTimeZone } from 'date-fns-tz';
 import { SRI_LANKA_HOLIDAYS } from '../src/leave/sri-lanka-holidays.ts';
 import { AppModule } from '../src/app.module.ts';
@@ -99,7 +99,7 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
     await app.listen(PORT);
     attendance = app.get(AttendanceService);
     for (const who of Object.keys(U) as Who[]) {
-      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(who === 'hr' ? { totpCode: generateSync({ secret: MFA_SECRET }) } : {}) }) });
+      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(who === 'hr' ? { totpCode: await freshCode(MFA_SECRET) } : {}) }) });
       tokens[who] = ((await res.json()) as { accessToken: string }).accessToken;
       assert.ok(tokens[who], `login ${who}`);
     }

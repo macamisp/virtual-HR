@@ -4,6 +4,7 @@
  * FR-ATT-007, 013, 015, 016, 020; FR-AUD-004.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
@@ -276,11 +277,10 @@ describe('Attendance self-service API (apps/web contract)', { concurrency: false
     assert.equal(otherRow?.hasClockedInToday, false);
     assert.ok(!board.some((r) => r.userId === U.hrm.id), 'team-scoped');
 
-    const { generateSync } = await import('otplib');
     const res = await fetch(`${base}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: U.hrm.email, password: PASSWORD, totpCode: generateSync({ secret: 'KVKFKRCPNZQUYMLXOVYDSQKJKZDTSRLD' }) }),
+      body: JSON.stringify({ email: U.hrm.email, password: PASSWORD, totpCode: await freshCode('KVKFKRCPNZQUYMLXOVYDSQKJKZDTSRLD') }),
     });
     const hrm = (await res.json()) as Login;
     const orgBoard = await api(hrm.accessToken, '/attendance/live');

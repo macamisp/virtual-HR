@@ -5,13 +5,13 @@
  * every change is audited; and the hierarchy is the one approvals use.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
 import { OrgPersonSchema, OrgStructureSchema, OrgTeamSchema } from '../../../packages/shared/src/org/structure.ts';
@@ -70,7 +70,7 @@ describe('Teams and manager hierarchy (FR-ORG-006)', { concurrency: false }, () 
     configureApp(app);
     await app.listen(PORT);
     for (const who of ['hr', 'lead', 'emp', 'sub'] as Who[]) {
-      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(who === 'hr' ? { totpCode: generateSync({ secret: MFA_SECRET }) } : {}) }) });
+      const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password: PASSWORD, ...(who === 'hr' ? { totpCode: await freshCode(MFA_SECRET) } : {}) }) });
       tokens[who] = ((await res.json()) as { accessToken: string }).accessToken;
       assert.ok(tokens[who], `login ${who}`);
     }

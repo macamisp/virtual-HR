@@ -85,9 +85,15 @@ test.describe.serial('Attendance review and presence challenge', () => {
     // So the burst starts right after one of the page's heartbeats, 30 s before the next.
     const pageSockets: WebSocket[] = [];
     page.on('websocket', (ws) => pageSockets.push(ws));
-    const nextPageHeartbeat = () => new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('the page sent no heartbeat within 45 s')), 45_000);
-      for (const ws of pageSockets) ws.on('framesent', (f) => { if (String(f.payload).includes('presence:heartbeat')) { clearTimeout(t); resolve(); } });
+    // Listens on the page's current sockets and on any it opens meanwhile (the heartbeat worker can
+    // reconnect). Alignment only lowers the chance of the race; it never fails the test by itself.
+    const nextPageHeartbeat = () => new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (why: string) => { if (done) return; done = true; clearTimeout(t); page.off('websocket', watch); if (why) console.log(why); resolve(); };
+      const watch = (ws: WebSocket) => ws.on('framesent', (f) => { if (String(f.payload).includes('presence:heartbeat')) finish(''); });
+      const t = setTimeout(() => finish('spec 20: no page heartbeat seen within 45 s; sending the idle burst unaligned'), 45_000);
+      for (const ws of pageSockets) watch(ws);
+      page.on('websocket', watch);
     });
     try {
       await signIn(page, USERS.worker.email);

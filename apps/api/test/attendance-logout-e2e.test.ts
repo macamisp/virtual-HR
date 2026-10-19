@@ -9,6 +9,7 @@
  * Every close holds the 1 s target, including notification loss.
  */
 import 'reflect-metadata';
+import { freshCode } from './support/totp.ts';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
@@ -16,7 +17,6 @@ import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import pg from 'pg';
 import argon2 from 'argon2';
-import { generateSync } from 'otplib';
 import { io, type Socket } from 'socket.io-client';
 import { AttendanceGateway } from '../src/attendance/attendance.gateway.ts';
 import { AppModule } from '../src/app.module.ts';
@@ -49,7 +49,7 @@ describe('Explicit logout closes the attendance session at once (FR-ATT-002, ADR
   const seqs = new Map<string, number>();
 
   async function login(who: Who, password = PASSWORD): Promise<Login> {
-    const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password, ...(who === 'admin' ? { totpCode: generateSync({ secret: MFA }) } : {}) }) });
+    const res = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U[who].email, password, ...(who === 'admin' ? { totpCode: await freshCode(MFA) } : {}) }) });
     const body = (await res.json()) as Login & { message?: string };
     assert.equal(res.status, 200, `login ${who}: ${body.message}`);
     return { accessToken: body.accessToken, sessionId: body.sessionId, sessionSecret: body.sessionSecret };
