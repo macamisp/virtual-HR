@@ -10,7 +10,8 @@ import {
 import { AttendanceGateway } from '../attendance/attendance.gateway.ts';
 import argon2 from 'argon2';
 import { mfaEnforced } from '../common/config.ts';
-import { generateSecret, generateURI, verifySync } from 'otplib';
+import { generateSecret, generateURI } from 'otplib';
+import { verifyTotp } from './totp.ts';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
@@ -306,9 +307,7 @@ export class AuthService {
         };
       }
 
-      // otplib throws on non-6-digit input, so only TOTP-shaped codes reach it.
-      const isValidToken = !!user.mfa_secret && /^\d{6}$/.test(dto.totpCode) &&
-        verifySync({ token: dto.totpCode, secret: user.mfa_secret }).valid;
+      const isValidToken = !!user.mfa_secret && verifyTotp(user.mfa_secret, dto.totpCode);
       let recoveryUsed = false;
       if (!isValidToken) {
         recoveryUsed = await this.consumeRecoveryCode(user, dto.totpCode, meta);
@@ -723,7 +722,7 @@ export class AuthService {
         throw new UnauthorizedException('Account is not active');
       }
 
-      if (!verifySync({ token: code, secret: row.mfa_secret }).valid) {
+      if (!verifyTotp(row.mfa_secret, code)) {
         await this.recordAudit(client, {
           orgId: user.orgId,
           actorId: user.id,

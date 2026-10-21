@@ -192,7 +192,7 @@ Times come from the **server clock** only (the browser's time is ignored); a sig
 
 ### AC-16. Contract expiring in 30 days: BUILT
 - **Accounts:** Hana, Leo (Sam's manager). **Steps:** Hana: **Documents → Contracts → New contract** (Person Sam, Title, Start, **End** = 30 days from today, Status Active, Signed document) → create. The reminder job runs every few minutes (or at once with background jobs on; see [web-local.md](web-local.md)).
-- **Expect:** Hana and Leo each get a notification "Contract ends in 30 days: Sam Subcontractor" and an email (Mailhog, http://localhost:8025). Reminders come at 60, 30 and 7 days and on the last day (the SRS lists 30, 14 and 7; see known issue 5). The seeded contract (about 25 days left) shows the same notice.
+- **Expect:** Hana and Leo each get a notification "Contract ends in 30 days: Sam Subcontractor" and an email (Mailhog, http://localhost:8025). Reminders come at 30, 14 and 7 days and on the last day (FR-ORG-003). The seeded contract (about 25 days left) shows the same notice.
 
 ## 4. Record the result
 

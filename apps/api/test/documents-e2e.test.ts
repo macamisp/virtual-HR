@@ -463,6 +463,19 @@ describe('Documents API (FR-DOC-001..004, 007, 009, 012, 013, 015, 019)', { conc
       assert.equal(emailed.rows[0]?.send_email, true, 'sent by email too');
     });
 
+    it('FR-ORG-003: contract alerts come at 30, 14 and 7 days (and on the last day), not 60', async () => {
+      const mk = async (title: string, days: number) => (await adminPool.query(`INSERT INTO contracts (org_id, user_id, title, start_date, end_date, status, renewal_notice_days) VALUES ($1, $2, $3, '2026-01-01', $4, 'ACTIVE', 90) RETURNING id`, [ORG, U.sub.id, title, addDaysIso(today, days)])).rows[0].id as string;
+      const d45 = await mk('Stage none 45', 45);
+      const d10 = await mk('Stage fourteen 10', 10);
+      const d3 = await mk('Stage seven 3', 3);
+      const work = app.get(DocumentMaintenanceService);
+      await work.run(new Date());
+      const stages = async (id: string) => (await notes('hr', 'CONTRACT_EXPIRING')).filter((n) => n.dedupe_key?.startsWith(`contract-expiry:${id}`)).map((n) => n.dedupe_key!.split(':').at(-1));
+      assert.deepEqual(await stages(d45), [], '45 days left: no 60-day alert any more');
+      assert.deepEqual(await stages(d10), ['14']);
+      assert.deepEqual(await stages(d3), ['7']);
+    });
+
     it('abandoned uploads are aborted after 24 h', async () => {
       const ticket = await ok(await api('emp', '/documents/uploads', { method: 'POST', body: { fileName: 'never.pdf', size: 100, ...meta('Never finished') } }), 201, UploadTicketSchema);
       await adminPool.query(`UPDATE document_versions SET uploaded_at = now() - interval '25 hours' WHERE id = $1`, [ticket.versionId]);

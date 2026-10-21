@@ -24,6 +24,18 @@ export function expiryStage(daysLeft: number): (typeof EXPIRY_STAGES)[number] | 
   return null;
 }
 
+/** FR-ORG-003: contracts are alerted 30, 14 and 7 days before they end (and on the last day). */
+export const CONTRACT_STAGES = [30, 14, 7] as const;
+
+/** The tightest contract reminder stage that `daysLeft` has reached, or null. */
+export function contractStage(daysLeft: number): (typeof CONTRACT_STAGES)[number] | null {
+  if (daysLeft < 0) return null;
+  if (daysLeft <= 7) return 7;
+  if (daysLeft <= 14) return 14;
+  if (daysLeft <= 30) return 30;
+  return null;
+}
+
 function daysBetween(from: string, to: string): number {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 }
@@ -176,7 +188,7 @@ export class DocumentMaintenanceService {
 
   /**
    * AC-16: a contract ending within its notice period (default 30 days) alerts HR and the
-   * person's manager, in-app and by email, at the 60/30/7/0-day stages inside that period, once.
+   * person's manager, in-app and by email, at the 30/14/7/0-day stages inside that period, once.
    */
   async contractReminders(org: { id: string; timezone: string }, now: Date): Promise<number> {
     const today = localDate(now, org.timezone);
@@ -193,7 +205,7 @@ export class DocumentMaintenanceService {
       const items: NewNotification[] = [];
       for (const c of rows.rows) {
         const left = daysBetween(today, c.ends);
-        const stage = expiryStage(left);
+        const stage = contractStage(left);
         if (!stage || Number(stage) > c.notice) continue;
         for (const userId of new Set([...(c.manager_id ? [c.manager_id] : []), ...hr.rows.map((r) => r.id)])) {
           items.push({

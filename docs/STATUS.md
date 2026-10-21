@@ -74,7 +74,7 @@ The only P1 requirement that is MISSING is FR-ORG-008 (onboarding checklist).
 
 **ORG (leave and holidays, FR-ORG-010 and 011, are DONE since section 7; subcontractor profile, schedules and teams since section 9)**
 - **FR-ORG-001:** the organisation has only a name and timezone; there is no profile screen.
-- **FR-ORG-003:** contract alerts fire at 60/30/7/0 days instead of 30/14/7, and a contract has no rate.
+- **FR-ORG-003:** a contract has no rate of its own. Alerts fire at 30/14/7/0 days.
 - **FR-ORG-004:** the subcontractor weekly cap warns at 80 % and 100 % (section 9); there is no per-project cap.
 - **FR-ORG-009:** nothing sets a user to OFFBOARDED, and there are no off-boarding steps.
 - **FR-ORG-012:** the office people search exists, but there is no directory with profile cards.

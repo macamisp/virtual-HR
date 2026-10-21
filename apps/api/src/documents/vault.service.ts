@@ -1,7 +1,7 @@
 import { ConflictException, ForbiddenException, HttpException, Injectable, UnauthorizedException } from '@nestjs/common';
 import type pg from 'pg';
 import argon2 from 'argon2';
-import { verifySync } from 'otplib';
+import { verifyTotp } from '../auth/totp.ts';
 import { PrismaService } from '../common/prisma.service.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
 import type { RequestContext } from '../common/decorators/request-context.decorator.ts';
@@ -68,7 +68,7 @@ export class VaultService {
       if (!s) throw new UnauthorizedException('Your session has ended; sign in again');
       let ok = false;
       if (dto.password && s.password_hash) ok = await argon2.verify(s.password_hash, dto.password).catch(() => false);
-      if (dto.totpCode) ok = s.mfa_enabled && !!s.mfa_secret && verifySync({ token: dto.totpCode, secret: s.mfa_secret }).valid;
+      if (dto.totpCode) ok = s.mfa_enabled && !!s.mfa_secret && verifyTotp(s.mfa_secret, dto.totpCode);
       await appendAuditEntry(db, {
         orgId: user.orgId, actorId: user.id, action: ok ? 'VAULT_REAUTH' : 'VAULT_REAUTH_FAILED', entityType: 'USER', entityId: user.id,
         after: { method: dto.password ? 'password' : 'totp' }, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined,
