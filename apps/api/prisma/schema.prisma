@@ -143,6 +143,7 @@ model User {
   passwordHash        String?   @map("password_hash") @db.VarChar(255)
   mfaEnabled          Boolean   @default(false) @map("mfa_enabled")
   mfaSecret           String?   @map("mfa_secret") @db.VarChar(255)
+  mfaLastUsedStep     BigInt?   @map("mfa_last_used_step")
   mfaRecoveryCodes    String[]  @default([]) @map("mfa_recovery_codes")
   failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
   lockedUntil         DateTime? @map("locked_until") @db.Timestamptz()

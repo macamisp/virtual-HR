@@ -11,7 +11,7 @@ import { AttendanceGateway } from '../attendance/attendance.gateway.ts';
 import argon2 from 'argon2';
 import { mfaEnforced } from '../common/config.ts';
 import { generateSecret, generateURI } from 'otplib';
-import { verifyTotp } from './totp.ts';
+import { consumeTotpStep, totpStep } from './totp.ts';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
@@ -307,7 +307,9 @@ export class AuthService {
         };
       }
 
-      const isValidToken = !!user.mfa_secret && verifyTotp(user.mfa_secret, dto.totpCode);
+      // FR-AUTH-004: a code works once (a later step than the last one used).
+      const step = user.mfa_secret ? totpStep(user.mfa_secret, dto.totpCode) : null;
+      const isValidToken = step !== null && await this.prisma.runWithTenantContext(user.org_id, (client) => consumeTotpStep(client, user.id, step));
       let recoveryUsed = false;
       if (!isValidToken) {
         recoveryUsed = await this.consumeRecoveryCode(user, dto.totpCode, meta);
@@ -722,7 +724,8 @@ export class AuthService {
         throw new UnauthorizedException('Account is not active');
       }
 
-      if (!verifyTotp(row.mfa_secret, code)) {
+      const step = totpStep(row.mfa_secret, code);
+      if (step === null || !(await consumeTotpStep(client, user.id, step))) {
         await this.recordAudit(client, {
           orgId: user.orgId,
           actorId: user.id,
