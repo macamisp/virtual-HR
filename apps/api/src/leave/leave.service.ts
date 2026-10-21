@@ -31,6 +31,11 @@ const SELECT = `SELECT r.id, r.user_id, r.type, to_char(r.start_date, 'YYYY-MM-D
     u.display_name AS user_name, u.email AS user_email, u.manager_id AS user_manager_id, u.team_id AS user_team_id,
     d.display_name AS decider_name, d.email AS decider_email
   FROM leave_requests r JOIN users u ON u.id = r.user_id LEFT JOIN users d ON d.id = r.decided_by`;
+/**
+ * A pending request can always be withdrawn. Approved leave only before its first day: cancelling
+ * leave that has begun would turn days already taken into absences.
+ */
+const cancellable = (status: LeaveStatus, startDate: string, today: string) => status === 'PENDING' || (status === 'APPROVED' && startDate > today);
 const daysBetween = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000) + 1;
 
 @Injectable()
@@ -76,7 +81,7 @@ export class LeaveService {
       days: daysBetween(r.start_date, r.end_date), reason: r.reason, status: r.status,
       decidedBy: r.decided_by ? { id: r.decided_by, displayName: r.decider_name, email: r.decider_email ?? '' } : null,
       decidedAt: r.decided_at?.toISOString() ?? null, decisionNote: r.decision_note, createdAt: r.created_at.toISOString(),
-      canCancel: r.user_id === user.id && (r.status === 'PENDING' || (r.status === 'APPROVED' && r.end_date >= today)),
+      canCancel: r.user_id === user.id && cancellable(r.status, r.start_date, today),
       canDecide: r.status === 'PENDING' && this.decides(user, requester),
     };
   }
@@ -175,7 +180,7 @@ export class LeaveService {
       const r = await this.row(db, id, true);
       if (r.user_id !== user.id) throw new ForbiddenException('Only the requester can cancel a request');
       const today = await this.today(db, user.orgId);
-      if (!(r.status === 'PENDING' || (r.status === 'APPROVED' && r.end_date >= today))) throw new ConflictException('Only pending requests, or approved leave that has not ended, can be cancelled');
+      if (!cancellable(r.status, r.start_date, today)) throw new ConflictException('Only pending requests, or approved leave that has not started, can be cancelled');
       await db.query(`UPDATE leave_requests SET status = 'CANCELLED', updated_at = now() WHERE id = $1`, [id]);
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'LEAVE_CANCELLED', entityType: 'LEAVE_REQUEST', entityId: id, before: { status: r.status }, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
       return r;

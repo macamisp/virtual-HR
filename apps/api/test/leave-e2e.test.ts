@@ -168,23 +168,40 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
     assert.equal(reminder.due, false);
   });
 
-  it('leave today shows as "On leave" on the live board; cancelling it removes it at once', async () => {
+  it('leave today shows as "On leave" on the live board and can no longer be cancelled once it has started', async () => {
     const today = dayPlus(0);
     const otherProcess = new PgLeaveProvider(app.get(PrismaService));
     assert.equal(await otherProcess.isUserOnApprovedLeave(ORG, U.emp.id, today), false);
     const sick = await ok(await api('emp', '/leave/requests', { method: 'POST', body: { type: 'SICK', startDate: today, endDate: today, reason: 'Flu' } }), 201, LeaveRequestSchema);
     await ok(await api('hr', `/leave/requests/${sick.id}/decide`, { method: 'POST', body: { approved: true } }), 200, LeaveRequestSchema);
     assert.equal(await otherProcess.isUserOnApprovedLeave(ORG, U.emp.id, today), true, 'approval is immediately visible on another API process');
-    let board = await ok(await api('lead', '/attendance/live'), 200, LiveBoardSchema);
+    const board = await ok(await api('lead', '/attendance/live'), 200, LiveBoardSchema);
     assert.equal(board.find((r) => r.userId === U.emp.id)?.status, 'ON_LEAVE');
     const mine = await ok(await api('emp', '/leave/requests?scope=mine'), 200, LeaveRequestListSchema);
     assert.deepEqual(mine.items.map((r) => r.status).sort(), ['APPROVED', 'APPROVED']);
+    assert.equal(mine.items.find((r) => r.id === sick.id)?.canCancel, false, 'started leave offers no cancel button');
     assert.equal((await api('lead', `/leave/requests/${sick.id}/cancel`, { method: 'POST' })).status, 403, 'only the requester cancels');
-    const cancelled = await ok(await api('emp', `/leave/requests/${sick.id}/cancel`, { method: 'POST' }), 200, LeaveRequestSchema);
+    // Cancelling after the first day has begun would turn days already taken into absences.
+    assert.equal((await api('emp', `/leave/requests/${sick.id}/cancel`, { method: 'POST' })).status, 409);
+    assert.equal(await otherProcess.isUserOnApprovedLeave(ORG, U.emp.id, today), true, 'the refused cancel changed nothing');
+    // Leave that started in the past and runs on is refused too.
+    const running = await adminPool.query<{ id: string }>(
+      `INSERT INTO leave_requests (org_id, user_id, type, start_date, end_date, status, decided_by, decided_at) VALUES ($1, $2, 'ANNUAL', $3, $4, 'APPROVED', $5, now()) RETURNING id`,
+      [ORG, U.emp.id, dayPlus(-3), dayPlus(5), U.hr.id]);
+    assert.equal((await api('emp', `/leave/requests/${running.rows[0]!.id}/cancel`, { method: 'POST' })).status, 409, 'started three days ago, ends in five');
+    assert.equal(await audits('LEAVE_CANCELLED'), 0);
+  });
+
+  it('approved leave that starts in the future can be cancelled, and that is visible at once', async () => {
+    const day = dayPlus(60);
+    const otherProcess = new PgLeaveProvider(app.get(PrismaService));
+    const trip = await ok(await api('emp', '/leave/requests', { method: 'POST', body: { type: 'ANNUAL', startDate: day, endDate: day } }), 201, LeaveRequestSchema);
+    await ok(await api('hr', `/leave/requests/${trip.id}/decide`, { method: 'POST', body: { approved: true } }), 200, LeaveRequestSchema);
+    assert.equal(await otherProcess.isUserOnApprovedLeave(ORG, U.emp.id, day), true);
+    assert.equal((await ok(await api('emp', `/leave/requests/${trip.id}`), 200, LeaveRequestSchema)).canCancel, true);
+    const cancelled = await ok(await api('emp', `/leave/requests/${trip.id}/cancel`, { method: 'POST' }), 200, LeaveRequestSchema);
     assert.equal(cancelled.status, 'CANCELLED');
-    assert.equal(await otherProcess.isUserOnApprovedLeave(ORG, U.emp.id, today), false, 'cancellation is immediately visible on another API process');
-    board = await ok(await api('lead', '/attendance/live'), 200, LiveBoardSchema);
-    assert.equal(board.find((r) => r.userId === U.emp.id)?.status, 'OFFLINE');
+    assert.equal(await otherProcess.isUserOnApprovedLeave(ORG, U.emp.id, day), false, 'cancellation is immediately visible on another API process');
     assert.equal(await audits('LEAVE_CANCELLED'), 1);
   });
 
