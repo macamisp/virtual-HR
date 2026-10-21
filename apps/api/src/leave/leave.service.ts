@@ -96,7 +96,8 @@ export class LeaveService {
         params.push(user.id);
         where = `r.user_id = $1`;
       } else if (userCan(user, Permission.LEAVE_APPROVE_ALL)) {
-        where = `r.user_id <> '${user.id}'::uuid`;
+        params.push(user.id);
+        where = `r.user_id <> $1`;
       } else if (userCan(user, Permission.LEAVE_APPROVE_TEAM)) {
         params.push(user.id, user.teamId ?? null);
         // Direct reports; else the team of someone without a manager.
