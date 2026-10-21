@@ -15,6 +15,7 @@ import { Permission } from '../../../../packages/shared/src/auth/types.ts';
 import { SubcontractorProfileDtoSchema } from '../../../../packages/shared/src/index.ts';
 import type { AuthenticatedUser, SubcontractorProfileDto } from '../../../../packages/shared/src/index.ts';
 import { SubcontractorsService } from './subcontractors.service.ts';
+import { SelfService } from '../common/decorators/self-service.decorator.ts';
 
 const id = new ParseUUIDPipe({ version: '4' });
 const dto = new ZodValidationPipe(SubcontractorProfileDtoSchema);
@@ -24,18 +25,21 @@ const dto = new ZodValidationPipe(SubcontractorProfileDtoSchema);
 export class MySubcontractorProfileController {
   constructor(private readonly subcontractors: SubcontractorsService) {}
 
+  @SelfService()
   @Get('subcontractor-profile')
   @Header('Cache-Control', 'no-store')
   mine(@CurrentUser() user: AuthenticatedUser, @ReqContext() ctx: RequestContext) {
     return this.subcontractors.profile(user, user.id, ctx);
   }
 
+  @SelfService()
   @Put('subcontractor-profile')
   @Header('Cache-Control', 'no-store')
   updateMine(@CurrentUser() user: AuthenticatedUser, @Body(dto) body: SubcontractorProfileDto, @ReqContext() ctx: RequestContext) {
     return this.subcontractors.update(user, user.id, body, ctx);
   }
 
+  @SelfService()
   @Post('subcontractor-profile/reveal')
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')

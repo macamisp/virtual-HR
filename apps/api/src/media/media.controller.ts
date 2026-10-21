@@ -12,6 +12,7 @@ import { MediaService } from './media.service.ts';
 import type { WebhookEvent } from './media.service.ts';
 import { MeetingsService } from '../meetings/meetings.service.ts';
 import { liveKitConfig, verifyWebhook } from './livekit.ts';
+import { Public } from '../common/decorators/public.decorator.ts';
 
 /** ADR 016: short-lived LiveKit tokens, one room each, chosen by the server. */
 @Controller('media')
@@ -40,6 +41,7 @@ export class MediaController {
 export class LiveKitWebhookController {
   constructor(private readonly media: MediaService) {}
 
+  @Public()
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
   async webhook(@Req() req: { rawBody?: Buffer }, @Headers('authorization') auth?: string) {

@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PERMISSIONS_ANY_KEY, PERMISSIONS_KEY } from '../decorators/permissions.decorator.ts';
+import { IS_PUBLIC_KEY } from '../decorators/public.decorator.ts';
+import { SELF_SERVICE_KEY } from '../decorators/self-service.decorator.ts';
 import { userCan } from '../../../../../packages/shared/src/index.ts';
 import type { Permission, AuthenticatedUser } from '../../../../../packages/shared/src/index.ts';
 import { PermissionResolver } from '../permission-resolver.ts';
@@ -44,7 +46,11 @@ export class PermissionsGuard implements CanActivate {
     );
 
     if ((!requiredPermissions || requiredPermissions.length === 0) && (!anyPermissions || anyPermissions.length === 0)) {
-      return true;
+      // No permission named: fine only when the route says so explicitly. An unannotated route is
+      // refused rather than open (route-guards.test.ts catches it earlier, at test time).
+      const targets = [context.getHandler(), context.getClass()];
+      if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, targets) || this.reflector.getAllAndOverride<boolean>(SELF_SERVICE_KEY, targets)) return true;
+      throw new ForbiddenException('This route has no permission rule');
     }
 
     if (!user) {

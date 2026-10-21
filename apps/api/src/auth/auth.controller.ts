@@ -48,6 +48,7 @@ import type {
   PasswordResetDto,
   AuthenticatedUser,
 } from '../../../../packages/shared/src/index.ts';
+import { SelfService } from '../common/decorators/self-service.decorator.ts';
 
 const REFRESH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -155,6 +156,7 @@ export class AuthController {
     return result;
   }
 
+  @SelfService()
   @Post('2fa/setup')
   @AllowMfaEnrollment()
   @HttpCode(HttpStatus.OK)
@@ -162,6 +164,7 @@ export class AuthController {
     return await this.authService.setup2fa(user, ...requestMeta(req));
   }
 
+  @SelfService()
   @Post('2fa/verify')
   @AllowMfaEnrollment()
   @RateLimit('login')
@@ -187,6 +190,7 @@ export class AuthController {
     return await this.authService.revokeSession(user, id, ...requestMeta(req));
   }
 
+  @SelfService()
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   async logout(

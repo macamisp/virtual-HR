@@ -17,6 +17,7 @@ import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts
 import { VaultService } from './vault.service.ts';
 import { ShareLinksService } from './share-links.service.ts';
 import { send } from './documents.controller.ts';
+import { Public } from '../common/decorators/public.decorator.ts';
 
 /** FR-DOC-005: re-authenticate (password or TOTP) to open confidential documents for N minutes. */
 @Controller('vault')
@@ -48,12 +49,14 @@ export class VaultController {
 export class PublicShareController {
   constructor(private readonly shares: ShareLinksService) {}
 
+  @Public()
   @Get(':token')
   @RateLimit('share')
   info(@Param('token') token: string) {
     return this.shares.info(token);
   }
 
+  @Public()
   @Post(':token/open')
   @HttpCode(HttpStatus.OK)
   @RateLimit('share')

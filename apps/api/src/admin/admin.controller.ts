@@ -19,6 +19,7 @@ import {
 import type { AssignRoleDto, AttendanceGuards, ConsentDto, CustomRoleDto, OrgPolicy, RetentionSettings } from '../../../../packages/shared/src/admin/types.ts';
 import { AdminService } from './admin.service.ts';
 import { ConsentsService } from './consents.service.ts';
+import { SelfService } from '../common/decorators/self-service.decorator.ts';
 
 const id = new ParseUUIDPipe({ version: '4' });
 
@@ -117,16 +118,19 @@ export class AdminController {
   }
 
   /** Any signed-in user: their own effective permissions, for the UI. */
+  @SelfService()
   @Get('me/access')
   myAccess(@CurrentUser() user: AuthenticatedUser) {
     return this.admin.myAccess(user);
   }
 
+  @SelfService()
   @Get('me/consents')
   myConsents(@CurrentUser() user: AuthenticatedUser) {
     return this.consents.overview(user.orgId, user.id);
   }
 
+  @SelfService()
   @Post('me/consents')
   recordConsent(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(ConsentDtoSchema)) dto: ConsentDto, @ReqContext() ctx: RequestContext) {
     return this.consents.record(user, dto, ctx);

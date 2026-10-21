@@ -11,6 +11,7 @@ import type { CreateAnonymisationDto, ExecuteAnonymisationDto } from '../../../.
 import { z } from 'zod';
 import { DataExportService } from './data-export.service.ts';
 import { AnonymisationService } from './anonymisation.service.ts';
+import { SelfService } from '../common/decorators/self-service.decorator.ts';
 
 const id = new ParseUUIDPipe({ version: '4' });
 const FormatSchema = z.object({ format: z.enum(['json', 'zip']).default('zip') });
@@ -70,6 +71,7 @@ export class PrivacyController {
 export class SelfExportController {
   constructor(private readonly exports: DataExportService) {}
 
+  @SelfService()
   @Get('export')
   @Header('Cache-Control', 'no-store')
   async exportMine(@CurrentUser() user: AuthenticatedUser, @Query(new ZodValidationPipe(FormatSchema)) q: Format) {

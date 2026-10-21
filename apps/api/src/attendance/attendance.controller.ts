@@ -43,6 +43,7 @@ import type {
   MyDaysQuery,
   BreakResult,
 } from '../../../../packages/shared/src/index.ts';
+import { SelfService } from '../common/decorators/self-service.decorator.ts';
 
 /**
  * The attendance service throws plain Errors (it is framework-free). Map the known ones
@@ -100,6 +101,7 @@ export class AttendanceController {
   }
 
   /** GET /attendance/consent: has the caller accepted the current monitoring notice? (FR-AUD-004) */
+  @SelfService()
   @Get('consent')
   async getConsent(@CurrentUser() user: AuthenticatedUser) {
     return await this.attendanceService.getConsentStatus(user.orgId, user.id);
@@ -163,6 +165,7 @@ export class AttendanceController {
    * FR-ATT-020: Transparency
    * Returns worker's own raw events and plain-language collection policy.
    */
+  @SelfService()
   @Get('me/events')
   async getMyEvents(
     @CurrentUser() user: AuthenticatedUser,
@@ -177,6 +180,7 @@ export class AttendanceController {
    * FR-AUD-004 & FR-ATT-020: Monitoring Consent
    * Records acceptance of monitoring notice version.
    */
+  @SelfService()
   @Post('consent')
   @UsePipes(new ZodValidationPipe(AttendanceConsentDtoSchema))
   async recordConsent(

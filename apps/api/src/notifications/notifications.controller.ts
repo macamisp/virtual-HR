@@ -12,6 +12,7 @@ import type { NotificationListQuery, NotificationPreferencesDto, UnsubscribeDto 
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import { NotificationsService } from './notifications.service.ts';
 import { NotificationPreferencesService } from './notification-preferences.service.ts';
+import { Public } from '../common/decorators/public.decorator.ts';
 
 /** FR-NOTIF-001: the caller's own notifications only. */
 @Controller('notifications')
@@ -58,6 +59,7 @@ export class NotificationsController {
 export class PublicUnsubscribeController {
   constructor(private readonly preferences: NotificationPreferencesService) {}
 
+  @Public()
   @Post('unsubscribe')
   @HttpCode(HttpStatus.OK)
   @RateLimit('unsubscribe')
