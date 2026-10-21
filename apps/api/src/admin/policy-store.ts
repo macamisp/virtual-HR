@@ -87,6 +87,7 @@ export async function loadAttendancePolicy(prisma: PrismaService, orgId: string)
   try {
     const [p, g] = await prisma.runWithTenantContext(orgId, async (db) => [await readOrgPolicy(db, orgId), await readAttendanceGuards(db, orgId)] as const);
     return {
+      orgTimezone: p.timezone,
       missedHeartbeatTimeoutSeconds: p.missedHeartbeatTimeoutSeconds,
       disconnectGraceWindowSeconds: p.disconnectGraceWindowSeconds,
       idleThresholdSeconds: p.idleThresholdSeconds,

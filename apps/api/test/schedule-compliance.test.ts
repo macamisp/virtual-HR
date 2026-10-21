@@ -13,6 +13,8 @@ import pg from 'pg';
 import type { AttendanceSession, Clock, WorkSchedule } from '../../../packages/shared/src/attendance/types.ts';
 import { PostgresAttendanceRepository } from '../src/attendance/attendance-repository.ts';
 import { AttendanceService, REPLAY_FIELDS } from '../src/attendance/attendance.service.ts';
+import { PrismaService } from '../src/common/prisma.service.ts';
+import { loadAttendancePolicy } from '../src/admin/policy-store.ts';
 
 const ORG = '5c5c0000-0000-4000-8000-000000000001';
 const TEAM = '5c5c0000-0000-4000-8000-000000000101';
@@ -152,5 +154,53 @@ describe('Work schedules in the compliance engine (FR-ORG-005)', () => {
     const computed = Object.keys(await service.computeDailySummary(ORG, WATCH, '2026-10-16')).filter((k) => !identity.has(k));
     assert.deepEqual(computed.filter((k) => !(REPLAY_FIELDS as readonly string[]).includes(k)), [], 'fields the replay would not check');
     assert.ok((REPLAY_FIELDS as readonly string[]).includes('excessBreakMinutes'));
+  });
+  describe('organisation time zone (not the built-in Asia/Colombo default)', () => {
+    const ORG_NY = '5c5c0000-0000-4000-8000-000000000002';
+    const NY_USER = '5c5c0000-0000-4000-8000-000000000021';
+    let prisma: PrismaService;
+    let nyService: AttendanceService;
+    // 09:00-18:00 New York time on Wednesday 14 October 2026 (EDT, UTC-4).
+    const nyAt = (hhmm: string, date = '2026-10-14') => new Date(`${date}T${hhmm}:00-04:00`);
+    const nySession = (inLocal: string, outLocal: string, date = '2026-10-14'): AttendanceSession => {
+      const clockInAt = nyAt(inLocal, date);
+      const clockOutAt = nyAt(outLocal, date);
+      const span = (clockOutAt.getTime() - clockInAt.getTime()) / 1000;
+      return { ...session(NY_USER, date, '09:00', '18:00'), orgId: ORG_NY, workDate: date, clockInAt, clockOutAt, lastHeartbeatAt: clockOutAt, activeSeconds: span, netSeconds: span };
+    };
+
+    before(async () => {
+      await adminPool.query(`DELETE FROM organizations WHERE id = $1`, [ORG_NY]);
+      await adminPool.query(`INSERT INTO organizations (id, name, slug, timezone) VALUES ($1, 'New York Ltd', 'schedule-compliance-ny', 'America/New_York')`, [ORG_NY]);
+      await adminPool.query(`INSERT INTO users (id, org_id, email, role) VALUES ($1, $2, 'ny@sched.test', 'EMPLOYEE')`, [NY_USER, ORG_NY]);
+      await repo.saveWorkSchedule({ id: crypto.randomUUID(), orgId: ORG_NY, flexible: false, graceMinutes: 10, days: weekdays(NINE_TO_SIX), effectiveFrom: '2026-01-01' });
+      prisma = new PrismaService();
+      await prisma.onModuleInit();
+      nyService = new AttendanceService({}, new FixedClock(new Date('2026-10-14T23:00:00Z')), repo, ORG_NY);
+      nyService.setPolicyProvider((orgId) => loadAttendancePolicy(prisma, orgId));
+    });
+
+    after(async () => {
+      await prisma?.onModuleDestroy();
+      await repo.clearAll(ORG_NY);
+      await adminPool.query(`DELETE FROM organizations WHERE id = $1`, [ORG_NY]);
+    });
+
+    it('takes the organisation\'s time zone from its settings', async () => {
+      assert.equal(await nyService.timeZoneOf(ORG_NY), 'America/New_York');
+    });
+
+    it('judges a 09:00-18:00 New York day by New York time: on time, no early leave, no overtime', async () => {
+      const day = await nyService.computeScheduleCompliance({ orgId: ORG_NY, userId: NY_USER, workDate: '2026-10-14', sessions: [nySession('09:00', '18:00')] });
+      assert.equal(day.lateArrivalMinutes, 0);
+      assert.equal(day.earlyLeaveMinutes, 0);
+      assert.equal(day.expectedSeconds, 8 * 3600);
+      assert.deepEqual(day.flags.filter((f) => f !== 'OVERTIME'), []);
+    });
+
+    it('a 09:25 arrival is 25 minutes late in New York time', async () => {
+      const day = await nyService.computeScheduleCompliance({ orgId: ORG_NY, userId: NY_USER, workDate: '2026-10-14', sessions: [nySession('09:25', '18:00')] });
+      assert.equal(day.lateArrivalMinutes, 25);
+    });
   });
 });

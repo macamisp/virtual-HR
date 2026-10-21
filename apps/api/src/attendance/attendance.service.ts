@@ -859,7 +859,7 @@ export class AttendanceService {
     }
 
     // 5. Reject overlap with another active/closed session of the user
-    const workDate = formatInTimeZone(params.requestedIn, this.config.orgTimezone, 'yyyy-MM-dd');
+    const workDate = formatInTimeZone(params.requestedIn, await this.timeZoneOf(params.orgId), 'yyyy-MM-dd');
     const existingSessions = await this.repository.findSessionsByDate(params.orgId, workDate);
     const userSessions = existingSessions.filter((s: AttendanceSession) => s.userId === params.userId);
 
@@ -968,7 +968,7 @@ export class AttendanceService {
       }
 
       const durationSec = Math.floor((correction.requestedOut.getTime() - correction.requestedIn.getTime()) / 1000);
-      const workDate = formatInTimeZone(correction.requestedIn, this.config.orgTimezone, 'yyyy-MM-dd');
+      const workDate = formatInTimeZone(correction.requestedIn, await this.timeZoneOf(params.orgId), 'yyyy-MM-dd');
 
       adjustedSession = {
         id: randomUUID(),
@@ -1013,8 +1013,9 @@ export class AttendanceService {
       });
 
       // Recompute attendance_daily for the affected date(s)
-      const workDateIn = formatInTimeZone(correction.requestedIn, this.config.orgTimezone, 'yyyy-MM-dd');
-      const workDateOut = formatInTimeZone(correction.requestedOut, this.config.orgTimezone, 'yyyy-MM-dd');
+      const orgTz = await this.timeZoneOf(params.orgId);
+      const workDateIn = formatInTimeZone(correction.requestedIn, orgTz, 'yyyy-MM-dd');
+      const workDateOut = formatInTimeZone(correction.requestedOut, orgTz, 'yyyy-MM-dd');
       const affectedDates = new Set([workDateIn, workDateOut]);
       for (const d of affectedDates) {
         await this.recomputeDailySummaryForUser(params.orgId, correction.userId, d);
@@ -1087,6 +1088,7 @@ export class AttendanceService {
       : false;
 
     const actualSeconds = params.sessions.reduce((sum, s) => sum + s.netSeconds, 0);
+    const orgTimezone = await this.timeZoneOf(params.orgId);
 
     // If holiday or approved leave: expected hours = 0, no absence or late flags
     if (isHoliday || isOnLeave) {
@@ -1112,8 +1114,8 @@ export class AttendanceService {
       : null;
 
     // Determine day of week in org timezone: 1 = Monday ... 7 = Sunday
-    const middayUtc = fromZonedTime(`${params.workDate} 12:00:00`, this.config.orgTimezone);
-    const dayOfWeek = formatInTimeZone(middayUtc, this.config.orgTimezone, 'i');
+    const middayUtc = fromZonedTime(`${params.workDate} 12:00:00`, orgTimezone);
+    const dayOfWeek = formatInTimeZone(middayUtc, orgTimezone, 'i');
 
     const dayConfig = schedule?.days ? schedule.days[dayOfWeek] : null;
     const isWorkingDay = dayConfig != null;
@@ -1144,11 +1146,11 @@ export class AttendanceService {
 
       const scheduledStartUtc = fromZonedTime(
         `${params.workDate} ${dayConfig.start}:00`,
-        this.config.orgTimezone,
+        orgTimezone,
       );
       const scheduledEndUtc = fromZonedTime(
         `${params.workDate} ${dayConfig.end}:00`,
-        this.config.orgTimezone,
+        orgTimezone,
       );
 
       // Late arrival: clockIn > scheduledStart + graceMinutes
@@ -1389,7 +1391,7 @@ export class AttendanceService {
 
     const users = await this.repository.findAllUsers(params.orgId, targetTeamId);
     const openSessions = await this.repository.findAllOpenSessions(params.orgId);
-    const todayStr = formatInTimeZone(this.clock.now(), this.config.orgTimezone, 'yyyy-MM-dd');
+    const todayStr = formatInTimeZone(this.clock.now(), await this.timeZoneOf(params.orgId), 'yyyy-MM-dd');
     const todaySessions = (await this.repository.findSessionsByDate(params.orgId, todayStr))
       .filter((s) => s.status !== SessionStatus.ADJUSTED && s.status !== SessionStatus.CANCELLED);
     const clockedInToday = new Set(todaySessions.map((s) => s.userId));
@@ -1714,7 +1716,7 @@ export class AttendanceService {
   public async getMyToday(orgId: string, userId: string): Promise<MyToday> {
     if (!this.repository) throw new Error('Repository is required for getMyToday');
     const now = this.clock.now();
-    const workDate = formatInTimeZone(now, this.config.orgTimezone, 'yyyy-MM-dd');
+    const workDate = formatInTimeZone(now, await this.timeZoneOf(orgId), 'yyyy-MM-dd');
     const open = await this.repository.findOpenSessionByUserId(orgId, userId);
     const today = (await this.repository.findSessionsByUserInRange(orgId, userId, workDate, workDate))
       .filter(AttendanceService.countsTowardDay)
