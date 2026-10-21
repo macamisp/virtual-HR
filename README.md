@@ -54,3 +54,56 @@ docs           requirements, decisions, runbooks, security and verification note
 ```
 
 Working rules for contributors and AI agents are in [AGENTS.md](AGENTS.md). Secrets never go in the repository: use `.env` (ignored by git); `.env.example` lists every setting.
+.
+.
+virtual-HR/
+├── apps/
+│   ├── api/                         ← BACKEND (NestJS, TypeScript)
+│   │   ├── prisma/
+│   │   │   ├── schema.prisma        ← database tables (Prisma)
+│   │   │   └── migrations/          ← versioned SQL (RLS, roles, grants)
+│   │   ├── src/
+│   │   │   ├── main.ts              ← server start
+│   │   │   ├── auth/                ← login, 2FA, refresh, invitations, password reset
+│   │   │   ├── users/ org/ ...      ← people, teams, contracts, schedules
+│   │   │   ├── attendance/          ← heartbeat engine, state machine, reconciler,
+│   │   │   │                          corrections, live board, exports, gateway (Socket.IO)
+│   │   │   ├── tasks/ timesheets/   ← daily plan, planner, timers, approvals
+│   │   │   ├── documents/           ← uploads, versions, ACL, vault, access log
+│   │   │   ├── meetings/ office/    ← LiveKit tokens, webhooks, rooms, avatars
+│   │   │   ├── notifications/ audit/
+│   │   │   └── prisma.service.ts    ← DB connection + RLS org context
+│   │   └── test/                    ← API tests, demo scripts (demo.ts, demo-shell.ts, seeds)
+│   │
+│   └── web/                         ← FRONTEND (Next.js 15, React 19)
+│       ├── src/
+│       │   ├── app/
+│       │   │   ├── (auth)/          ← login, 2fa/setup, accept-invitation, forgot/reset password
+│       │   │   └── (app)/           ← attendance, live, corrections, documents, meetings,
+│       │   │                          office, tasks, timesheets, contracts ...
+│       │   ├── components/          ← ui/ (shadcn), media/ (prejoin.tsx, call-view.tsx), app-shell
+│       │   ├── lib/                 ← api.ts, auth-store.ts, session.ts, queries.ts,
+│       │   │                          media/media-session.ts, office/office-renderer.ts (PixiJS)
+│       │   └── heartbeat/           ← Web Worker (heartbeat.worker.ts), presence-store
+│       ├── e2e/                     ← Playwright browser tests (login, clock-in, call, office ...)
+│       ├── next.config.mjs          ← security headers (CSP)
+│       └── playwright.config.ts
+│
+├── packages/
+│   └── shared/src/                  ← code shared by web + api
+│       ├── attendance/api.ts        ← Zod schemas (request/response shapes)
+│       ├── auth/api.ts
+│       └── attendance/heartbeat-signer.ts   ← WebCrypto HMAC signer
+│
+├── docker/ + docker-compose.yml     ← local Postgres, Redis, MinIO, ClamAV, Mailhog, LiveKit
+├── infra/                           ← LiveKit config (infra/livekit/), Terraform (AWS, not applied)
+├── load/                            ← load tests (k6/Artillery style)
+├── scripts/                         ← helper scripts
+├── docs/
+│   ├── SRS.md  STATUS.md  AGENTS.md
+│   ├── adr/                         ← decision records (001 … 035+)
+│   └── runbooks/                    ← web-local.md, uat.md, demo-internet.md
+├── .github/workflows/ci.yml         ← GitHub Actions (lint, typecheck, tests, Playwright)
+├── AGENTS.md                        ← rules for the AI agent
+├── .env.example                     ← all settings (no secrets)
+└── package.json                     ← npm workspaces + scripts (api, web, e2e, seed:demo ...)
