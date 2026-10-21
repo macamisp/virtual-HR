@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { LiveBoardEntry } from '@hrvo/shared';
+import { randomUUID } from '@/lib/uuid';
 import { API_URL, HEARTBEAT_INTERVAL_MS } from '@/lib/env';
 import { useAuthStore } from '@/lib/auth-store';
 import { logout, refreshSession } from '@/lib/session';
@@ -22,11 +23,11 @@ function deviceId(): string {
   try {
     const existing = localStorage.getItem(key);
     if (existing) return existing;
-    const created = `web-${crypto.randomUUID()}`;
+    const created = `web-${randomUUID()}`;
     localStorage.setItem(key, created);
     return created;
   } catch {
-    return `web-${crypto.randomUUID()}`;
+    return `web-${randomUUID()}`;
   }
 }
 

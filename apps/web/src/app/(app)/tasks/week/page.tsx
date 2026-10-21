@@ -1,5 +1,6 @@
 'use client';
 
+import { randomUUID } from '@/lib/uuid';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { ChevronLeft, ChevronRight, Plus, X } from 'lucide-react';
@@ -193,7 +194,7 @@ function Goals({ week }: { week: Week }) {
         <form className="flex gap-2" onSubmit={(e) => {
           e.preventDefault();
           if (!text.trim() || goals.length >= 20) return;
-          persist([...goals, { id: crypto.randomUUID(), text: text.trim(), done: false }]);
+          persist([...goals, { id: randomUUID(), text: text.trim(), done: false }]);
           setText('');
         }}>
           <Label htmlFor="new-goal" className="sr-only">New weekly goal</Label>

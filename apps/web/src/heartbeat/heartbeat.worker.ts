@@ -7,6 +7,7 @@
  * window focus, in-call). Worker timers are not throttled like background-tab timers, so the
  * cadence holds while the tab is hidden. Signing uses WebCrypto via @hrvo/shared.
  */
+import { randomUUID } from '@/lib/uuid';
 import { io, type Socket } from 'socket.io-client';
 import { signHeartbeatPayload } from '@hrvo/shared/heartbeat-signer';
 import { intervalCounters, type Credentials, type MainToWorker, type WorkerToMain } from './protocol';
@@ -54,7 +55,7 @@ async function sendHeartbeat(): Promise<void> {
         deviceId: ids!.deviceId,
         sessionId: creds!.sessionId,
         sequenceNumber,
-        nonce: crypto.randomUUID().replace(/-/g, ''),
+        nonce: randomUUID().replace(/-/g, ''),
         activeSeconds: counters.activeSeconds,
         idleSeconds: counters.idleSeconds,
         tabVisible: visible,
