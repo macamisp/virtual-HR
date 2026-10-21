@@ -21,7 +21,7 @@ const GUARDS = '__guards__';
 const PATH = 'path';
 const METHOD = 'method';
 
-interface Route { id: string; handler: Fn; controller: Function }
+interface Route { id: string; handler: Fn; controller: object }
 
 describe('Every route declares how it is protected', () => {
   let ctx: INestApplicationContext;
