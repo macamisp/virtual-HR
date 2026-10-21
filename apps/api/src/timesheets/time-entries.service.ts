@@ -198,6 +198,7 @@ export class TimeEntriesService implements OnModuleInit {
       projectId = task.projectId;
     }
     const entry = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      await this.lockUserTime(db, user.id);
       const settings = await orgSettings(db, user.orgId);
       this.assertNotFuture(dto.workDate, settings);
       if (projectId && !dto.taskId) await this.assertProjectAccess(db, user, projectId);
@@ -221,6 +222,7 @@ export class TimeEntriesService implements OnModuleInit {
   async update(user: AuthenticatedUser, entryId: string, dto: UpdateEntryDto): Promise<TimeEntry> {
     let workDate = '';
     const entry = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      await this.lockUserTime(db, user.id);
       const e = await this.ownEditableEntry(db, user, entryId);
       if (e.source !== 'MANUAL' && (dto.minutes !== undefined || dto.reason !== undefined)) {
         throw new BadRequestException('Only manual entries can change their minutes or reason');
@@ -280,6 +282,14 @@ export class TimeEntriesService implements OnModuleInit {
 
   private assertNotFuture(date: string, settings: OrgTimesheetSettings): void {
     if (date > localDate(this.now(), settings.timezone)) throw new BadRequestException('Time cannot be logged for a future day');
+  }
+
+  /**
+   * Serialises everything that changes one person's logged time (the timer uses the same lock), so
+   * the 24-hour check below and the write that follows it cannot interleave with another request.
+   */
+  private async lockUserTime(db: Db, userId: string): Promise<void> {
+    await db.query(`SELECT pg_advisory_xact_lock(hashtext('timer:' || $1::text))`, [userId]);
   }
 
   private async assertDayFits(db: Db, user: AuthenticatedUser, date: string, minutes: number, excludeId: string | null): Promise<void> {

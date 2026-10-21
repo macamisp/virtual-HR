@@ -254,6 +254,21 @@ describe('Timesheets API (FR-TS-001..006, 009, 011)', { concurrency: false }, ()
       assert.equal((await manual('emp', { workDate: lastMon, minutes: 24 * 60 + 1 })).status, 400);
     });
 
+    it('simultaneous requests cannot push a day past 24 h (adding and editing)', async () => {
+      const day = addDaysIso(lastMon, 2);
+      const adds = await Promise.all(Array.from({ length: 6 }, () => manual('emp', { workDate: day, minutes: 600 })));
+      const created = adds.filter((r) => r.status === 201);
+      assert.equal(created.length, 2, `statuses ${adds.map((r) => r.status).join(',')}: 600 min fits twice in 24 h`);
+      assert.ok(adds.filter((r) => r.status !== 201).every((r) => r.status === 400));
+      const entries = await Promise.all(created.map(async (r) => (await r.json()) as { id: string }));
+      // 2 x 600 = 1200; raising both to 800 together would be 1600. Exactly one may succeed.
+      const edits = await Promise.all(entries.map((e) => api('emp', `/time-entries/${e.id}`, { method: 'PATCH', body: { minutes: 800 } })));
+      assert.equal(edits.filter((r) => r.status === 200).length, 1, `edit statuses ${edits.map((r) => r.status).join(',')}`);
+      const total = (await adminPool.query<{ total: number }>(`SELECT COALESCE(SUM(minutes), 0)::int AS total FROM time_entries WHERE user_id = $1 AND work_date = $2::date`, [U.emp.id, day])).rows[0]!.total;
+      assert.ok(total <= 24 * 60, `day holds ${total} minutes`);
+      for (const e of entries) await api('emp', `/time-entries/${e.id}`, { method: 'DELETE' });
+    });
+
     it('is visibly manual and flagged beyond the org daily limit (default 2 h), in order', async () => {
       const first = await ok(await manual('sub', { workDate: lastMon, minutes: 90, note: 'Wireframes' }), 201, TimeEntrySchema);
       assert.equal(first.source, 'MANUAL');
