@@ -2,9 +2,10 @@
  * FR-DOC-014 e-signature routes (ADR 022). Every route needs documents.use; the service checks the
  * document level (MANAGE to request) and that the caller is a party to the request.
  */
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Query, UseGuards, UseInterceptors } from '@nestjs/common';
 import { z } from 'zod';
 import { ThrottlerGuard } from '@nestjs/throttler';
+import { DeniedAccessLogInterceptor } from './denied-access-log.interceptor.ts';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.ts';
 import { PermissionsGuard } from '../common/guards/permissions.guard.ts';
 import { CurrentUser } from '../common/decorators/current-user.decorator.ts';
@@ -23,6 +24,7 @@ const ListQuerySchema = z.object({ scope: z.enum(['to-sign', 'sent', 'document']
 
 @Controller()
 @UseGuards(ThrottlerGuard, JwtAuthGuard, PermissionsGuard)
+@UseInterceptors(DeniedAccessLogInterceptor)
 @RequirePermissions(Permission.DOCUMENTS_USE)
 export class EsignController {
   constructor(private readonly esign: EsignService) {}

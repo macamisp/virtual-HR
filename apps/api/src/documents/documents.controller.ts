@@ -14,11 +14,11 @@ import {
   Query,
   Res,
   StreamableFile,
-  UseGuards,
-} from '@nestjs/common';
+  UseGuards, UseInterceptors } from '@nestjs/common';
 import type { Response } from 'express';
 import { z } from 'zod';
 import { ThrottlerGuard } from '@nestjs/throttler';
+import { DeniedAccessLogInterceptor } from './denied-access-log.interceptor.ts';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.ts';
 import { PermissionsGuard } from '../common/guards/permissions.guard.ts';
 import { CurrentUser } from '../common/decorators/current-user.decorator.ts';
@@ -92,6 +92,7 @@ export function send(file: FileStream, kind: 'attachment' | 'inline', res: Respo
 /** FR-DOC-001..004, 009, 012, 013, 019. Every route needs documents.use; rows are checked per document. */
 @Controller('documents')
 @UseGuards(ThrottlerGuard, JwtAuthGuard, PermissionsGuard)
+@UseInterceptors(DeniedAccessLogInterceptor)
 @RequirePermissions(Permission.DOCUMENTS_USE)
 export class DocumentsController {
   constructor(

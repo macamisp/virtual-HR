@@ -1,6 +1,7 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Res, UseGuards, UseInterceptors } from '@nestjs/common';
 import type { Response } from 'express';
 import { ThrottlerGuard } from '@nestjs/throttler';
+import { DeniedAccessLogInterceptor } from './denied-access-log.interceptor.ts';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.ts';
 import { PermissionsGuard } from '../common/guards/permissions.guard.ts';
 import { CurrentUser } from '../common/decorators/current-user.decorator.ts';
@@ -20,6 +21,7 @@ import { send } from './documents.controller.ts';
 /** FR-DOC-005: re-authenticate (password or TOTP) to open confidential documents for N minutes. */
 @Controller('vault')
 @UseGuards(ThrottlerGuard, JwtAuthGuard, PermissionsGuard)
+@UseInterceptors(DeniedAccessLogInterceptor)
 @RequirePermissions(Permission.DOCUMENTS_USE)
 export class VaultController {
   constructor(private readonly vault: VaultService) {}

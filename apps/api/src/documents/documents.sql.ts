@@ -12,6 +12,17 @@ import { documentAbilities } from './document-policy.ts';
 import { PREVIEWABLE } from './sniff.ts';
 import type { FileKind } from './sniff.ts';
 
+/**
+ * Refusals that DeniedAccessLogInterceptor writes to the access log (AC-11). They answer exactly
+ * as before (404 / 403, same text) and carry the document id the caller asked for.
+ */
+export class DocumentNotVisibleError extends NotFoundException {
+  constructor(readonly documentId: string) { super('Document not found'); }
+}
+export class DocumentForbiddenError extends ForbiddenException {
+  constructor(readonly documentId: string) { super('You do not have permission for this'); }
+}
+
 export interface DocActor {
   id: string;
   role: string;
@@ -201,7 +212,7 @@ export async function loadDocument(
     params,
   );
   const row = res.rows[0];
-  if (!row || row.level < 1) throw new NotFoundException('Document not found');
-  if (row.level < need) throw new ForbiddenException('You do not have permission for this');
+  if (!row || row.level < 1) throw new DocumentNotVisibleError(id);
+  if (row.level < need) throw new DocumentForbiddenError(id);
   return row;
 }
