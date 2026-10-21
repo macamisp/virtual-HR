@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 import { generateSync } from 'otplib';
-import { ADMIN_USER, PASSWORD } from './fixtures';
+import { ADMIN_USER, PASSWORD, adminPool } from './fixtures';
 
 export async function signIn(page: Page, email: string, password = PASSWORD): Promise<void> {
   await page.goto('/login');
@@ -38,15 +38,33 @@ export function traceSockets(page: Page): void {
   });
 }
 
+const STEP_MS = 30_000;
+const usedSteps = new Map<string, number>();
+
 /**
- * A valid TOTP code that will still be valid when it arrives. The server accepts a code only inside
- * its own 30-second step (no tolerance), so a code made in a step's last seconds can expire on the
- * way: wait for a fresh step first.
+ * A valid TOTP code that has not been used yet. The server accepts one step either side of its own
+ * (clock-drift tolerance) and each code only once, newest step first (FR-AUTH-004), so the code
+ * comes from a step after the last one used: by this worker (remembered) or by anyone (read from
+ * the database). When that step is more than one ahead of the clock, wait for the clock to catch up.
  */
 export async function freshTotp(page: Page, secret: string): Promise<string> {
-  const left = 30 - (Math.floor(Date.now() / 1000) % 30);
-  if (left < 5) await page.waitForTimeout(left * 1000 + 250);
-  return generateSync({ secret });
+  const pool = adminPool();
+  let stored = -1;
+  try {
+    const res = await pool.query<{ step: string | null }>(`SELECT max(mfa_last_used_step)::text AS step FROM users WHERE mfa_secret = $1`, [secret]);
+    stored = res.rows[0]?.step ? Number(res.rows[0].step) : -1;
+  } finally {
+    await pool.end();
+  }
+  const last = Math.max(stored, usedSteps.get(secret) ?? -1);
+  const nowStep = Math.floor(Date.now() / STEP_MS);
+  let step = Math.max(nowStep, last + 1);
+  if (step > nowStep + 1) {
+    await page.waitForTimeout((step - 1) * STEP_MS - Date.now() + 250);
+    step = Math.max(Math.floor(Date.now() / STEP_MS), last + 1);
+  }
+  usedSteps.set(secret, step);
+  return generateSync({ secret, epoch: step * 30 });
 }
 
 /** The admin signs in with 2FA; waits for the code screen first so the code is not typed mid-navigation. */
