@@ -588,7 +588,7 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       okSocket.disconnect();
     });
 
-    it('refresh cookie is HttpOnly, SameSite=Strict, scoped to /auth/refresh; Secure in production', async () => {
+    it('refresh cookie is HttpOnly, SameSite=Strict, scoped to /auth/refresh; Secure in production and over HTTPS', async () => {
       const { res } = await login(U.csrf.email);
       const cookie = res.headers.getSetCookie().find((c) => c.startsWith('refreshToken='));
       assert.ok(cookie);
@@ -598,6 +598,13 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       assert.doesNotMatch(cookie, /Secure/);
       await withEnv({ NODE_ENV: 'production' }, () => {
         assert.equal(refreshCookieOptions().secure, true);
+      });
+      // Served over HTTPS (LAN proxy, docs/runbooks/lan-https.md): Secure outside production too.
+      await withEnv({ APP_WEB_URL: 'https://192.168.52.124:3443' }, () => {
+        assert.equal(refreshCookieOptions().secure, true);
+      });
+      await withEnv({ APP_WEB_URL: 'http://localhost:3000' }, () => {
+        assert.equal(refreshCookieOptions().secure, false);
       });
     });
 

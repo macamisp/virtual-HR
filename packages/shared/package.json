@@ -6,6 +6,7 @@
   "description": "Shared types, Zod schemas and browser-safe helpers for HRVO (API + web)",
   "exports": {
     ".": "./src/index.ts",
-    "./heartbeat-signer": "./src/attendance/heartbeat-signer.ts"
+    "./heartbeat-signer": "./src/attendance/heartbeat-signer.ts",
+    "./local-url": "./src/net/local-url.ts"
   }
 }

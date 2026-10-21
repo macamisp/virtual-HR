@@ -29,7 +29,8 @@
   },
   "include": [
     "apps/**/*",
-    "packages/**/*"
+    "packages/**/*",
+    "scripts/**/*.ts"
   ],
   "exclude": [
     "node_modules",

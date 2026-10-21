@@ -18,7 +18,8 @@ export class ConfiguredIoAdapter extends IoAdapter {
   override createIOServer(port: number, options?: ServerOptions) {
     const server = super.createIOServer(port, {
       ...(options as ServerOptions),
-      cors: { origin: getCorsOrigins(), credentials: true },
+      // The same allow-list as HTTP CORS, including LAN patterns (config.ts getCorsOrigins).
+      cors: { origin: (origin, cb) => cb(null, isOriginAllowed(origin)), credentials: true },
       // CORS does not apply to the websocket transport; reject disallowed browser
       // origins explicitly to prevent cross-site WebSocket hijacking.
       allowRequest: (req, callback) => callback(null, isOriginAllowed(req.headers.origin)),

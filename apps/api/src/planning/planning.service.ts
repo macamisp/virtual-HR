@@ -48,7 +48,8 @@ export class PlanningService {
   /** Today's date in the organisation's timezone (SRS 2.5: day boundaries use the org timezone). */
   async orgToday(db: Client, orgId: string, now: Date = new Date()): Promise<{ today: string; timezone: string }> {
     const res = await db.query<{ timezone: string }>(`SELECT timezone FROM organizations WHERE id = $1`, [orgId]);
-    const timezone = res.rows[0]?.timezone ?? 'Asia/Colombo';
+    // Every organisation row has a timezone (NOT NULL); UTC only if the organisation is missing.
+    const timezone = res.rows[0]?.timezone ?? 'UTC';
     return { today: formatInTimeZone(now, timezone, 'yyyy-MM-dd'), timezone };
   }
 

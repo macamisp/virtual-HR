@@ -1,0 +1,46 @@
+# LAN HTTPS reverse proxy, Caddy variant (docs/runbooks/lan-https.md; docker-compose profile
+# `lan-https`, used by `LAN_PROXY=caddy npm run lan:up`; the default is scripts/lan-proxy.ts).
+# TLS with the certificate from .lan-https/certs (issued by `npm run lan:certs`, mkcert or OpenSSL);
+# Caddy's own certificate automation is off. Every value comes from .env.lan (`npm run lan:env`).
+{
+	admin off
+	auto_https off
+	# Browsers send no SNI when the address is an IP; this certificate covers it.
+	default_sni {$LAN_HOST}
+	servers {
+		protocols h1 h2
+	}
+}
+
+(lan_tls) {
+	tls /certs/cert.pem /certs/key.pem
+}
+
+# Web app (Next.js). Its dev-mode hot reload WebSocket also goes through here as wss.
+https://:{$LAN_WEB_PORT} {
+	import lan_tls
+	reverse_proxy 127.0.0.1:{$LAN_WEB_UPSTREAM}
+}
+
+# API, including the Socket.IO heartbeat WebSocket (wss). Caddy adds X-Forwarded-For; the API
+# trusts it from loopback only (TRUST_PROXY=loopback).
+https://:{$LAN_API_PORT} {
+	import lan_tls
+	reverse_proxy 127.0.0.1:{$LAN_API_UPSTREAM}
+}
+
+# LiveKit signalling (wss). Media still flows over UDP/TCP 7881-7882 directly, not through here.
+https://:{$LAN_LIVEKIT_PORT} {
+	import lan_tls
+	reverse_proxy 127.0.0.1:{$LAN_LIVEKIT_UPSTREAM}
+}
+
+# Document storage (S3) for presigned uploads and downloads. The Host header is passed through
+# unchanged, which the presigned signature covers.
+https://:{$LAN_STORAGE_PORT} {
+	import lan_tls
+	request_body {
+		max_size 2GB
+	}
+	reverse_proxy 127.0.0.1:{$LAN_STORAGE_UPSTREAM}
+}

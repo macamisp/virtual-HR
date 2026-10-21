@@ -7,14 +7,17 @@
 import 'reflect-metadata';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { NestFactory, ModulesContainer } from '@nestjs/core';
-import type { INestApplicationContext } from '@nestjs/common';
+import { NestFactory, ModulesContainer, Reflector } from '@nestjs/core';
+import { ForbiddenException, type ExecutionContext, type INestApplicationContext } from '@nestjs/common';
 import { AppModule } from '../src/app.module.ts';
 import { IS_PUBLIC_KEY } from '../src/common/decorators/public.decorator.ts';
 import { PERMISSIONS_ANY_KEY, PERMISSIONS_KEY } from '../src/common/decorators/permissions.decorator.ts';
 import { SELF_SERVICE_KEY } from '../src/common/decorators/self-service.decorator.ts';
 import { JwtAuthGuard } from '../src/common/guards/jwt-auth.guard.ts';
 import { PermissionsGuard } from '../src/common/guards/permissions.guard.ts';
+import { PERMISSIONS_KEY as PERMS } from '../src/common/decorators/permissions.decorator.ts';
+import type { PermissionResolver } from '../src/common/permission-resolver.ts';
+import { Permission, UserRole } from '../../../packages/shared/src/index.ts';
 
 type Fn = (...args: unknown[]) => unknown;
 const GUARDS = '__guards__';
@@ -79,5 +82,44 @@ describe('Every route declares how it is protected', () => {
       return !(g.includes(JwtAuthGuard) && g.includes(PermissionsGuard));
     });
     assert.deepEqual(unguarded.map((r) => r.id), [], 'protected routes without JwtAuthGuard + PermissionsGuard');
+  });
+});
+
+/**
+ * The runtime half of the safety net: should a route ever slip through without an annotation, the
+ * guard refuses it (403) instead of letting it through, for everyone, admins included.
+ */
+describe('PermissionsGuard fails closed at runtime', () => {
+  const admin = { id: 'u1', orgId: 'o1', email: 'a@x', role: UserRole.ADMIN, permissions: [Permission.USERS_MANAGE], tokenType: 'access' };
+  const resolver = { resolve: async () => ({ role: UserRole.ADMIN, teamId: null, permissions: [Permission.USERS_MANAGE], customRoleId: null }) } as unknown as PermissionResolver;
+  const guard = new PermissionsGuard(new Reflector(), resolver);
+  const context = (handler: Fn, user?: unknown): ExecutionContext => ({
+    switchToHttp: () => ({ getRequest: () => ({ user }) }),
+    getHandler: () => handler,
+    getClass: () => class PlainController {},
+  }) as unknown as ExecutionContext;
+
+  it('an unannotated route answers 403 for a signed-in admin and for an anonymous request', async () => {
+    const unannotated = () => 'open?';
+    await assert.rejects(guard.canActivate(context(unannotated, admin)), (e: unknown) => e instanceof ForbiddenException && /no permission rule/.test((e as Error).message));
+    await assert.rejects(guard.canActivate(context(unannotated)), ForbiddenException);
+  });
+
+  it('the annotations open exactly what they say', async () => {
+    const publicRoute = () => 'public';
+    Reflect.defineMetadata(IS_PUBLIC_KEY, true, publicRoute);
+    assert.equal(await guard.canActivate(context(publicRoute)), true);
+
+    const selfService = () => 'mine';
+    Reflect.defineMetadata(SELF_SERVICE_KEY, true, selfService);
+    assert.equal(await guard.canActivate(context(selfService, admin)), true);
+
+    const guarded = () => 'settings';
+    Reflect.defineMetadata(PERMS, [Permission.USERS_MANAGE], guarded);
+    assert.equal(await guard.canActivate(context(guarded, admin)), true);
+    await assert.rejects(guard.canActivate(context(guarded)), ForbiddenException);
+    const other = () => 'other';
+    Reflect.defineMetadata(PERMS, [Permission.ORG_MANAGE], other);
+    await assert.rejects(guard.canActivate(context(other, admin)), /Insufficient permissions/);
   });
 });

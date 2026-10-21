@@ -90,6 +90,27 @@ services:
     volumes:
       - ./infra/livekit/egress.dev.yaml:/etc/egress.yaml:ro,z
 
+  # LAN HTTPS (docs/runbooks/lan-https.md), optional Caddy variant of the TLS proxy: `LAN_PROXY=caddy
+  # npm run lan:up` uses it instead of scripts/lan-proxy.ts. TLS for the web app, API, LiveKit
+  # signalling and storage with the certificate from `npm run lan:certs` (mkcert or OpenSSL).
+  lan-proxy:
+    image: caddy:2.8.4-alpine
+    profiles: ["lan-https"]
+    network_mode: host
+    environment:
+      LAN_HOST: ${LAN_HOST:?run npm run lan:up (or npm run lan:env) first}
+      LAN_WEB_PORT: ${LAN_WEB_PORT:-3443}
+      LAN_API_PORT: ${LAN_API_PORT:-3444}
+      LAN_LIVEKIT_PORT: ${LAN_LIVEKIT_PORT:-7443}
+      LAN_STORAGE_PORT: ${LAN_STORAGE_PORT:-8443}
+      LAN_WEB_UPSTREAM: ${LAN_WEB_UPSTREAM:-3000}
+      LAN_API_UPSTREAM: ${LAN_API_UPSTREAM:-3001}
+      LAN_LIVEKIT_UPSTREAM: ${LAN_LIVEKIT_UPSTREAM:-7880}
+      LAN_STORAGE_UPSTREAM: ${LAN_STORAGE_UPSTREAM:-8333}
+    volumes:
+      - ./docker/lan-https/Caddyfile:/etc/caddy/Caddyfile:ro,z
+      - ./.lan-https/certs:/certs:ro,z
+
   mailhog:
     image: mailhog/mailhog:v1.0.1
     container_name: hrvo-mailhog

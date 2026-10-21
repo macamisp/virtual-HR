@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.ts';
 import { configureApp } from './common/configure-app.ts';
-import { mfaEnforced } from './common/config.ts';
+import { listenHost, mfaEnforced } from './common/config.ts';
 
 export async function bootstrap() {
   // Throws in production; a loud reminder anywhere else.
@@ -13,8 +13,10 @@ export async function bootstrap() {
   app.enableShutdownHooks(['SIGTERM', 'SIGINT']);
 
   const port = process.env.PORT || 3001;
-  await app.listen(port);
-  console.log(`HRVO API Server running on port ${port}`);
+  // 0.0.0.0 unless HOST says otherwise: reachable from other devices on the network (docs/runbooks/lan-https.md).
+  const host = listenHost();
+  await app.listen(port, host);
+  console.log(`HRVO API Server running on ${host}:${port}`);
   return app;
 }
 
