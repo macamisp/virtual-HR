@@ -409,7 +409,9 @@ describe('Documents API (FR-DOC-001..004, 007, 009, 012, 013, 015, 019)', { conc
       assert.ok(rows.some((r) => r.user_agent === 'docs-e2e/1.0'));
       await ok(await api('emp', `/documents/${docs.policy!.id}`, { method: 'DELETE' }), 200);
       assert.equal((await api('emp', `/documents/${docs.policy!.id}`)).status, 404);
-      assert.equal((await logs(docs.policy!.id)).at(-1)?.action, 'DELETE');
+      const after = await logs(docs.policy!.id);
+      assert.deepEqual(after.slice(-2).map((r) => r.action), ['DELETE', 'ACCESS_DENIED'], 'the look at the deleted document is refused and logged (AC-11)');
+      assert.equal(after.at(-1)?.user_id, U.emp.id);
     });
 
     it('the app role can only insert and read log rows', async () => {
