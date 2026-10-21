@@ -17,3 +17,6 @@ verify-logs/
 .env.demo-internet
 infra/demo/cloudflared.yml
 .demo-internet/
+
+# LAN HTTPS (scripts/lan-https.sh): local CA, certificates, pids and logs
+.lan-https/
