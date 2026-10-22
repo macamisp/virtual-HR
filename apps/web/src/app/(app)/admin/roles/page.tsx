@@ -2,7 +2,7 @@
 
 import { useId, useMemo, useState } from 'react';
 import { Pencil, Plus, Trash2 } from 'lucide-react';
-import { CUSTOM_ROLE_BASES, PERMISSION_GROUPS, ROLE_LABEL, ROLE_PERMISSIONS } from '@hrvo/shared';
+import { CUSTOM_ROLE_BASES, PERMISSION_GROUPS, ROLE_DESCRIPTION, ROLE_LABEL, ROLE_PERMISSIONS, visibleAreas } from '@hrvo/shared';
 import type { AdminUserRow, CustomRole, Permission, UserRole } from '@hrvo/shared';
 import { EmptyState, ErrorState, LoadingState } from '@/components/state-views';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -66,6 +66,12 @@ function RoleEditor({ draft, grantable, onClose }: { draft: Draft; grantable: Pe
           </div>
           <div className="space-y-1.5"><Label htmlFor={ids.desc}>Description</Label><Textarea id={ids.desc} value={d.description} maxLength={500} rows={2} onChange={(e) => setD({ ...d, description: e.target.value })} /></div>
           <p className="text-sm text-muted-foreground" role="status">{added.length} added, {removed.length} removed compared with {ROLE_LABEL[d.baseRole]}.</p>
+          <details className="rounded border p-3" data-testid="role-preview" open>
+            <summary className="cursor-pointer text-sm font-medium">Preview: what this role can see</summary>
+            <ul className="mt-2 grid gap-1 text-sm sm:grid-cols-2">
+              {visibleAreas([...d.permissions]).map((a) => <li key={a.key} className={a.visible ? '' : 'text-muted-foreground line-through'}>{a.visible ? '✓' : '✗'} {a.label}</li>)}
+            </ul>
+          </details>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {PERMISSION_GROUPS.map((g) => (
               <fieldset key={g.group} className="rounded border p-3">
@@ -80,7 +86,7 @@ function RoleEditor({ draft, grantable, onClose }: { draft: Draft; grantable: Pe
                       <li key={i.permission}>
                         <label className="flex items-start gap-2 text-sm">
                           <input type="checkbox" className="mt-0.5" checked={on} disabled={disabled} onChange={() => toggle(i.permission)} />
-                          <span className={changed ? 'font-medium' : undefined}>{i.label}{changed ? <span className="sr-only"> (changed)</span> : null}{disabled ? <span className="text-xs text-muted-foreground"> (you do not hold this)</span> : null}</span>
+                          <span className={changed ? 'font-medium' : undefined}>{i.label}{changed ? <span className="sr-only"> (changed)</span> : null}{disabled ? <span className="text-xs text-muted-foreground"> (you do not hold this)</span> : null}<span className="block text-xs font-normal text-muted-foreground">{i.description}</span></span>
                         </label>
                       </li>
                     );
@@ -212,7 +218,7 @@ export default function RolesPage() {
           <CardContent className="space-y-2">
             {roles.data.builtIn.map((b) => (
               <details key={b.role} className="rounded border p-2">
-                <summary className="cursor-pointer text-sm font-medium">{ROLE_LABEL[b.role]} <span className="font-normal text-muted-foreground">· {b.permissions.length} permissions</span></summary>
+                <summary className="cursor-pointer text-sm font-medium">{ROLE_LABEL[b.role]} <span className="font-normal text-muted-foreground">· {b.permissions.length} permissions · {ROLE_DESCRIPTION[b.role]}</span></summary>
                 <ul className="mt-2 grid gap-x-4 text-sm sm:grid-cols-2">{b.permissions.map((p) => <li key={p}>{label(p)}</li>)}</ul>
               </details>
             ))}

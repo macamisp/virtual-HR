@@ -38,6 +38,7 @@ npm run verify                      # lint, types, API tests, browser tests, one
 | Know what is not tested automatically, and what is skipped | [docs/verification/untested-and-skipped.md](docs/verification/untested-and-skipped.md) |
 | Know the known problems and limits, in plain words | [docs/verification/known-issues.md](docs/verification/known-issues.md) |
 | Open it on a phone or another computer on your network (HTTPS, `npm run lan:up`) | [docs/runbooks/lan-https.md](docs/runbooks/lan-https.md) |
+| Let people sign in with Google (create the OAuth client) | [docs/runbooks/google-signin.md](docs/runbooks/google-signin.md) |
 | Show the product to people outside your network | [docs/runbooks/demo-internet.md](docs/runbooks/demo-internet.md) |
 | Record or review meetings (recording needs extra setup) | [docs/runbooks/meeting-recording.md](docs/runbooks/meeting-recording.md) |
 | See decisions and why they were made | [docs/adr/](docs/adr/) |
