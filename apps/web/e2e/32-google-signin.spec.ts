@@ -73,7 +73,10 @@ test.describe.serial('Sign in with Google (fake provider)', () => {
 
   test('a new visitor creates a workspace with Google and becomes its owner (2FA set-up follows); Google cannot be removed as the only method', async ({ page }) => {
     await page.goto('/signup');
+    // The Google path waits for the workspace-name step.
+    await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeDisabled();
     await page.getByLabel('Workspace name').fill('E2E Google Co');
+    await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeEnabled();
     await page.getByLabel('Your name').fill('Greta Google');
     await page.getByRole('button', { name: 'Continue with Google' }).click();
     await fakeGoogleSignIn(page, 'greta@e2e-google.test');

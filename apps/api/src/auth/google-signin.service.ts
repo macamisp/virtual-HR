@@ -7,9 +7,9 @@
  *
  * Linking rules: an existing account is linked only by its verified e-mail address; an invited
  * person's Google address must equal the invited one; nobody joins by domain unless the owner
- * enabled it (organizations.sso_auto_join_domain). Client id and secret come from the
- * environment only (GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET, shared with calendar
- * sync; the sign-in redirect URI is GOOGLE_SIGNIN_REDIRECT_URL).
+ * enabled it (organizations.sso_auto_join_domain). Client id, secret and redirect URI come from
+ * the environment only (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI; the
+ * calendar-sync names GOOGLE_OAUTH_CLIENT_ID / _SECRET are accepted as a fallback, see googleEnv).
  */
 import { BadRequestException, ConflictException, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { createHash, createPublicKey, randomBytes } from 'node:crypto';

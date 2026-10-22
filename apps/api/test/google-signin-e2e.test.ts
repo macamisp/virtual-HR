@@ -197,6 +197,8 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     assert.equal(invite.status, 201, await invite.text());
     const token = /#token=([0-9a-f]{64})/.exec([...outbox.outbox].reverse().find((m) => m.to === 'newbie@gsso.test')?.text ?? '')?.[1];
     assert.ok(token);
+    // The role comes from the invitation only: a role sent by the browser is rejected outright.
+    assert.equal((await json('/auth/google/start', { mode: 'invite', inviteToken: token, role: 'SUPER_ADMIN' })).status, 400, 'no role from the client');
     const mismatch = await callback(await start({ mode: 'invite', inviteToken: token }), { email: 'someone-else@gsso.test', sub: 'google-sub-x' });
     assert.equal(mismatch.sso, 'error');
     assert.equal(mismatch.code, 'email_mismatch');

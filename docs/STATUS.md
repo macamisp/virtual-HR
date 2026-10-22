@@ -35,7 +35,7 @@ The SRS has 151 functional requirement IDs.
 
 | Module | IDs | DONE | PARTIAL | MISSING | Missing IDs |
 | --- | ---: | ---: | ---: | ---: | --- |
-| AUTH | 12 | 6 | 4 | 2 | FR-AUTH-005, 012 |
+| AUTH | 12 | 6 | 5 | 1 | FR-AUTH-012 |
 | ORG | 12 | 5 | 5 | 2 | FR-ORG-007, 008 |
 | VO | 14 | 11 | 1 | 2 | FR-VO-011, 014 |
 | MEET | 14 | 9 | 4 | 1 | FR-MEET-014 |
@@ -241,7 +241,7 @@ ClamAV needs a few minutes after its first start to load its signatures. Until t
 **What does not work yet**
 - Everything listed under MISSING and PARTIAL in section 2. The most visible gaps:
   - no organisation administration (organisation profile, teams, schedules, onboarding and off-boarding);
-  - no SSO login (Google or Microsoft);
+  - no Microsoft sign-in (Google sign-in is done: ADR 037, docs/runbooks/google-signin.md);
   - no web push;
   - no map editor;
   - no guest links;

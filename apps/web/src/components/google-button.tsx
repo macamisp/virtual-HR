@@ -5,11 +5,14 @@ import type { GoogleStartDto } from '@hrvo/shared';
 import { Button } from '@/components/ui/button';
 import { startGoogleSignIn } from '@/lib/sso';
 
-/** "Continue with Google" (FR-AUTH-005). Disabled with an explanation when the server has no client id. */
-export function GoogleButton({ dto, label = 'Continue with Google', onError }: { dto: GoogleStartDto; label?: string; onError: (message: string) => void }) {
+/**
+ * "Continue with Google" (FR-AUTH-005). Explains itself when the server has no client id; `disabled`
+ * lets a page hold it back until its own step is complete (the signup page: the workspace name).
+ */
+export function GoogleButton({ dto, label = 'Continue with Google', onError, disabled = false }: { dto: GoogleStartDto; label?: string; onError: (message: string) => void; disabled?: boolean }) {
   const [pending, setPending] = useState(false);
   return (
-    <Button type="button" variant="outline" disabled={pending} onClick={async () => {
+    <Button type="button" variant="outline" disabled={pending || disabled} onClick={async () => {
       setPending(true);
       try {
         await startGoogleSignIn(dto);

@@ -5,6 +5,16 @@ HRVO signs people in with Google through OpenID Connect (ADR 037): authorization
 keys, and only Google-verified addresses accepted. You create the OAuth client yourself in Google
 Cloud Console; HRVO never asks for, stores or logs a Google password.
 
+## Where the values live (and where they never go)
+
+The three settings `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI` belong in
+`.env` only (git-ignored, mode 600). Never put real values in `.env.example` (placeholders only),
+in a commit, in a chat, in a ticket or in a log. The API reads them from the environment at start;
+`npm run google:check` reports whether each is present without showing it, and CI runs gitleaks
+over the whole history on every push. If a value was ever exposed, create a new client secret in
+Google Cloud Console (Credentials → the client → **Add secret**), put it in `.env`, restart the
+API and delete the old secret there.
+
 ## What to register (exact values)
 
 | | Local development | Production (pattern) |
@@ -57,8 +67,9 @@ present (never their values), and fetches Google's discovery document.
   afterwards Google's stable subject id is used.
 - **Invited person:** on the invitation page, *Continue with Google instead*. The Google address
   must equal the invited address; the role comes from the invitation, never from the browser.
-- **New visitor:** on the signup page, after entering the workspace name, *Continue with Google*
-  creates the workspace and makes them its owner; no verification e-mail is needed.
+- **New visitor:** on the signup page, *Continue with Google* stays disabled until the workspace
+  name is entered; it then creates the workspace and makes them its owner (2FA set-up follows for
+  owners). No password and no verification e-mail are needed on this path.
 - **Joining by domain** is off unless the owner switches it on under Workspace settings → Sign-in
   settings ("Let Google accounts on this domain join by themselves"); such people join as Member.
 - **2FA:** owners, admins and HR still enter their code after Google unless the owner switched
@@ -86,5 +97,15 @@ Every Google login, link and refusal is in the audit log (`LOGIN_SUCCESS_GOOGLE`
 
 `apps/api/test/google-signin-e2e.test.ts` and Playwright `32-google-signin.spec.ts` run against
 a local fake provider (`apps/api/test/support/fake-google.ts`): success, wrong state, wrong nonce,
-bad signature, expired token, wrong audience, unverified address, invitation mismatch, replayed
-code, linking and unlinking, tenant isolation. CI never contacts Google.
+bad signature, expired token, wrong audience, unverified address, invitation mismatch, a role sent
+by the client, replayed code, linking and unlinking, 2FA after Google, join-by-domain, tenant
+isolation (the owner of one workspace cannot list or open people of another). CI never contacts
+Google. Locally:
+
+```
+npm run verify -- --only=api          # all API suites, or:
+npm test -- dist/apps/api/test/google-signin-e2e.test.js
+npm run e2e -w @hrvo/web -- 31-workspace-signup.spec.ts 32-google-signin.spec.ts
+npm run google:check                  # presence of the settings + Google's discovery document
+podman run --rm -v "$PWD:/repo:ro,Z" ghcr.io/gitleaks/gitleaks:latest git /repo --redact   # or docker
+```

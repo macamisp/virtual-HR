@@ -80,8 +80,11 @@ function SignupForm() {
         </CardContent>
         <CardFooter className="flex flex-col items-stretch gap-3">
           <Button type="submit" disabled={pending}>{pending ? 'Creating workspace…' : 'Create workspace'}</Button>
-          <GoogleButton label="Continue with Google" dto={{ mode: 'signup', workspaceName: workspaceName.trim() || 'My workspace', displayName: displayName.trim() || undefined }} onError={setError} />
-          <p className="text-center text-xs text-muted-foreground">With Google, the workspace name above is used and no e-mail verification is needed.</p>
+          {/* The Google path starts only after the workspace-name step (ADR 037): the name is required, the e-mail and password fields are not. */}
+          <GoogleButton label="Continue with Google" disabled={!!nameProblem} dto={{ mode: 'signup', workspaceName: workspaceName.trim(), displayName: displayName.trim() || undefined }} onError={setError} />
+          <p className="text-center text-xs text-muted-foreground">
+            {nameProblem ? 'Enter the workspace name first to continue with Google.' : 'With Google, the workspace name above is used, no password is needed and no verification e-mail is sent.'}
+          </p>
           <Link href="/login" className="text-center text-sm text-primary underline-offset-4 hover:underline">Already have an account? Sign in</Link>
         </CardFooter>
       </form>

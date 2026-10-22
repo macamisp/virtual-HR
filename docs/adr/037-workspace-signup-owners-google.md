@@ -90,3 +90,21 @@ with the request and response contracts as Zod schemas in `packages/shared`.
 - Not in this change: billing, Microsoft sign-in, CAPTCHA widgets in the web app (the API hook is
   ready), timesheet locking on offboarding, a sessions-and-devices page (FR-AUTH-009 remains
   partial on the UI side).
+
+## Amendment 2026-10-23: Google sign-in verified end to end
+
+- **Canonical settings.** `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI`
+  are the sign-in settings; the calendar-sync names remain a fallback only. They live in `.env`
+  (git-ignored) and nowhere else: `.env.example` carries empty placeholders, the runbook and
+  `npm run google:check` print presence, never values, and no value is ever pasted into chat,
+  logs or a commit. The redirect URI and JavaScript origin to register are printed by
+  `npm run google:check` and listed in `docs/runbooks/google-signin.md`.
+- **Signup order.** On `/signup`, *Continue with Google* is disabled until the workspace name is
+  entered (the workspace-name step comes first); the e-mail and password fields are not needed on
+  the Google path. The button no longer falls back to a default workspace name.
+- **Role never from the client.** `GoogleStartDto` is strict: a `role` (or any other extra field)
+  sent with `mode: invite` is rejected with 400; the role comes from the invitation row only
+  (test added).
+- **Verified on this date** with lint, both typechecks, `google-signin-e2e.test.ts` and
+  `workspace-e2e.test.ts` (33 tests), Playwright 31 and 32 against the fake provider, a full-history
+  gitleaks scan (no leaks) and `npm run google:check` against Google's real discovery document.

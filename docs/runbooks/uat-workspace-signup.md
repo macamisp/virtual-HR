@@ -15,8 +15,9 @@ Set `MAIL_TRANSPORT=smtp` in `.env` so e-mails land in Mailhog (http://localhost
 compose); the in-memory transport keeps them inside the API process. The steps below read the
 verification and invitation links from Mailhog.
 
-Google sign-in needs `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` (docs/runbooks/google-signin.md); skip
-the Google steps otherwise.
+Google sign-in needs `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI` in `.env`
+(docs/runbooks/google-signin.md; `npm run google:check` says whether they are present); skip the
+Google steps otherwise.
 
 ## 1. Create a workspace (browser A)
 
