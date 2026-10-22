@@ -82,7 +82,8 @@ UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL;
 -- Existing super admins are the owners of their organisations (SRS 2.3: "Owner of the organisation account").
 UPDATE users SET is_owner = true WHERE role = 'SUPER_ADMIN' AND status = 'ACTIVE';
 
-ALTER TABLE users ADD CONSTRAINT users_status_check CHECK (status IN ('INVITED', 'ACTIVE', 'SUSPENDED', 'OFFBOARDED'));
+-- ANONYMISED: FR-AUD-003 (apps/api/src/privacy/anonymisation.service.ts) keeps the row as a pseudonymous key.
+ALTER TABLE users ADD CONSTRAINT users_status_check CHECK (status IN ('INVITED', 'ACTIVE', 'SUSPENDED', 'OFFBOARDED', 'ANONYMISED'));
 ALTER TABLE organizations ADD CONSTRAINT organizations_sso_auto_join_domain_check
   CHECK (sso_auto_join_domain IS NULL OR sso_auto_join_domain ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$');
 ALTER TABLE oauth_identities ADD CONSTRAINT oauth_identities_provider_check CHECK (provider IN ('GOOGLE'));

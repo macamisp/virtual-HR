@@ -37,14 +37,14 @@ test.describe.serial('Manager dashboard and reports (FR-REP-001..006, 008)', () 
     await page.goto('/reports');
     await page.getByRole('tab', { name: 'Compliance' }).click();
     const editor = page.getByTestId('compliance-requirements');
-    await editor.getByLabel('Employee: Identity').check();
+    await editor.getByLabel('Member: Identity').check();
     await editor.getByRole('button', { name: 'Save requirements' }).click();
     await expect(editor.getByRole('status')).toHaveText('Requirements saved.');
     await expect(page.getByTestId('report-table').getByRole('row').filter({ hasText: USERS.worker.name })).toContainText('Identity');
     await page.getByLabel('Only people with findings').check();
     await expect(page.getByTestId('report-table')).not.toContainText(USERS.lead.name);
     // Clean up for other runs.
-    await editor.getByLabel('Employee: Identity').uncheck();
+    await editor.getByLabel('Member: Identity').uncheck();
     await editor.getByRole('button', { name: 'Save requirements' }).click();
     await expect(editor.getByRole('status')).toHaveText('Requirements saved.');
   });

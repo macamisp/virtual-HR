@@ -109,7 +109,8 @@ export const InvitationListSchema = z.array(InvitationRowSchema);
 
 // ---------------------------------------------------------------- people (FR-ORG-009, job titles)
 
-export const USER_STATUSES = ['INVITED', 'ACTIVE', 'SUSPENDED', 'OFFBOARDED'] as const;
+/** ANONYMISED: the row stays as a pseudonymous key after FR-AUD-003 anonymisation. */
+export const USER_STATUSES = ['INVITED', 'ACTIVE', 'SUSPENDED', 'OFFBOARDED', 'ANONYMISED'] as const;
 export type UserStatus = (typeof USER_STATUSES)[number];
 
 export const UserStatusDtoSchema = z
