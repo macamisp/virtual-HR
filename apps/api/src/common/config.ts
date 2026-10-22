@@ -153,5 +153,7 @@ export function getRateLimits() {
     agentToken: { limit: intFromEnv('RATE_LIMIT_AGENT_TOKEN', 30), ttl: ttlMs },
     // ADR 023: OAuth redirects back from Google/Microsoft.
     oauth: { limit: intFromEnv('RATE_LIMIT_OAUTH', 30), ttl: ttlMs },
+    // ADR 037: self-service signup, verification links and Google sign-in starts.
+    signup: { limit: intFromEnv('RATE_LIMIT_SIGNUP', 5), ttl: ttlMs },
   };
 }

@@ -15,7 +15,7 @@ import { getRateLimits } from './config.ts';
 import { coordinationEnabled, sharedRedis } from './coordination.ts';
 import { RedisThrottlerStorage } from './redis-throttler-storage.ts';
 
-export type HttpRateLimitBucket = 'login' | 'refresh' | 'passwordReset' | 'vault' | 'share' | 'unsubscribe' | 'agentPair' | 'agentToken' | 'oauth';
+export type HttpRateLimitBucket = 'login' | 'refresh' | 'passwordReset' | 'vault' | 'share' | 'unsubscribe' | 'agentPair' | 'agentToken' | 'oauth' | 'signup';
 
 const RATE_LIMIT_KEY = 'hrvo:rateLimitBucket';
 
@@ -25,7 +25,7 @@ export function rateLimitModule() {
   return ThrottlerModule.forRootAsync({
     useFactory: () => {
       const limits = getRateLimits();
-      const buckets: HttpRateLimitBucket[] = ['login', 'refresh', 'passwordReset', 'vault', 'share', 'unsubscribe', 'agentPair', 'agentToken', 'oauth'];
+      const buckets: HttpRateLimitBucket[] = ['login', 'refresh', 'passwordReset', 'vault', 'share', 'unsubscribe', 'agentPair', 'agentToken', 'oauth', 'signup'];
       return {
         // ADR 020: one set of counters for every API task (in memory when running alone).
         ...(coordinationEnabled() ? { storage: new RedisThrottlerStorage(sharedRedis()) } : {}),

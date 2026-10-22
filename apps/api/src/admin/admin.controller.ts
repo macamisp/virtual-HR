@@ -8,6 +8,8 @@ import type { RequestContext } from '../common/decorators/request-context.decora
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.ts';
 import { Permission, RecordingSettingsSchema } from '../../../../packages/shared/src/index.ts';
 import type { AuthenticatedUser, RecordingSettings } from '../../../../packages/shared/src/index.ts';
+import { ProfileUpdateDtoSchema, UserStatusDtoSchema } from '../../../../packages/shared/src/auth/workspace.ts';
+import type { ProfileUpdateDto, UserStatusDto } from '../../../../packages/shared/src/auth/workspace.ts';
 import {
   AssignRoleDtoSchema,
   ConsentDtoSchema,
@@ -115,6 +117,34 @@ export class AdminController {
   @RequirePermissions(Permission.ROLES_MANAGE)
   assignRole(@CurrentUser() user: AuthenticatedUser, @Param('id', id) userId: string, @Body(new ZodValidationPipe(AssignRoleDtoSchema)) dto: AssignRoleDto) {
     return this.admin.assignRole(user, userId, dto);
+  }
+
+  // ---------------------------------------------------------------- ADR 037: people and effective access
+
+  @Put('admin/users/:id/status')
+  @RequirePermissions(Permission.USERS_MANAGE)
+  setStatus(@CurrentUser() user: AuthenticatedUser, @Param('id', id) userId: string, @Body(new ZodValidationPipe(UserStatusDtoSchema)) dto: UserStatusDto, @ReqContext() ctx: RequestContext) {
+    return this.admin.setStatus(user, userId, dto, ctx);
+  }
+
+  @Put('admin/users/:id/profile')
+  @RequirePermissions(Permission.USERS_MANAGE)
+  updateProfile(@CurrentUser() user: AuthenticatedUser, @Param('id', id) userId: string, @Body(new ZodValidationPipe(ProfileUpdateDtoSchema)) dto: ProfileUpdateDto, @ReqContext() ctx: RequestContext) {
+    return this.admin.updateProfile(user, userId, dto, ctx);
+  }
+
+  @Get('admin/users/:id/access')
+  @RequireAnyPermission(Permission.USERS_MANAGE, Permission.ROLES_MANAGE)
+  effectiveAccess(@CurrentUser() user: AuthenticatedUser, @Param('id', id) userId: string) {
+    return this.admin.effectiveAccess(user, userId);
+  }
+
+  /** Own display name and job title. */
+  @SelfService()
+  @Put('me/profile')
+  async updateMyProfile(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(ProfileUpdateDtoSchema)) dto: ProfileUpdateDto, @ReqContext() ctx: RequestContext) {
+    await this.admin.updateProfile(user, user.id, dto, ctx);
+    return this.admin.myAccess(user);
   }
 
   /** Any signed-in user: their own effective permissions, for the UI. */

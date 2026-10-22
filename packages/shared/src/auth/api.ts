@@ -32,6 +32,8 @@ export const LoginResponseSchema = z.union([
   SessionResponseSchema,
   z.object({ requires2fa: z.literal(true), message: z.string().optional() }),
   z.object({ requires2faSetup: z.literal(true), enrollmentToken: z.string(), message: z.string().optional() }),
+  /** ADR 037: the address belongs to several workspaces; sign in again with `workspace`. */
+  z.object({ chooseWorkspace: z.literal(true), workspaces: z.array(z.object({ slug: z.string(), name: z.string() })), message: z.string().optional() }),
 ]);
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 

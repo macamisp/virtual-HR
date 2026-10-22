@@ -3,7 +3,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkRoleDefinition, mayAssign } from '../src/admin/role-rules.ts';
+import { checkRoleDefinition, mayAssign, ownerChangeProblem } from '../src/admin/role-rules.ts';
 import { effectivePermissions, Permission, requiresMfa, ROLE_PERMISSIONS, UserRole } from '../../../packages/shared/src/auth/types.ts';
 
 const ADMIN_PERMS = ROLE_PERMISSIONS[UserRole.ADMIN];
@@ -87,5 +87,32 @@ describe('Coverage of team permissions', () => {
     assert.equal(covers([Permission.TIMESHEETS_APPROVE_ALL], Permission.TIMESHEETS_APPROVE_TEAM), true);
     assert.equal(covers([Permission.TIMESHEETS_APPROVE_TEAM], Permission.TIMESHEETS_APPROVE_ALL), false);
     assert.equal(covers([Permission.TIMESHEETS_APPROVE_ALL], Permission.ATTENDANCE_READ_TEAM), false);
+  });
+});
+
+describe('Owner protection (ADR 037)', () => {
+  it('org.owner is never part of a custom role', () => {
+    const r = checkRoleDefinition({ baseRole: UserRole.ADMIN, added: [Permission.ORG_OWNER], removed: [], grantable: [], actorIsSuperAdmin: true });
+    assert.ok('error' in r && /ownership/i.test(r.error));
+  });
+
+  it('non-owners are untouched by the owner rules; only an owner changes an owner', () => {
+    assert.equal(ownerChangeProblem({ actorIsOwner: false, targetIsOwner: false, targetIsLastOwner: false, change: 'ROLE', newRole: UserRole.EMPLOYEE }), null);
+    assert.equal(ownerChangeProblem({ actorIsOwner: false, targetIsOwner: true, targetIsLastOwner: false, change: 'STATUS', newStatus: 'SUSPENDED' })?.status, 403);
+    assert.equal(ownerChangeProblem({ actorIsOwner: true, targetIsOwner: true, targetIsLastOwner: false, change: 'ROLE', newRole: UserRole.ADMIN }), null, 'one of several owners may be demoted by an owner');
+  });
+
+  it('the last owner is never demoted, suspended, offboarded or stripped of ownership', () => {
+    for (const change of [
+      { change: 'ROLE' as const, newRole: UserRole.ADMIN },
+      { change: 'STATUS' as const, newStatus: 'SUSPENDED' },
+      { change: 'STATUS' as const, newStatus: 'OFFBOARDED' },
+      { change: 'REMOVE_OWNERSHIP' as const },
+    ]) {
+      const p = ownerChangeProblem({ actorIsOwner: true, targetIsOwner: true, targetIsLastOwner: true, ...change });
+      assert.equal(p?.status, 409, JSON.stringify(change));
+    }
+    assert.equal(ownerChangeProblem({ actorIsOwner: true, targetIsOwner: true, targetIsLastOwner: true, change: 'ROLE', newRole: UserRole.SUPER_ADMIN }), null, 'keeping the owner role is fine');
+    assert.equal(ownerChangeProblem({ actorIsOwner: true, targetIsOwner: true, targetIsLastOwner: true, change: 'STATUS', newStatus: 'ACTIVE' }), null);
   });
 });
