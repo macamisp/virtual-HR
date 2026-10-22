@@ -26,8 +26,9 @@ const PASSWORD = 'GoogleSigninPass!2026';
 const ORG = 'facade00-0000-4000-8000-000000000001';
 const SLUGS = ['google-ws', 'google-ws-2', 'gsignup'];
 const U = {
-  owner: { id: 'facade00-0000-4000-8000-000000000011', email: 'owner@gsso.test', secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' },
-  hr: { id: 'facade00-0000-4000-8000-000000000012', email: 'hr@gsso.test', secret: 'MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43U' },
+  // totp: base32 test values for the authenticator, not credentials.
+  owner: { id: 'facade00-0000-4000-8000-000000000011', email: 'owner@gsso.test', totp: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' },
+  hr: { id: 'facade00-0000-4000-8000-000000000012', email: 'hr@gsso.test', totp: 'MFRGGZDFMZTWQ2LKNNWG23TPOBYXE43U' },
   emp: { id: 'facade00-0000-4000-8000-000000000013', email: 'emp@gsso.test' },
 };
 
@@ -94,7 +95,7 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
          ($1, $2, $3, 'Omar Owner', 'SUPER_ADMIN', true, $8, 'ACTIVE', true, $4),
          ($5, $2, $6, 'Hana HR', 'HR_MANAGER', false, $8, 'ACTIVE', true, $7),
          ($9, $2, $10, 'Eve Employee', 'EMPLOYEE', false, $8, 'ACTIVE', false, NULL)`,
-      [U.owner.id, ORG, U.owner.email, U.owner.secret, U.hr.id, U.hr.email, U.hr.secret, hash, U.emp.id, U.emp.email],
+      [U.owner.id, ORG, U.owner.email, U.owner.totp, U.hr.id, U.hr.email, U.hr.totp, hash, U.emp.id, U.emp.email],
     );
     app = await NestFactory.create(AppModule, { logger: false });
     configureApp(app);
@@ -157,7 +158,7 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     assert.equal(r.refresh, null, 'no session before the code');
     const bad = await json('/auth/google/totp', { challengeToken: r.fragmentToken, code: '000000' });
     assert.equal(bad.status, 401);
-    const good = await json('/auth/google/totp', { challengeToken: r.fragmentToken, code: await freshCode(U.hr.secret) });
+    const good = await json('/auth/google/totp', { challengeToken: r.fragmentToken, code: await freshCode(U.hr.totp) });
     const goodText = await good.text();
     assert.equal(good.status, 200, goodText);
     const body = JSON.parse(goodText) as { accessToken: string; refreshToken?: string };
@@ -189,7 +190,7 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
   it('an invited person must use the invited address; a match creates the account without a password', async () => {
     const hrToken = await (async () => {
       const r = await callback(await start({ mode: 'login' }), { email: U.hr.email, sub: 'google-sub-hr' });
-      const totp = await json('/auth/google/totp', { challengeToken: r.fragmentToken, code: await freshCode(U.hr.secret) });
+      const totp = await json('/auth/google/totp', { challengeToken: r.fragmentToken, code: await freshCode(U.hr.totp) });
       return ((await totp.json()) as { accessToken: string }).accessToken;
     })();
     const invite = await json('/auth/invitations/invite', { email: 'newbie@gsso.test', role: 'EMPLOYEE' }, hrToken);
@@ -279,7 +280,7 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
 
   it('a person links Google from their profile and cannot remove their last sign-in method', async () => {
     // The owner (password + 2FA) links a Google account while signed in.
-    const login = await json('/auth/login', { email: U.owner.email, password: PASSWORD, totpCode: await freshCode(U.owner.secret) });
+    const login = await json('/auth/login', { email: U.owner.email, password: PASSWORD, totpCode: await freshCode(U.owner.totp) });
     const loginBody = JSON.parse(await login.text()) as { accessToken?: string; requires2faSetup?: boolean; enrollmentToken?: string };
     let token = loginBody.accessToken;
     if (!token) {

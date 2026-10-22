@@ -6,3 +6,7 @@
 bb008cdf9eacd2f3c75bb0aea34f3ceaa17a7eb1:.env.example:generic-api-key:141
 bb008cdf9eacd2f3c75bb0aea34f3ceaa17a7eb1:infra/terraform/modules/platform/secrets.tf:generic-api-key:85
 bb008cdf9eacd2f3c75bb0aea34f3ceaa17a7eb1:apps/api/src/meetings/recordings.service.ts:generic-api-key:54
+# c2a9280 (ADR 037): TOTP secrets of the Google sign-in test fixtures (base32 test values, never a
+# credential; the same kind the other suites use). The field is now called totp; these cover the pushed commit.
+c2a92803443e684f8d692834eed860c1a3c72584:apps/api/test/google-signin-e2e.test.ts:generic-api-key:30
+c2a92803443e684f8d692834eed860c1a3c72584:apps/api/test/google-signin-e2e.test.ts:generic-api-key:31
