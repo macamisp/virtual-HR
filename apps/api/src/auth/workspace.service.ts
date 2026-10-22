@@ -115,26 +115,44 @@ export class WorkspaceService {
     if (disposable) throw new BadRequestException(disposable);
     await this.auth.assertPasswordAcceptable(dto.password);
     const passwordHash = await argon2.hash(dto.password, ARGON2_OPTIONS);
-    const base = slugify(dto.workspaceName);
-    const orgId = randomUUID();
+    const created = await this.createWorkspace({ workspaceName: dto.workspaceName, email: dto.email, displayName: dto.displayName, passwordHash, emailVerified: false, meta });
+    await this.sendVerification(dto.email, dto.workspaceName, created.verificationToken!);
+    return {
+      success: true,
+      workspace: { name: dto.workspaceName, slug: created.slug },
+      message: 'Check your e-mail for the verification link. The workspace opens once the address is verified.',
+    };
+  }
 
-    let created: { slug: string; token: string } | null = null;
-    for (let n = 1; n <= 30 && !created; n++) {
+  /**
+   * The organisation and its owner in one transaction, under the new tenant's own RLS context.
+   * The slug is derived from the name; on a clash the next free numbered variant is used.
+   * `emailVerified` false issues a verification link (password signup); true is for addresses a
+   * provider already verified (Google), where `link` records the external identity.
+   */
+  async createWorkspace(input: {
+    workspaceName: string; email: string; displayName: string; passwordHash: string | null; emailVerified: boolean; meta: Meta;
+    link?: (db: pg.PoolClient, orgId: string, userId: string) => Promise<void>;
+  }): Promise<{ orgId: string; userId: string; slug: string; verificationToken: string | null }> {
+    const base = slugify(input.workspaceName);
+    const orgId = randomUUID();
+    for (let n = 1; n <= 30; n++) {
       const slug = n === 1 ? base : `${base}-${n}`;
       try {
-        created = await this.prisma.runWithTenantContext(orgId, async (db) => {
-          await db.query(`INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3)`, [orgId, dto.workspaceName, slug]);
+        return await this.prisma.runWithTenantContext(orgId, async (db) => {
+          await db.query(`INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3)`, [orgId, input.workspaceName, slug]);
           const user = (await db.query<{ id: string }>(
             `INSERT INTO users (org_id, email, display_name, role, is_owner, password_hash, status, email_verified_at)
-             VALUES ($1, $2, $3, 'SUPER_ADMIN', true, $4, 'ACTIVE', NULL) RETURNING id`,
-            [orgId, dto.email, dto.displayName, passwordHash],
+             VALUES ($1, $2, $3, 'SUPER_ADMIN', true, $4, 'ACTIVE', CASE WHEN $5 THEN now() ELSE NULL END) RETURNING id`,
+            [orgId, input.email, input.displayName, input.passwordHash, input.emailVerified],
           )).rows[0]!;
-          const token = await this.issueVerification(db, orgId, user.id);
+          const verificationToken = input.emailVerified ? null : await this.issueVerification(db, orgId, user.id);
+          if (input.link) await input.link(db, orgId, user.id);
           await appendAuditEntry(db, {
             orgId, actorId: user.id, action: 'WORKSPACE_CREATED', entityType: 'ORGANIZATION', entityId: orgId,
-            after: { name: dto.workspaceName, slug, ownerEmail: dto.email }, ip: meta.ip, userAgent: meta.userAgent,
+            after: { name: input.workspaceName, slug, ownerEmail: input.email, method: input.passwordHash ? 'password' : 'google' }, ip: input.meta.ip, userAgent: input.meta.userAgent,
           });
-          return { slug, token };
+          return { orgId, userId: user.id, slug, verificationToken };
         });
       } catch (err) {
         const e = err as { code?: string; constraint?: string };
@@ -142,13 +160,7 @@ export class WorkspaceService {
         throw err;
       }
     }
-    if (!created) throw new ConflictException('That workspace name is taken in too many variants; please choose another');
-    await this.sendVerification(dto.email, dto.workspaceName, created.token);
-    return {
-      success: true,
-      workspace: { name: dto.workspaceName, slug: created.slug },
-      message: 'Check your e-mail for the verification link. The workspace opens once the address is verified.',
-    };
+    throw new ConflictException('That workspace name is taken in too many variants; please choose another');
   }
 
   /** The e-mailed link: single use, 24 hours, the newest one only. Returns {success}. */

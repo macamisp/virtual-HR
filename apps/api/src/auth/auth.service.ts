@@ -63,7 +63,7 @@ export const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000; // FR-AUTH-008
 
 export type { RevokeReason };
 
-interface AuthUserRow {
+export interface AuthUserRow {
   id: string;
   org_id: string;
   email: string;
@@ -473,7 +473,7 @@ export class AuthService {
   }
 
   /** Counts a failed password or 2FA attempt toward lockout, audits it, and throws 401. */
-  private async registerFailedAttempt(
+  async registerFailedAttempt(
     user: AuthUserRow,
     action: 'LOGIN_FAILED' | '2FA_FAILED',
     meta: RequestMeta,
@@ -1050,7 +1050,40 @@ export class AuthService {
     return { success: true };
   }
 
-  private async auditUser(user: AuthUserRow, action: string, meta: RequestMeta, after?: Record<string, unknown>) {
+  // ---------------------------------------------------------------- ADR 037: used by Google sign-in
+
+  /** A person by id, in their tenant (null when missing). */
+  async loadAuthUser(orgId: string, userId: string): Promise<AuthUserRow | null> {
+    return await this.prisma.runWithTenantContext(orgId, async (client) =>
+      (await client.query<AuthUserRow>(`SELECT * FROM users WHERE id = $1`, [userId])).rows[0] ?? null);
+  }
+
+  /** The TOTP or recovery-code check, once an external identity has been verified. */
+  async verifySecondFactor(user: AuthUserRow, code: string, meta: RequestMeta): Promise<boolean> {
+    const step = user.mfa_secret ? totpStep(user.mfa_secret, code) : null;
+    const valid = step !== null && await this.prisma.runWithTenantContext(user.org_id, (client) => consumeTotpStep(client, user.id, step));
+    if (valid) return true;
+    return await this.consumeRecoveryCode(user, code, meta);
+  }
+
+  /** A new login for a person whose identity was verified by other means (Google), audited as such. */
+  async issueSessionFor(user: AuthUserRow, meta: RequestMeta, auditAction: string) {
+    return await this.prisma.runWithTenantContext(user.org_id, async (client) => {
+      await client.query(`UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`, [user.id]);
+      return await this.issueSession(client, user, meta, auditAction);
+    });
+  }
+
+  /** The short-lived token that only opens /auth/2fa/setup and /auth/2fa/verify (FR-AUTH-004). */
+  async mfaEnrollmentToken(user: AuthUserRow, meta: RequestMeta): Promise<string> {
+    await this.auditUser(user, '2FA_ENROLLMENT_REQUIRED', meta);
+    return signMfaEnrollmentToken({
+      sub: user.id, orgId: user.org_id, email: user.email, role: user.role as AuthenticatedUser['role'],
+      displayName: user.display_name ?? undefined, teamId: user.team_id,
+    });
+  }
+
+  async auditUser(user: AuthUserRow, action: string, meta: RequestMeta, after?: Record<string, unknown>) {
     await this.prisma.runWithTenantContext(user.org_id, async (client) => {
       await this.recordAudit(client, {
         orgId: user.org_id,

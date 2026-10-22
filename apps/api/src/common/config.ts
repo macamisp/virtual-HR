@@ -117,7 +117,7 @@ export const REFRESH_COOKIE_PATH = '/auth/refresh';
 export const CSRF_HEADER = 'x-hrvo-csrf';
 
 /** The web app is served over HTTPS (production, or the LAN proxy in docs/runbooks/lan-https.md). */
-function servedOverHttps(): boolean {
+export function servedOverHttps(): boolean {
   return isProduction() || /^https:\/\//i.test(process.env.APP_WEB_URL ?? '');
 }
 

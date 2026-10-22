@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Query,
   Post,
   Body,
   Req,
@@ -18,6 +19,7 @@ import type { Request, Response } from 'express';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service.ts';
 import { WorkspaceService } from './workspace.service.ts';
+import { GoogleSignInService, OAUTH_COOKIE, OAUTH_COOKIE_PATH } from './google-signin.service.ts';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.ts';
 import { PermissionsGuard } from '../common/guards/permissions.guard.ts';
 import { Public } from '../common/decorators/public.decorator.ts';
@@ -43,6 +45,8 @@ import {
   WorkspaceSignupDtoSchema,
   VerifyEmailDtoSchema,
   ResendVerificationDtoSchema,
+  GoogleStartDtoSchema,
+  GoogleTotpDtoSchema,
 } from '../../../../packages/shared/src/index.ts';
 import type {
   LoginDto,
@@ -55,6 +59,8 @@ import type {
   WorkspaceSignupDto,
   VerifyEmailDto,
   ResendVerificationDto,
+  GoogleStartDto,
+  GoogleTotpDto,
 } from '../../../../packages/shared/src/index.ts';
 import { SelfService } from '../common/decorators/self-service.decorator.ts';
 
@@ -82,7 +88,7 @@ function moveRefreshTokenToCookie<T extends object>(res: Response, result: T): O
 @Controller('auth')
 @UseGuards(ThrottlerGuard, JwtAuthGuard, PermissionsGuard)
 export class AuthController {
-  constructor(private readonly authService: AuthService, private readonly workspaces: WorkspaceService) {}
+  constructor(private readonly authService: AuthService, private readonly workspaces: WorkspaceService, private readonly google: GoogleSignInService) {}
 
   // ---------------------------------------------------------------- ADR 037: self-service workspaces
 
@@ -113,6 +119,44 @@ export class AuthController {
   @UsePipes(new ZodValidationPipe(ResendVerificationDtoSchema))
   async resendVerification(@Body() dto: ResendVerificationDto) {
     return await this.workspaces.resendVerification(dto);
+  }
+
+  // ---------------------------------------------------------------- FR-AUTH-005: sign in with Google
+
+  /** Returns Google's authorization URL; the state, nonce and PKCE verifier go into a signed cookie. */
+  @Public()
+  @Post('google/start')
+  @RateLimit('signup')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(GoogleStartDtoSchema))
+  googleStart(@Body() dto: GoogleStartDto, @Res({ passthrough: true }) res: Response) {
+    const r = this.google.start(dto);
+    res.cookie(r.cookie.name, r.cookie.value, r.cookie.options);
+    return { authorizeUrl: r.authorizeUrl };
+  }
+
+  /** Google redirects here; the browser is sent on to the web app with the outcome. */
+  @Public()
+  @Get('google/callback')
+  @RateLimit('oauth')
+  async googleCallback(@Query() q: Record<string, unknown>, @Req() req: Request, @Res() res: Response): Promise<void> {
+    const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+    const [ip, userAgent] = requestMeta(req);
+    const cookie: unknown = req.cookies?.[OAUTH_COOKIE];
+    const r = await this.google.callback({ code: str(q.code), state: str(q.state), error: str(q.error) }, typeof cookie === 'string' ? cookie : undefined, { ip, userAgent });
+    res.clearCookie(OAUTH_COOKIE, { path: OAUTH_COOKIE_PATH });
+    if (r.refreshToken) res.cookie(REFRESH_COOKIE_NAME, r.refreshToken, { ...refreshCookieOptions(), maxAge: REFRESH_MAX_AGE_MS });
+    res.redirect(302, r.redirect);
+  }
+
+  @Public()
+  @Post('google/totp')
+  @RateLimit('login')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(GoogleTotpDtoSchema))
+  async googleTotp(@Body() dto: GoogleTotpDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const [ip, userAgent] = requestMeta(req);
+    return moveRefreshTokenToCookie(res, await this.google.completeTotp(dto, { ip, userAgent }));
   }
 
   // ---------------------------------------------------------------- FR-AUTH-001 invitations
