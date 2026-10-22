@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AdminUserRowSchema,
   EffectiveAccessSchema,
+  GoogleStartResponseSchema,
+  MessageResponseSchema,
   InvitationListSchema,
   InvitationRowSchema,
   MyAccessSchema,
@@ -117,4 +119,24 @@ export function useDecideTransfer() {
 export function useRemoveOwner() {
   const done = useOwnershipInvalidation();
   return useMutation({ mutationFn: ({ userId, proof }: { userId: string; proof: { password?: string; totpCode?: string } }) => apiFetch(`/org/owners/${encodeURIComponent(userId)}/remove`, { method: 'POST', body: proof, schema: z.object({ removed: z.literal(true) }) }), onSuccess: done });
+}
+
+// ---------------------------------------------------------------- sign-in methods (FR-AUTH-005)
+
+/** Starts linking Google to the signed-in account; the browser goes to Google and comes back to the profile. */
+export function useLinkGoogle() {
+  return useMutation({
+    mutationFn: async () => {
+      const r = await apiFetch('/auth/google/link', { method: 'POST', body: {}, schema: GoogleStartResponseSchema });
+      window.location.assign(r.authorizeUrl);
+    },
+  });
+}
+
+export function useUnlinkGoogle() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiFetch('/auth/google/link', { method: 'DELETE', schema: MessageResponseSchema }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: adminKeys.access }); },
+  });
 }

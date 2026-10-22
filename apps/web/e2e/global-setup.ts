@@ -9,7 +9,8 @@ export default async function globalSetup(): Promise<void> {
   try {
     await pool.query(`DELETE FROM organizations WHERE id = $1 OR slug = $2`, [ORG_ID, ORG_SLUG]);
     // Workspaces created by the signup flow (spec 31).
-    await pool.query(`DELETE FROM organizations WHERE slug LIKE 'e2e-signup-co%'`);
+    await pool.query(`DELETE FROM organizations WHERE slug LIKE 'e2e-signup-co%' OR slug LIKE 'e2e-google-co%'`);
+    await pool.query(`DELETE FROM invitations WHERE org_id = $1`, [ORG_ID]);
     // The shortest grace and silence windows SRS 6.4 allows, so the accuracy spec (23) can watch a
     // tab close and a network loss end a session within the test's time budget.
     await pool.query(`INSERT INTO organizations (id, name, slug, timezone, att_disconnect_grace_seconds, att_missed_heartbeat_seconds) VALUES ($1, 'Web E2E Ltd', $2, 'Asia/Colombo', 30, 60)`, [ORG_ID, ORG_SLUG]);

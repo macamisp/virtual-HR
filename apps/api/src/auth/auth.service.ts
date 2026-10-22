@@ -539,14 +539,15 @@ export class AuthService {
     user: Pick<AuthUserRow, 'id' | 'org_id' | 'email' | 'display_name' | 'role' | 'team_id'>,
     meta: RequestMeta,
     auditAction: string,
+    method: 'PASSWORD' | 'GOOGLE' | 'AGENT' = 'PASSWORD',
   ) {
     const sessionId = randomUUID();
     const familyId = randomUUID();
     const refreshToken = randomBytes(32).toString('hex');
 
     await client.query(
-      `INSERT INTO auth_sessions (id, org_id, user_id, family_id, refresh_token_hash, expires_at, ip, user_agent)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      `INSERT INTO auth_sessions (id, org_id, user_id, family_id, refresh_token_hash, expires_at, ip, user_agent, login_method)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         sessionId,
         user.org_id,
@@ -556,6 +557,7 @@ export class AuthService {
         new Date(Date.now() + REFRESH_TTL_MS),
         meta.ip || null,
         meta.userAgent || null,
+        method,
       ],
     );
 
@@ -581,7 +583,7 @@ export class AuthService {
       action: auditAction,
       entityType: 'SESSION',
       entityId: sessionId,
-      after: { role: user.role, ip: meta.ip },
+      after: { role: user.role, ip: meta.ip, method },
       ip: meta.ip,
       userAgent: meta.userAgent,
     });
@@ -608,7 +610,7 @@ export class AuthService {
     user: Pick<AuthUserRow, 'id' | 'org_id' | 'email' | 'display_name' | 'role' | 'team_id'>,
     meta: RequestMeta,
   ) {
-    return await this.issueSession(client, user, meta, 'AGENT_PAIRED_LOGIN');
+    return await this.issueSession(client, user, meta, 'AGENT_PAIRED_LOGIN', 'AGENT');
   }
 
   /** ADR 018: revoking a desktop agent revokes its session family (sockets are dropped via hrvo_auth_events). */
@@ -691,8 +693,8 @@ export class AuthService {
       const newRefreshToken = randomBytes(32).toString('hex');
 
       await client.query(
-        `INSERT INTO auth_sessions (id, org_id, user_id, family_id, refresh_token_hash, expires_at, ip, user_agent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        `INSERT INTO auth_sessions (id, org_id, user_id, family_id, refresh_token_hash, expires_at, ip, user_agent, login_method)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, (SELECT login_method FROM auth_sessions WHERE id = $9))`,
         [
           newSessionId,
           session.org_id,
@@ -702,6 +704,7 @@ export class AuthService {
           new Date(Date.now() + REFRESH_TTL_MS),
           ip || null,
           userAgent || null,
+          session.id,
         ],
       );
 
@@ -1067,10 +1070,10 @@ export class AuthService {
   }
 
   /** A new login for a person whose identity was verified by other means (Google), audited as such. */
-  async issueSessionFor(user: AuthUserRow, meta: RequestMeta, auditAction: string) {
+  async issueSessionFor(user: AuthUserRow, meta: RequestMeta, auditAction: string, method: 'PASSWORD' | 'GOOGLE' = 'GOOGLE') {
     return await this.prisma.runWithTenantContext(user.org_id, async (client) => {
       await client.query(`UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`, [user.id]);
-      return await this.issueSession(client, user, meta, auditAction);
+      return await this.issueSession(client, user, meta, auditAction, method);
     });
   }
 

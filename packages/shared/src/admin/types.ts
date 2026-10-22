@@ -184,6 +184,8 @@ export const MyAccessSchema = z.object({
   permissions: permissionList,
   isOwner: z.boolean(),
   jobTitle: z.string().nullable(),
+  /** FR-AUTH-005: password and/or Google. */
+  signInMethods: z.object({ password: z.boolean(), google: z.boolean(), googleEmail: z.string().nullable() }),
 });
 export type MyAccess = z.infer<typeof MyAccessSchema>;
 

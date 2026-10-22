@@ -26,6 +26,7 @@ export interface ResolvedAccess {
   customRoleName: string | null;
   isOwner: boolean;
   jobTitle: string | null;
+  signInMethods: { password: boolean; google: boolean; googleEmail: string | null };
 }
 
 const TTL_MS = 30_000;
@@ -62,10 +63,13 @@ export class PermissionResolver implements OnModuleInit, OnModuleDestroy {
     const hit = this.cache.get(key);
     if (hit && Date.now() - hit.at < TTL_MS) return hit.value;
     const row = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      const res = await db.query<{ role: UserRole; team_id: string | null; status: string; mfa_enabled: boolean; is_owner: boolean; job_title: string | null; custom_role_id: string | null; name: string | null; base_role: string | null; added: string[] | null; removed: string[] | null; session_revoked: boolean | null }>(
+      const res = await db.query<{ role: UserRole; team_id: string | null; status: string; mfa_enabled: boolean; is_owner: boolean; job_title: string | null; custom_role_id: string | null; name: string | null; base_role: string | null; added: string[] | null; removed: string[] | null; session_revoked: boolean | null; login_method: string | null; mfa_for_sso: boolean; has_password: boolean; google_email: string | null }>(
         `SELECT u.role, u.team_id, u.status, u.mfa_enabled, u.is_owner, u.job_title, u.custom_role_id, r.name, r.base_role, r.added_permissions AS added, r.removed_permissions AS removed,
-                (s.is_revoked AND s.revoked_reason IS DISTINCT FROM 'ROTATED') AS session_revoked
-         FROM users u LEFT JOIN org_roles r ON r.id = u.custom_role_id
+                (s.is_revoked AND s.revoked_reason IS DISTINCT FROM 'ROTATED') AS session_revoked,
+                s.login_method, o.mfa_for_sso,
+                (u.password_hash IS NOT NULL) AS has_password,
+                (SELECT i.email FROM oauth_identities i WHERE i.user_id = u.id AND i.provider = 'GOOGLE' LIMIT 1) AS google_email
+         FROM users u JOIN organizations o ON o.id = u.org_id LEFT JOIN org_roles r ON r.id = u.custom_role_id
          LEFT JOIN auth_sessions s ON s.id = $2::uuid AND s.user_id = u.id
          WHERE u.id = $1`,
         [user.id, user.sessionId ?? null],
@@ -82,8 +86,10 @@ export class PermissionResolver implements OnModuleInit, OnModuleDestroy {
     }
     const permissions = resolvePermissions(row);
     // A role change can make 2FA mandatory (FR-AUTH-004); until it is enrolled the old token
-    // stops working and the next sign-in leads to enrolment.
-    if (requiresMfa(row.role, permissions) && !row.mfa_enabled && mfaEnforced()) {
+    // stops working and the next sign-in leads to enrolment. A Google session is exempt where the
+    // owner switched "2FA after Google" off (ADR 037): Google already verified the person.
+    const googleExempt = row.login_method === 'GOOGLE' && !row.mfa_for_sso;
+    if (requiresMfa(row.role, permissions) && !row.mfa_enabled && mfaEnforced() && !googleExempt) {
       this.cache.delete(key);
       throw new UnauthorizedException('Two-factor authentication is required for your role. Sign in again to set it up.');
     }
@@ -95,6 +101,7 @@ export class PermissionResolver implements OnModuleInit, OnModuleDestroy {
       customRoleName: row.name,
       isOwner: row.is_owner,
       jobTitle: row.job_title,
+      signInMethods: { password: row.has_password, google: row.google_email !== null, googleEmail: row.google_email },
     };
     this.cache.set(key, { at: Date.now(), value });
     return value;

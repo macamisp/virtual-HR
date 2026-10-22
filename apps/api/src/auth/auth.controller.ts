@@ -149,6 +149,26 @@ export class AuthController {
     res.redirect(302, r.redirect);
   }
 
+  /** Signed in: add Google to the account (any verified Google address the person controls). */
+  @SelfService()
+  @Post('google/link')
+  @RateLimit('signup')
+  @HttpCode(HttpStatus.OK)
+  googleLink(@CurrentUser() user: AuthenticatedUser, @Res({ passthrough: true }) res: Response) {
+    const r = this.google.start({ mode: 'link' }, { id: user.id, orgId: user.orgId });
+    res.cookie(r.cookie.name, r.cookie.value, r.cookie.options);
+    return { authorizeUrl: r.authorizeUrl };
+  }
+
+  /** Remove Google from the account; refused while it is the only sign-in method. */
+  @SelfService()
+  @Delete('google/link')
+  @HttpCode(HttpStatus.OK)
+  async googleUnlink(@CurrentUser() user: AuthenticatedUser, @Req() req: Request) {
+    const [ip, userAgent] = requestMeta(req);
+    return await this.google.unlink({ id: user.id, orgId: user.orgId }, { ip, userAgent });
+  }
+
   @Public()
   @Post('google/totp')
   @RateLimit('login')

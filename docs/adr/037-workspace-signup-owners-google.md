@@ -44,8 +44,15 @@ with the request and response contracts as Zod schemas in `packages/shared`.
    `sso_auto_join_domain`. Roles that need 2FA still answer a TOTP challenge after Google unless
    the owner switched `mfa_for_sso` off; unenrolled ones get an enrolment token. The outcome
    comes back to the web app as `?sso=ok|totp|enroll|error&code=…`, tokens in the URL fragment,
-   the session as the usual refresh cookie. Client id and secret come from the environment only
-   (`GOOGLE_OAUTH_CLIENT_ID/SECRET`, shared with calendar sync; `GOOGLE_SIGNIN_REDIRECT_URL`).
+   the session as the usual refresh cookie. Client id, secret and redirect URI come from the
+   environment only (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`; the
+   calendar-sync names are accepted as a fallback so one client can serve both). A signed-in
+   person may link or remove Google on their profile; the last sign-in method (password or
+   Google) can never be removed. Every login, link and refusal is audited where a tenant is known
+   (`GOOGLE_LOGIN_FAILED` carries the reason). `returnTo` is accepted only as a same-app path.
+   The test suites use a local fake OIDC provider (`apps/api/test/support/fake-google.ts`), also
+   started for Playwright; `npm run google:check` validates the configuration without printing
+   secrets.
 5. **Roles.** The built-in roles keep their identifiers (`SUPER_ADMIN`, `ADMIN`, `HR_MANAGER`,
    `HR`, `MANAGER`, `TEAM_LEAD`, `EMPLOYEE`, `SUBCONTRACTOR`, `INTERN`, `AUDITOR`) and their
    permission sets; their display names are now Owner, Admin, HR manager, HR, Project manager,

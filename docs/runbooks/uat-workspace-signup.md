@@ -87,9 +87,17 @@ Expected in the audit log (Administration → Audit log): `WORKSPACE_CREATED`, `
 1. Create a second workspace with the **same** e-mail address (browser B, signed out).
 2. Sign in with that address: after the password, a **Workspace** drop-down appears; pick one → **Open workspace**.
 
-## 10. Google (when configured)
+## 10. Google
 
-1. Sign-in page → **Continue with Google** with the owner's Google account (same address as the HRVO account) → back at HRVO: 2FA code → signed in. Audit: `GOOGLE_IDENTITY_LINKED`, `LOGIN_SUCCESS_GOOGLE`.
-2. Invitation page → **Continue with Google instead** with a different Google address → *uses a different e-mail address than the invitation*.
-3. Workspace settings (owner) → "Let Google accounts on this domain join by themselves" = your domain → a colleague on that domain signs in with Google without an invitation and becomes a Member.
-4. Signup page → **Continue with Google** → a workspace is created at once (no verification e-mail), 2FA setup follows.
+Create the OAuth client first: docs/runbooks/google-signin.md has the exact Google Cloud Console
+clicks (consent screen, test users, Web application client, redirect URI
+`http://localhost:3001/auth/google/callback`, JavaScript origin `http://localhost:3000`). Put the
+id, secret and redirect URI in `.env`, run `npm run google:check` (all `OK`), restart the API.
+
+1. Sign-in page → **Continue with Google** with the owner's Google account (same address as the HRVO account) → Google's account chooser → back at HRVO: 2FA code → signed in. Audit: `GOOGLE_IDENTITY_LINKED`, `LOGIN_SUCCESS_GOOGLE`.
+2. **My profile → Sign-in methods** shows *Password: set* and *Google: linked (address)*. **Remove Google** works (a password remains); **Link Google** adds it back.
+3. Invitation page → **Continue with Google instead** with a different Google address → *uses a different e-mail address than the invitation*. The invitation stays pending.
+4. Signup page → workspace name → **Continue with Google** → a workspace is created at once (no verification e-mail), 2FA setup follows. On that owner's profile, **Remove Google** is refused: *Google is your only way to sign in*.
+5. Workspace settings (owner) → "Let Google accounts on this domain join by themselves" = your domain → a colleague on that domain signs in with Google without an invitation and becomes a Member. Switch it off again.
+6. Press **Cancel** on Google's page → HRVO explains: cancelled, or the app is in Testing mode and your address is not a test user.
+7. Audit log: every attempt above is there, failures as `GOOGLE_LOGIN_FAILED` with the reason.

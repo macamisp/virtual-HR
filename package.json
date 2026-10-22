@@ -33,6 +33,7 @@
     "lan:certs": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/lan.ts certs",
     "lan:check": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/lan.ts check",
     "lan:share-ca": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/lan.ts share-ca",
+    "google:check": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/google-check.ts",
     "lan:up": "bash scripts/lan-https.sh start",
     "lan:down": "bash scripts/lan-https.sh stop"
   },

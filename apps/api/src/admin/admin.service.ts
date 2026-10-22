@@ -182,7 +182,7 @@ export class AdminService {
 
   async myAccess(user: AuthenticatedUser): Promise<MyAccess> {
     const access = await this.resolver.resolve(user);
-    return { role: access.role, customRoleName: access.customRoleName, permissions: access.permissions, isOwner: access.isOwner, jobTitle: access.jobTitle };
+    return { role: access.role, customRoleName: access.customRoleName, permissions: access.permissions, isOwner: access.isOwner, jobTitle: access.jobTitle, signInMethods: access.signInMethods };
   }
 
   async roles(user: AuthenticatedUser): Promise<RolesOverview> {

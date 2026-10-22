@@ -1,54 +1,90 @@
-# Sign in with Google: creating the OAuth client
+# Sign in with Google: creating the OAuth client and wiring it up
 
-HRVO signs people in with Google through OpenID Connect (ADR 037). One Google OAuth client serves
-both sign-in and calendar sync. Nothing works until its id and secret are in the environment.
+HRVO signs people in with Google through OpenID Connect (ADR 037): authorization code with PKCE,
+`state` and `nonce`, scopes `openid email profile` only, the ID token verified against Google's
+keys, and only Google-verified addresses accepted. You create the OAuth client yourself in Google
+Cloud Console; HRVO never asks for, stores or logs a Google password.
 
-## 1. Create the client (once per environment)
+## What to register (exact values)
 
-1. Open [Google Cloud Console → APIs & Services → Credentials](https://console.cloud.google.com/apis/credentials)
-   and pick (or create) a project.
-2. If asked, configure the **OAuth consent screen**: user type *External* (or *Internal* for a
-   Google Workspace organisation), app name "HRVO", support and developer e-mail addresses.
-   Scopes: `openid`, `email`, `profile` (sign-in). Calendar sync additionally needs
-   `calendar.events` and `calendar.freebusy` (ADR 023). While the app is in *Testing*, only the
-   listed test users can sign in; publish it for everyone else.
-3. **Create credentials → OAuth client ID → Web application.**
-   - Authorised JavaScript origins: the web app's address, e.g. `http://localhost:3000`,
-     `https://192.168.1.20:3443` (LAN HTTPS) or `https://app.example.com`.
-   - Authorised redirect URIs: the API's callback, e.g. `http://localhost:3001/auth/google/callback`,
-     and for calendar sync `http://localhost:3001/calendar/oauth/callback`. Use the exact scheme,
-     host and port that `GOOGLE_SIGNIN_REDIRECT_URL` and `CALENDAR_OAUTH_REDIRECT_URL` carry.
-4. Copy the **Client ID** and **Client secret**.
+| | Local development | Production (pattern) |
+| --- | --- | --- |
+| Authorised redirect URI | `http://localhost:3001/auth/google/callback` | `https://<api-host>/auth/google/callback` |
+| Authorised JavaScript origin | `http://localhost:3000` | `https://<web-host>` |
+| Calendar sync (ADR 023), if used | `http://localhost:3001/calendar/oauth/callback` | `https://<api-host>/calendar/oauth/callback` |
 
-## 2. Configure HRVO
+The redirect URI must equal `GOOGLE_REDIRECT_URI` in `.env` character for character (scheme,
+host, port, path, no trailing slash). Google allows plain `http://` only for `localhost`; a LAN
+address (docs/runbooks/lan-https.md) needs `https://192.168.x.x:3444/auth/google/callback`, and
+Google refuses raw IP addresses in redirect URIs, so use a name (e.g. `hrvo.local`) or a tunnel.
 
-In `.env` (never in code):
+`npm run google:check` prints these values for your `.env`, says whether the three settings are
+present (never their values), and fetches Google's discovery document.
 
-```
-GOOGLE_OAUTH_CLIENT_ID=1234567890-abc.apps.googleusercontent.com
-GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX-...
-GOOGLE_SIGNIN_REDIRECT_URL=http://localhost:3001/auth/google/callback
-APP_WEB_URL=http://localhost:3000
-```
+## Google Cloud Console, click by click
 
-Restart the API. The sign-in, signup and invitation pages show "Continue with Google"; without
-the id and secret the button explains that Google sign-in is not set up.
+1. Open https://console.cloud.google.com/ and choose or create a project (top bar → project picker → **New project**).
+2. **APIs & Services → OAuth consent screen** (in newer consoles: **Google Auth Platform → Branding**).
+   - User type: **External** (anyone with a Google account) or **Internal** (your Google Workspace only).
+   - App name `HRVO`, user support e-mail, developer contact e-mail → **Save and continue**.
+   - Scopes: add `openid`, `.../auth/userinfo.email`, `.../auth/userinfo.profile` → **Save and continue**.
+   - Test users: while the app's publishing status is **Testing**, only the addresses listed here
+     can sign in; everyone else sees *Access blocked* and HRVO shows the "cancelled or Testing mode"
+     message. Add your own address and your testers'. **Publish app** (Google Auth Platform →
+     Audience → **Publish**) when you want everyone in.
+3. **APIs & Services → Credentials → Create credentials → OAuth client ID**.
+   - Application type **Web application**, name `HRVO web`.
+   - **Authorised JavaScript origins**: add the web address (`http://localhost:3000`).
+   - **Authorised redirect URIs**: add `http://localhost:3001/auth/google/callback` (and the
+     calendar one if you use calendar sync).
+   - **Create**. Copy the **Client ID** and the **Client secret** (the secret is shown once; you
+     can create another later).
+4. In the HRVO folder, edit `.env` (not committed):
 
-## 3. Who can sign in with Google
+   ```
+   GOOGLE_CLIENT_ID=1234567890-abc.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=GOCSPX-…
+   GOOGLE_REDIRECT_URI=http://localhost:3001/auth/google/callback
+   APP_WEB_URL=http://localhost:3000
+   ```
 
-- Someone whose HRVO account has the same **verified** e-mail address as the Google account. The
-  first Google sign-in links the account; later ones use Google's stable subject.
-- Someone accepting an **invitation**: the Google address must equal the invited address.
-- Someone creating a **workspace**: they become its owner, no e-mail verification needed.
-- Anyone on a domain the owner allowed under Workspace settings → "Let Google accounts on this
-  domain join by themselves" (they join as Member). Off by default.
+5. `npm run google:check` → every line `OK`. Restart the API (`npm run api`).
 
-Owners, admins and HR still enter their 2FA code after Google unless the owner switched
-"Roles that need 2FA also need it after a Google sign-in" off.
+## Who can sign in with Google
 
-## 4. Checks
+- **Existing account:** a Google account with the same address as the HRVO account, which must be
+  verified on both sides. The first time, HRVO links the accounts (audit `GOOGLE_IDENTITY_LINKED`);
+  afterwards Google's stable subject id is used.
+- **Invited person:** on the invitation page, *Continue with Google instead*. The Google address
+  must equal the invited address; the role comes from the invitation, never from the browser.
+- **New visitor:** on the signup page, after entering the workspace name, *Continue with Google*
+  creates the workspace and makes them its owner; no verification e-mail is needed.
+- **Joining by domain** is off unless the owner switches it on under Workspace settings → Sign-in
+  settings ("Let Google accounts on this domain join by themselves"); such people join as Member.
+- **2FA:** owners, admins and HR still enter their code after Google unless the owner switched
+  "Roles that need 2FA also need it after a Google sign-in" off.
+- **Profile → Sign-in methods** shows Password and Google; Google can be linked or removed there,
+  but never as the last remaining method.
 
-- `apps/api/test/google-signin-e2e.test.ts` exercises the whole flow against a fake Google.
-- Google's error pages mean a mismatch between the redirect URI in the console and
-  `GOOGLE_SIGNIN_REDIRECT_URL`; HRVO's own outcomes come back as `?sso=error&code=…` on the sign-in
-  page with a readable message.
+Every Google login, link and refusal is in the audit log (`LOGIN_SUCCESS_GOOGLE`,
+`GOOGLE_IDENTITY_LINKED`, `GOOGLE_IDENTITY_UNLINKED`, `GOOGLE_LOGIN_FAILED` with the reason).
+
+## When something does not work
+
+| What you see | Cause and fix |
+| --- | --- |
+| Google page: *Error 400: redirect_uri_mismatch* | The redirect URI in the console differs from `GOOGLE_REDIRECT_URI`. Copy the value `npm run google:check` prints into the console (exactly). |
+| Google page: *Access blocked: HRVO has not completed the Google verification process* | The app is in Testing mode and your address is not a test user. Add it under OAuth consent screen → Test users, or publish the app. |
+| HRVO: *Google did not sign you in: you cancelled, or the app is still in Testing mode…* | You pressed Cancel at Google, or the Testing-mode case above. |
+| HRVO: *Google has not verified that e-mail address* | The Google account's address is unverified at Google. |
+| HRVO: *uses a different e-mail address than the invitation* | Sign in with the Google account of the invited address, or ask for a new invitation. |
+| HRVO: *No HRVO account uses that Google address* | Nobody with that address exists in a workspace; ask for an invitation or create a workspace. |
+| HRVO: *Google's answer could not be verified* | ID token failed verification (signature, issuer, audience, expiry or nonce). Check the client id and the server clock. |
+| HRVO: *Sign in with Google is not set up on this server* | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` missing; run `npm run google:check`. |
+
+## Tests
+
+`apps/api/test/google-signin-e2e.test.ts` and Playwright `32-google-signin.spec.ts` run against
+a local fake provider (`apps/api/test/support/fake-google.ts`): success, wrong state, wrong nonce,
+bad signature, expired token, wrong audience, unverified address, invitation mismatch, replayed
+code, linking and unlinking, tenant isolation. CI never contacts Google.

@@ -12,6 +12,9 @@ ALTER TABLE "users" ADD COLUMN "is_owner" BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE "users" ADD COLUMN "job_title" VARCHAR(100);
 ALTER TABLE "users" ADD COLUMN "email_verified_at" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;
 
+-- AlterTable: how a session was opened (PASSWORD or GOOGLE); the 2FA-after-Google policy reads it
+ALTER TABLE "auth_sessions" ADD COLUMN "login_method" VARCHAR(10) NOT NULL DEFAULT 'PASSWORD';
+
 -- AlterTable: invitations can be resent and revoked
 ALTER TABLE "invitations" ADD COLUMN "revoked_at" TIMESTAMPTZ;
 ALTER TABLE "invitations" ADD COLUMN "last_sent_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
@@ -87,6 +90,7 @@ ALTER TABLE users ADD CONSTRAINT users_status_check CHECK (status IN ('INVITED',
 ALTER TABLE organizations ADD CONSTRAINT organizations_sso_auto_join_domain_check
   CHECK (sso_auto_join_domain IS NULL OR sso_auto_join_domain ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$');
 ALTER TABLE oauth_identities ADD CONSTRAINT oauth_identities_provider_check CHECK (provider IN ('GOOGLE'));
+ALTER TABLE auth_sessions ADD CONSTRAINT auth_sessions_login_method_check CHECK (login_method IN ('PASSWORD', 'GOOGLE', 'AGENT'));
 ALTER TABLE ownership_transfers ADD CONSTRAINT ownership_transfers_status_check CHECK (status IN ('PENDING', 'ACCEPTED', 'CANCELLED', 'EXPIRED'));
 ALTER TABLE ownership_transfers ADD CONSTRAINT ownership_transfers_not_self_check CHECK (from_user_id <> to_user_id);
 

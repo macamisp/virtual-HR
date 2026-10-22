@@ -11,7 +11,7 @@
  * environment only (GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET, shared with calendar
  * sync; the sign-in redirect URI is GOOGLE_SIGNIN_REDIRECT_URL).
  */
-import { BadRequestException, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { createHash, createPublicKey, randomBytes } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import type { CookieOptions } from 'express';
@@ -38,7 +38,7 @@ const JWKS_TTL_MS = 60 * 60 * 1000;
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
-interface StatePayload { state: string; nonce: string; verifier: string; mode: GoogleSigninMode; returnTo?: string; workspace?: string; workspaceName?: string; displayName?: string; inviteToken?: string }
+interface StatePayload { state: string; nonce: string; verifier: string; mode: GoogleSigninMode; returnTo?: string; workspace?: string; workspaceName?: string; displayName?: string; inviteToken?: string; linkUserId?: string; linkOrgId?: string }
 interface IdClaims { sub: string; email: string; emailVerified: boolean; name: string | null }
 interface Meta { ip?: string; userAgent?: string }
 type Env = Record<string, string | undefined>;
@@ -50,16 +50,23 @@ function base(env: Env, name: string, fallback: string): string {
   return (v || fallback).replace(/\/$/, '');
 }
 
+/**
+ * GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI are the sign-in settings; the
+ * calendar-sync names (GOOGLE_OAUTH_CLIENT_ID / _SECRET, ADR 023) are accepted as a fallback so
+ * one OAuth client can serve both.
+ */
 export function googleEnv(env: Env = process.env) {
+  const clientId = env.GOOGLE_CLIENT_ID || env.GOOGLE_OAUTH_CLIENT_ID || '';
+  const clientSecret = env.GOOGLE_CLIENT_SECRET || env.GOOGLE_OAUTH_CLIENT_SECRET || '';
   return {
-    configured: !!(env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET),
-    clientId: env.GOOGLE_OAUTH_CLIENT_ID ?? '',
-    clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET ?? '',
+    configured: !!(clientId && clientSecret),
+    clientId,
+    clientSecret,
     authUrl: base(env, 'GOOGLE_OAUTH_AUTH_URL', 'https://accounts.google.com/o/oauth2/v2/auth'),
     tokenUrl: base(env, 'GOOGLE_OAUTH_TOKEN_URL', 'https://oauth2.googleapis.com/token'),
     jwksUrl: base(env, 'GOOGLE_OIDC_JWKS_URL', 'https://www.googleapis.com/oauth2/v3/certs'),
     issuers: [...new Set([...(env.GOOGLE_OIDC_ISSUER ? [env.GOOGLE_OIDC_ISSUER] : ['https://accounts.google.com']), 'accounts.google.com'])],
-    redirectUri: env.GOOGLE_SIGNIN_REDIRECT_URL || 'http://localhost:3001/auth/google/callback',
+    redirectUri: env.GOOGLE_REDIRECT_URI || env.GOOGLE_SIGNIN_REDIRECT_URL || 'http://localhost:3001/auth/google/callback',
     webUrl: (env.APP_WEB_URL || 'http://localhost:3000').replace(/\/$/, ''),
   };
 }
@@ -82,13 +89,15 @@ export class GoogleSignInService {
 
   // ---------------------------------------------------------------- start
 
-  start(dto: GoogleStartDto): { authorizeUrl: string; cookie: { name: string; value: string; options: CookieOptions } } {
+  start(dto: GoogleStartDto, linkFor?: { id: string; orgId: string }): { authorizeUrl: string; cookie: { name: string; value: string; options: CookieOptions } } {
     const env = googleEnv();
     if (!env.configured) throw new ServiceUnavailableException('Sign in with Google is not set up on this server');
+    if (dto.mode === 'link' && !linkFor) throw new BadRequestException('Sign in first to link a Google account');
     const { verifier, challenge } = pkcePair();
     const payload: StatePayload = {
       state: randomBytes(24).toString('base64url'), nonce: randomBytes(24).toString('base64url'), verifier, mode: dto.mode,
-      returnTo: dto.returnTo, workspace: dto.workspace, workspaceName: dto.workspaceName, displayName: dto.displayName, inviteToken: dto.inviteToken,
+      returnTo: safeReturnTo(dto.returnTo), workspace: dto.workspace, workspaceName: dto.workspaceName, displayName: dto.displayName, inviteToken: dto.inviteToken,
+      ...(dto.mode === 'link' && linkFor ? { linkUserId: linkFor.id, linkOrgId: linkFor.orgId } : {}),
     };
     const q = new URLSearchParams({
       client_id: env.clientId, redirect_uri: env.redirectUri, response_type: 'code', scope: 'openid email profile',
@@ -109,34 +118,67 @@ export class GoogleSignInService {
     } catch { st = null; }
     const fail = (code: GoogleResultCode) => ({ redirect: this.resultUrl(env.webUrl, st?.mode ?? 'login', 'error', { code }) });
     if (!st) return fail('invalid_state');
-    if (q.error) return fail(q.error === 'access_denied' ? 'denied' : 'failed');
-    if (!q.code || !q.state || q.state !== st.state) return fail('invalid_state');
+    if (q.error) {
+      // Google's own refusals. access_denied also covers an app in Testing mode whose test users
+      // do not include this address; the web app explains both.
+      await this.auditFailure(st, q.error === 'access_denied' ? 'denied' : q.error === 'redirect_uri_mismatch' ? 'redirect_uri_mismatch' : 'failed', meta);
+      return fail(q.error === 'access_denied' ? 'denied' : q.error === 'redirect_uri_mismatch' ? 'redirect_uri_mismatch' : 'failed');
+    }
+    if (!q.code || !q.state || q.state !== st.state) { await this.auditFailure(st, 'invalid_state', meta); return fail('invalid_state'); }
     if (!env.configured) return fail('not_configured');
 
-    let claims: IdClaims | null;
-    try {
-      claims = await this.exchange(env, q.code, st);
-    } catch {
-      claims = null;
-    }
-    if (!claims) return fail('failed');
-    if (!claims.emailVerified) return fail('unverified_email');
+    const claims = await this.exchange(env, q.code, st).catch(() => null);
+    if (!claims) { await this.auditFailure(st, 'token_invalid', meta); return fail('token_invalid'); }
+    if (!claims.emailVerified) { await this.auditFailure(st, 'unverified_email', meta, claims); return fail('unverified_email'); }
 
     let user: AuthUserRow | null;
     try {
       user = st.mode === 'invite' ? await this.acceptInvitation(st, claims, meta)
         : st.mode === 'signup' ? await this.signup(st, claims, meta)
+        : st.mode === 'link' ? await this.link(st, claims, meta)
         : await this.login(st, claims, meta);
     } catch (err) {
-      if (err instanceof GoogleFlowError) return fail(err.code);
+      if (err instanceof GoogleFlowError) {
+        await this.auditFailure(st, err.code, meta, claims, err.orgId, err.actorId);
+        return fail(err.code);
+      }
       throw err;
     }
     if (!user) return fail('failed');
+    if (st.mode === 'link') return { redirect: this.resultUrl(env.webUrl, 'link', 'linked', {}) };
     return await this.finish(env.webUrl, st, user, meta);
   }
 
+  /**
+   * Failures are audited wherever a tenant can be named: the signed-in person (link), the
+   * invitation's organisation (invite), the known identity or address (login). A failure before
+   * any of those is known has no tenant and only reaches the server log, without the address.
+   */
+  private async auditFailure(st: StatePayload, code: GoogleResultCode, meta: Meta, claims?: IdClaims, orgId?: string, actorId?: string): Promise<void> {
+    try {
+      let org = orgId ?? null;
+      let actor = actorId ?? null;
+      if (!org && st.mode === 'link' && st.linkOrgId && st.linkUserId) { org = st.linkOrgId; actor = st.linkUserId; }
+      if (!org && st.mode === 'invite' && st.inviteToken) {
+        const invite = (await this.prisma.getPool().query<{ org_id: string; invited_by: string }>(`SELECT * FROM fn_lookup_invitation_for_signup($1)`, [sha256(st.inviteToken)])).rows[0];
+        if (invite) { org = invite.org_id; actor = invite.invited_by; }
+      }
+      if (!org && claims) {
+        const known = (await this.prisma.getPool().query<{ org_id: string; user_id: string }>(`SELECT * FROM fn_lookup_oauth_identity('GOOGLE', $1)`, [claims.sub])).rows[0];
+        if (known) { org = known.org_id; actor = known.user_id; }
+      }
+      if (!org || !actor) { console.warn(`Google sign-in failed before a workspace was known (${st.mode}: ${code})`); return; }
+      await this.prisma.runWithTenantContext(org, (db) => appendAuditEntry(db, {
+        orgId: org!, actorId: actor!, action: 'GOOGLE_LOGIN_FAILED', entityType: 'USER', entityId: actor!,
+        after: { mode: st.mode, code, ...(claims ? { email: claims.email } : {}) }, ip: meta.ip, userAgent: meta.userAgent,
+      }));
+    } catch (err) {
+      console.error('Google sign-in failure could not be audited', err instanceof Error ? err.message : 'unknown error');
+    }
+  }
+
   private resultUrl(web: string, mode: GoogleSigninMode, sso: string, params: Record<string, string | undefined>, fragment?: string): string {
-    const path = mode === 'invite' ? '/accept-invitation' : mode === 'signup' ? '/signup' : '/login';
+    const path = mode === 'invite' ? '/accept-invitation' : mode === 'signup' ? '/signup' : mode === 'link' ? '/account/profile' : '/login';
     const q = new URLSearchParams({ sso });
     for (const [k, v] of Object.entries(params)) if (v) q.set(k, v);
     return `${web}${path}?${q.toString()}${fragment ? `#token=${fragment}` : ''}`;
@@ -226,9 +268,9 @@ export class GoogleSignInService {
 
   private async acceptInvitation(st: StatePayload, claims: IdClaims, meta: Meta): Promise<AuthUserRow> {
     const invite = (await this.prisma.getPool().query(`SELECT * FROM fn_lookup_invitation_for_signup($1)`, [sha256(st.inviteToken ?? '')])).rows[0] as
-      { id: string; org_id: string; email: string; role: string; team_id: string | null; accepted_at: Date | null; revoked_at: Date | null; expires_at: Date } | undefined;
-    if (!invite || invite.accepted_at || invite.revoked_at || new Date(invite.expires_at).getTime() < Date.now()) throw new GoogleFlowError('invitation_invalid');
-    if (invite.email.toLowerCase() !== claims.email) throw new GoogleFlowError('email_mismatch');
+      { id: string; org_id: string; email: string; role: string; team_id: string | null; invited_by: string; accepted_at: Date | null; revoked_at: Date | null; expires_at: Date } | undefined;
+    if (!invite || invite.accepted_at || invite.revoked_at || new Date(invite.expires_at).getTime() < Date.now()) throw new GoogleFlowError('invitation_invalid', invite?.org_id, invite?.invited_by);
+    if (invite.email.toLowerCase() !== claims.email) throw new GoogleFlowError('email_mismatch', invite.org_id, invite.invited_by);
     const userId = await this.prisma.runWithTenantContext(invite.org_id, async (db) => {
       const claimed = await db.query(`UPDATE invitations SET accepted_at = CURRENT_TIMESTAMP WHERE id = $1 AND accepted_at IS NULL RETURNING id`, [invite.id]);
       if (claimed.rowCount === 0) throw new GoogleFlowError('invitation_invalid');
@@ -241,6 +283,38 @@ export class GoogleSignInService {
       return id;
     });
     return (await this.auth.loadAuthUser(invite.org_id, userId))!;
+  }
+
+  /** A signed-in person adds Google to their account (any verified Google address they control). */
+  private async link(st: StatePayload, claims: IdClaims, meta: Meta): Promise<AuthUserRow> {
+    if (!st.linkOrgId || !st.linkUserId) throw new GoogleFlowError('invalid_state');
+    const user = await this.auth.loadAuthUser(st.linkOrgId, st.linkUserId);
+    if (!user || user.status !== 'ACTIVE') throw new GoogleFlowError('account_inactive', st.linkOrgId, st.linkUserId);
+    const taken = (await this.prisma.getPool().query<{ org_id: string; user_id: string }>(`SELECT * FROM fn_lookup_oauth_identity('GOOGLE', $1)`, [claims.sub])).rows[0];
+    if (taken && taken.user_id !== user.id) throw new GoogleFlowError('already_linked', user.org_id, user.id);
+    await this.prisma.runWithTenantContext(user.org_id, async (db) => {
+      await db.query(
+        `INSERT INTO oauth_identities (org_id, user_id, provider, subject, email) VALUES ($1, $2, 'GOOGLE', $3, $4)
+         ON CONFLICT (org_id, user_id, provider) DO UPDATE SET subject = EXCLUDED.subject, email = EXCLUDED.email`,
+        [user.org_id, user.id, claims.sub, claims.email]);
+      await appendAuditEntry(db, { orgId: user.org_id, actorId: user.id, action: 'GOOGLE_IDENTITY_LINKED', entityType: 'USER', entityId: user.id, after: { email: claims.email, by: 'profile' }, ip: meta.ip, userAgent: meta.userAgent });
+    });
+    this.resolver.invalidateOrg(user.org_id);
+    return user;
+  }
+
+  /** Removes Google from the account; refused when it is the only way to sign in. */
+  async unlink(user: { id: string; orgId: string }, meta: Meta): Promise<{ success: true }> {
+    await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      const row = (await db.query<{ password_hash: string | null }>(`SELECT password_hash FROM users WHERE id = $1 FOR UPDATE`, [user.id])).rows[0];
+      if (!row) throw new UnauthorizedException('Account not found');
+      if (!row.password_hash) throw new ConflictException('Google is your only way to sign in. Set a password first (Forgot your password? on the sign-in page), then remove Google.');
+      const removed = await db.query(`DELETE FROM oauth_identities WHERE user_id = $1 AND provider = 'GOOGLE'`, [user.id]);
+      if (removed.rowCount === 0) throw new ConflictException('No Google account is linked');
+      await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'GOOGLE_IDENTITY_UNLINKED', entityType: 'USER', entityId: user.id, ip: meta.ip, userAgent: meta.userAgent });
+    });
+    this.resolver.invalidateOrg(user.orgId);
+    return { success: true };
   }
 
   private async signup(st: StatePayload, claims: IdClaims, meta: Meta): Promise<AuthUserRow> {
@@ -274,8 +348,10 @@ export class GoogleSignInService {
       (await db.query<{ mfa_for_sso: boolean }>(`SELECT mfa_for_sso FROM organizations WHERE id = $1`, [user.org_id])).rows[0]))!;
     const access = await this.resolver.resolve({ id: user.id, orgId: user.org_id }).catch(() => null);
     const needsMfa = requiresMfa(user.role, access?.permissions ?? []);
+    // Enrolment, the TOTP step and the finished login all continue on the sign-in page, whatever
+    // the flow started as (signup, invitation or login): that page knows how to take them on.
     if (org.mfa_for_sso && needsMfa && !user.mfa_enabled && mfaEnforced()) {
-      return { redirect: this.resultUrl(web, st.mode, 'enroll', { returnTo: st.returnTo }, await this.auth.mfaEnrollmentToken(user, meta)) };
+      return { redirect: this.resultUrl(web, 'login', 'enroll', { returnTo: st.returnTo }, await this.auth.mfaEnrollmentToken(user, meta)) };
     }
     if (org.mfa_for_sso && user.mfa_enabled) {
       await this.auth.auditUser(user, '2FA_CHALLENGE_ISSUED', meta, { method: 'google' });
@@ -308,6 +384,13 @@ export class GoogleSignInService {
   }
 }
 
+/** Only same-app paths; never an absolute URL or a protocol-relative one (open-redirect guard). */
+export function safeReturnTo(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  if (!/^\/(?![\/\\])[\x21-\x7e]*$/.test(raw)) return undefined;
+  return raw.length > 500 ? undefined : raw;
+}
+
 class GoogleFlowError extends Error {
-  constructor(readonly code: GoogleResultCode) { super(code); this.name = 'GoogleFlowError'; }
+  constructor(readonly code: GoogleResultCode, readonly orgId?: string, readonly actorId?: string) { super(code); this.name = 'GoogleFlowError'; }
 }

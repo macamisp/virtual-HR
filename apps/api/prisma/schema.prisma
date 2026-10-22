@@ -624,6 +624,8 @@ model AuthSession {
   ip               String?  @db.VarChar(45)
   userAgent        String?  @map("user_agent") @db.Text
   expiresAt        DateTime @map("expires_at") @db.Timestamptz()
+  /// ADR 037: PASSWORD, GOOGLE or AGENT; the 2FA-after-Google setting applies to GOOGLE sessions.
+  loginMethod      String    @default("PASSWORD") @map("login_method") @db.VarChar(10)
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz()
 

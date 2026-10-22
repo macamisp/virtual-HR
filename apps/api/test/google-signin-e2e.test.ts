@@ -5,9 +5,8 @@
 import 'reflect-metadata';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
-import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
-import jwt from 'jsonwebtoken';
+import { FakeGoogle } from './support/fake-google.ts';
+import type { CodeOptions } from './support/fake-google.ts';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import argon2 from 'argon2';
@@ -32,54 +31,6 @@ const U = {
   emp: { id: 'facade00-0000-4000-8000-000000000013', email: 'emp@gsso.test' },
 };
 
-/** A minimal Google: /token checks the code, PKCE and secret; /certs publishes the key. */
-class FakeGoogle {
-  readonly keys = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  readonly kid = 'test-key-1';
-  private readonly codes = new Map<string, { challenge: string; nonce: string; email: string; sub: string; emailVerified: boolean; name: string }>();
-  tokenCalls = 0;
-  server!: http.Server;
-
-  issueCode(c: { challenge: string; nonce: string; email: string; sub: string; emailVerified?: boolean; name?: string }): string {
-    const code = randomBytes(12).toString('hex');
-    this.codes.set(code, { ...c, emailVerified: c.emailVerified ?? true, name: c.name ?? 'Google Person' });
-    return code;
-  }
-
-  async start(): Promise<void> {
-    this.server = http.createServer((req, res) => {
-      if (req.url === '/certs') {
-        const jwk = this.keys.publicKey.export({ format: 'jwk' }) as Record<string, string>;
-        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ keys: [{ ...jwk, kid: this.kid, alg: 'RS256', use: 'sig' }] }));
-        return;
-      }
-      if (req.url === '/token' && req.method === 'POST') {
-        let body = '';
-        req.on('data', (c) => { body += c; });
-        req.on('end', () => {
-          this.tokenCalls += 1;
-          const p = new URLSearchParams(body);
-          const entry = this.codes.get(p.get('code') ?? '');
-          const challenge = createHash('sha256').update(p.get('code_verifier') ?? '').digest('base64url');
-          if (!entry || p.get('grant_type') !== 'authorization_code' || p.get('client_id') !== CLIENT_ID || p.get('client_secret') !== CLIENT_SECRET || challenge !== entry.challenge) {
-            res.writeHead(400, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'invalid_grant' }));
-            return;
-          }
-          this.codes.delete(p.get('code')!);
-          const idToken = jwt.sign(
-            { sub: entry.sub, email: entry.email, email_verified: entry.emailVerified, name: entry.name, nonce: entry.nonce },
-            this.keys.privateKey, { algorithm: 'RS256', keyid: this.kid, issuer: `http://localhost:${G_PORT}`, audience: CLIENT_ID, expiresIn: 300 },
-          );
-          res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ access_token: 'ya29.fake', id_token: idToken, token_type: 'Bearer', expires_in: 3600 }));
-        });
-        return;
-      }
-      res.writeHead(404).end();
-    });
-    await new Promise<void>((r) => this.server.listen(G_PORT, '127.0.0.1', r));
-  }
-}
-
 interface Flow { cookie: string; state: string; nonce: string; challenge: string }
 
 describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, () => {
@@ -87,7 +38,7 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
   let base: string;
   let adminPool: pg.Pool;
   let outbox: InMemoryMailTransport;
-  const google = new FakeGoogle();
+  const google = new FakeGoogle(G_PORT, CLIENT_ID, CLIENT_SECRET);
 
   const json = (path: string, body: unknown, token?: string) => fetch(`${base}${path}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body),
@@ -109,8 +60,8 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     assert.match(u.searchParams.get('scope') ?? '', /openid/);
     return { cookie: cookie.split(';')[0]!, state: u.searchParams.get('state')!, nonce: u.searchParams.get('nonce')!, challenge: u.searchParams.get('code_challenge')! };
   }
-  async function callback(flow: Flow, account: { email: string; sub: string; emailVerified?: boolean; name?: string }, override: Record<string, string> = {}) {
-    const code = google.issueCode({ challenge: flow.challenge, nonce: flow.nonce, ...account });
+  async function callback(flow: Flow, account: Omit<CodeOptions, 'challenge' | 'nonce'>, override: Record<string, string> = {}) {
+    const code = override.code ?? google.issueCode({ challenge: flow.challenge, nonce: flow.nonce, ...account });
     const q = new URLSearchParams({ code, state: flow.state, ...override });
     const res = await fetch(`${base}/auth/google/callback?${q.toString()}`, { redirect: 'manual', headers: { Cookie: flow.cookie } });
     assert.equal(res.status, 302, await res.text());
@@ -131,13 +82,7 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     process.env.JOBS_ENABLED = 'false';
     process.env.AUTH_MFA_ENFORCEMENT = '';
     process.env.APP_WEB_URL = 'http://localhost:3000';
-    process.env.GOOGLE_OAUTH_CLIENT_ID = CLIENT_ID;
-    process.env.GOOGLE_OAUTH_CLIENT_SECRET = CLIENT_SECRET;
-    process.env.GOOGLE_OAUTH_AUTH_URL = `http://localhost:${G_PORT}/auth`;
-    process.env.GOOGLE_OAUTH_TOKEN_URL = `http://localhost:${G_PORT}/token`;
-    process.env.GOOGLE_OIDC_JWKS_URL = `http://localhost:${G_PORT}/certs`;
-    process.env.GOOGLE_OIDC_ISSUER = `http://localhost:${G_PORT}`;
-    process.env.GOOGLE_SIGNIN_REDIRECT_URL = `http://localhost:${PORT}/auth/google/callback`;
+    Object.assign(process.env, google.env(`http://localhost:${PORT}`));
     await google.start();
     const conn = { host: process.env.PGHOST || 'localhost', port: Number(process.env.PGPORT || 5433), database: process.env.PGDATABASE || 'hrvo_dev' };
     adminPool = new pg.Pool({ ...conn, user: process.env.PGADMIN_USER || 'postgres', password: process.env.PGADMIN_PASSWORD || 'postgres' });
@@ -160,19 +105,26 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
 
   after(async () => {
     await app?.close();
-    await new Promise<void>((r) => google.server.close(() => r()));
+    await google.stop();
     await adminPool.query(`DELETE FROM organizations WHERE id = $1 OR slug = ANY($2::text[])`, [ORG, SLUGS]);
     await adminPool.end();
   });
 
-  it('is refused while no client id and secret are configured', async () => {
-    const saved = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-    delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  it('is refused while no client id and secret are configured; only openid email profile are requested', async () => {
+    const saved = process.env.GOOGLE_CLIENT_SECRET;
+    delete process.env.GOOGLE_CLIENT_SECRET;
     try {
       assert.equal((await json('/auth/google/start', { mode: 'login' })).status, 503);
     } finally {
-      process.env.GOOGLE_OAUTH_CLIENT_SECRET = saved;
+      process.env.GOOGLE_CLIENT_SECRET = saved;
     }
+    assert.equal((await json('/auth/google/start', { mode: 'login', returnTo: '//evil.example' })).status, 400, 'no open redirect');
+    assert.equal((await json('/auth/google/start', { mode: 'login', returnTo: 'https://evil.example/' })).status, 400, 'no open redirect');
+    const res = await json('/auth/google/start', { mode: 'login', returnTo: '/tasks' });
+    const { authorizeUrl } = JSON.parse(await res.text()) as { authorizeUrl: string };
+    const u = new URL(authorizeUrl);
+    assert.equal(u.searchParams.get('scope'), 'openid email profile');
+    assert.equal(u.searchParams.get('redirect_uri'), `http://localhost:${PORT}/auth/google/callback`);
   });
 
   it('links an existing account by its verified address, then signs in by subject; the employee gets a session straight away', async () => {
@@ -302,7 +254,70 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     const other = await start({ mode: 'login' });
     const code = google.issueCode({ challenge: 'not-the-challenge', nonce: other.nonce, email: U.emp.email, sub: 'google-sub-emp' });
     const bad = await fetch(`${base}/auth/google/callback?code=${code}&state=${other.state}`, { redirect: 'manual', headers: { Cookie: other.cookie } });
-    assert.match(bad.headers.get('location') ?? '', /code=failed/);
+    assert.match(bad.headers.get('location') ?? '', /code=token_invalid/);
+  });
+
+  it('refuses a wrong nonce, a bad signature, an expired token, a wrong audience and a replayed code', async () => {
+    const emp = { email: U.emp.email, sub: 'google-sub-emp' };
+    assert.equal((await callback(await start({ mode: 'login' }), { ...emp, wrongNonce: true })).code, 'token_invalid', 'nonce');
+    assert.equal((await callback(await start({ mode: 'login' }), { ...emp, badSignature: true })).code, 'token_invalid', 'signature');
+    assert.equal((await callback(await start({ mode: 'login' }), { ...emp, expired: true })).code, 'token_invalid', 'expiry');
+    assert.equal((await callback(await start({ mode: 'login' }), { ...emp, wrongAudience: true })).code, 'token_invalid', 'audience');
+    // A code works once at Google; the state cookie is cleared after the first callback too.
+    const flow = await start({ mode: 'login' });
+    const code = google.issueCode({ challenge: flow.challenge, nonce: flow.nonce, ...emp });
+    const first = await callback(flow, emp, { code });
+    assert.equal(first.sso, 'ok');
+    const replay = await callback(flow, emp, { code });
+    assert.equal(replay.code, 'token_invalid', 'replayed code');
+    // Failures are audited whenever a tenant is known (the unverified-address and denied attempts
+    // of a linked account above); token-stage failures name nobody and only reach the server log.
+    const audited = await adminPool.query(`SELECT after->>'code' AS code FROM audit_logs WHERE org_id = $1 AND action = 'GOOGLE_LOGIN_FAILED'`, [ORG]);
+    assert.ok(audited.rows.some((r) => r.code === 'unverified_email'), `audited failures: ${audited.rows.map((r) => r.code).join(',')}`);
+    assert.ok(audited.rows.some((r) => r.code === 'email_mismatch'), 'an invitation mismatch is audited in the inviting organisation');
+  });
+
+  it('a person links Google from their profile and cannot remove their last sign-in method', async () => {
+    // The owner (password + 2FA) links a Google account while signed in.
+    const login = await json('/auth/login', { email: U.owner.email, password: PASSWORD, totpCode: await freshCode(U.owner.secret) });
+    const loginBody = JSON.parse(await login.text()) as { accessToken?: string; requires2faSetup?: boolean; enrollmentToken?: string };
+    let token = loginBody.accessToken;
+    if (!token) {
+      // 2FA was switched off for the owner in an earlier test: enrol again.
+      const setup = await json('/auth/2fa/setup', {}, loginBody.enrollmentToken);
+      const { secret } = JSON.parse(await setup.text()) as { secret: string };
+      const verified = await json('/auth/2fa/verify', { code: await freshCode(secret) }, loginBody.enrollmentToken);
+      token = (JSON.parse(await verified.text()) as { accessToken: string }).accessToken;
+    }
+    const startRes = await json('/auth/google/link', {}, token);
+    const linkText = await startRes.text();
+    assert.equal(startRes.status, 200, linkText);
+    const cookie = startRes.headers.getSetCookie().find((c) => c.startsWith('hrvo_oauth='))!.split(';')[0]!;
+    const u = new URL((JSON.parse(linkText) as { authorizeUrl: string }).authorizeUrl);
+    const flow: Flow = { cookie, state: u.searchParams.get('state')!, nonce: u.searchParams.get('nonce')!, challenge: u.searchParams.get('code_challenge')! };
+    const linked = await callback(flow, { email: 'owner.personal@gmail.test', sub: 'google-sub-owner-personal' });
+    assert.equal(linked.sso, 'linked', linked.location.toString());
+    assert.equal(linked.location.pathname, '/account/profile');
+    const me = await fetch(`${base}/me/access`, { headers: { Authorization: `Bearer ${token}` } });
+    const access = JSON.parse(await me.text()) as { signInMethods: { password: boolean; google: boolean; googleEmail: string | null } };
+    assert.deepEqual(access.signInMethods, { password: true, google: true, googleEmail: 'owner.personal@gmail.test' });
+    // Unlinking works because a password remains.
+    const unlink = await fetch(`${base}/auth/google/link`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(unlink.status, 200, await unlink.text());
+    // The Google-only owner of GSignup has no password: removing Google is refused.
+    const gail = (await adminPool.query<{ id: string; org_id: string }>(`SELECT id, org_id FROM users WHERE email = 'gail@gsignup.test'`)).rows[0]!;
+    await adminPool.query(`UPDATE organizations SET mfa_for_sso = false WHERE id = $1`, [gail.org_id]);
+    const gailLogin = await callback(await start({ mode: 'login' }), { email: 'gail@gsignup.test', sub: 'google-sub-gail' });
+    assert.equal(gailLogin.sso, 'ok', gailLogin.location.toString());
+    const gailSession = JSON.parse(await (await refreshWithCookie(base, gailLogin.refresh!)).text()) as { accessToken: string };
+    const refused = await fetch(`${base}/auth/google/link`, { method: 'DELETE', headers: { Authorization: `Bearer ${gailSession.accessToken}` } });
+    assert.equal(refused.status, 409);
+    assert.match(await refused.text(), /only way to sign in/);
+    // Tenant isolation: GSignup's owner sees only GSignup, never Google Workspace Ltd.
+    const users = await fetch(`${base}/admin/users`, { headers: { Authorization: `Bearer ${gailSession.accessToken}` } });
+    const rows = JSON.parse(await users.text()) as Array<{ email: string }>;
+    assert.deepEqual(rows.map((r) => r.email), ['gail@gsignup.test']);
+    assert.equal((await fetch(`${base}/admin/users/${U.emp.id}/access`, { headers: { Authorization: `Bearer ${gailSession.accessToken}` } })).status, 404);
   });
 
   it('a suspended person is not signed in by Google either', async () => {

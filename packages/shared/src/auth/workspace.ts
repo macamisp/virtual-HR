@@ -53,7 +53,8 @@ export type WorkspaceChoice = z.infer<typeof WorkspaceChoiceSchema>;
 
 // ---------------------------------------------------------------- Google sign-in (FR-AUTH-005)
 
-export const GOOGLE_SIGNIN_MODES = ['login', 'signup', 'invite'] as const;
+/** link: a signed-in person adds Google to their account from the profile page. */
+export const GOOGLE_SIGNIN_MODES = ['login', 'signup', 'invite', 'link'] as const;
 export type GoogleSigninMode = (typeof GOOGLE_SIGNIN_MODES)[number];
 
 export const GoogleStartDtoSchema = z
@@ -77,13 +78,17 @@ export type GoogleStartDto = z.infer<typeof GoogleStartDtoSchema>;
 export const GoogleStartResponseSchema = z.object({ authorizeUrl: z.string().url() });
 
 /** Second step of a Google sign-in for a role that needs 2FA: the challenge token plus the code. */
+/** Which ways a person can sign in (FR-AUTH-005); the last one cannot be removed. */
+export const SignInMethodsSchema = z.object({ password: z.boolean(), google: z.boolean(), googleEmail: z.string().nullable() });
+export type SignInMethods = z.infer<typeof SignInMethodsSchema>;
+
 export const GoogleTotpDtoSchema = z
   .object({ challengeToken: z.string().min(20).max(2048), code: z.string().regex(/^(\d{6}|[0-9a-f]{10})$/, 'Expected a 6-digit code or a recovery code') })
   .strict();
 export type GoogleTotpDto = z.infer<typeof GoogleTotpDtoSchema>;
 
 /** Result codes carried back to the web app after the Google redirect (`?sso=` and `&code=`). */
-export const GOOGLE_RESULT_CODES = ['ok', 'totp', 'enroll', 'email_mismatch', 'no_account', 'unverified_email', 'denied', 'invalid_state', 'failed', 'choose_workspace', 'not_configured', 'account_inactive', 'invitation_invalid'] as const;
+export const GOOGLE_RESULT_CODES = ['ok', 'totp', 'enroll', 'linked', 'email_mismatch', 'no_account', 'unverified_email', 'denied', 'invalid_state', 'failed', 'choose_workspace', 'not_configured', 'account_inactive', 'invitation_invalid', 'redirect_uri_mismatch', 'already_linked', 'token_invalid'] as const;
 export type GoogleResultCode = (typeof GOOGLE_RESULT_CODES)[number];
 
 // ---------------------------------------------------------------- invitations (FR-AUTH-001)
