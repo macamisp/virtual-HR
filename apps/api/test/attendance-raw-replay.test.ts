@@ -104,10 +104,14 @@ describe('Raw attendance replay (NFR-ACC-004)', () => {
   });
 
   it('replays mixed active/idle offline counters without treating an entire segment as active', async () => {
-    const now = Date.now();
-    await service.applyOfflineSync({ orgId: ORG, userId: USER, deviceId: 'offline-mixed', anchorServerMs: now - 61_000,
+    // The 60 s window ends one second ago. Within the first minute after UTC midnight it would
+    // straddle two days (seen in CI at 00:00:52Z), so it is moved ten minutes back; the day under
+    // test is always the window's own day.
+    let anchor = Date.now() - 61_000;
+    if (new Date(anchor).getUTCDate() !== new Date(anchor + 60_000).getUTCDate()) anchor -= 600_000;
+    await service.applyOfflineSync({ orgId: ORG, userId: USER, deviceId: 'offline-mixed', anchorServerMs: anchor,
       intervals: [{ offsetMs: 0, activeSeconds: 12, idleSeconds: 18 }, { offsetMs: 30_000, activeSeconds: 0, idleSeconds: 30 }], ip: '127.0.0.1' });
-    const day = new Date(now).toISOString().slice(0, 10);
+    const day = new Date(anchor).toISOString().slice(0, 10);
     const row = await repo.findDailyAttendance(ORG, USER, day);
     assert.equal(row?.activeSeconds, 12);
     assert.equal(row?.idleSeconds, 48);

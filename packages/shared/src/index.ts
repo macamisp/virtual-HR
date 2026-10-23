@@ -19,6 +19,9 @@ export {
   isMfaRequiredRole,
   requiresMfa,
   MFA_SENSITIVE_PERMISSIONS,
+  permissionInfo,
+  ACCESS_AREAS,
+  visibleAreas,
   LoginDtoSchema,
   PasswordForgotDtoSchema,
   PasswordResetDtoSchema,
@@ -63,3 +66,5 @@ export * from './meetings/media-errors.ts';
 export * from './org/structure.ts';
 export * from './org/schedules.ts';
 export * from './org/subcontractors.ts';
+export * from './net/local-url.ts';
+export * from './auth/workspace.ts';

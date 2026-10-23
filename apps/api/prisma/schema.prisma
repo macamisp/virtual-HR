@@ -39,6 +39,14 @@ model Organization {
   recordingEnabled              Boolean                    @default(false) @map("recording_enabled")
   /// FR-ADM-004 / SRS 13: recordings are kept 90 days by default (7..3650).
   retentionRecordingsDays       Int                        @default(90) @map("retention_recordings_days")
+  /// FR-ORG-001: working days as ISO weekday numbers (1 = Monday), e.g. [1,2,3,4,5].
+  workWeek                      Json                       @default("[1,2,3,4,5]") @map("work_week")
+  /// FR-AUTH-005 (ADR 037): Google accounts on this domain may join by themselves; null = invitation only.
+  ssoAutoJoinDomain             String?                    @map("sso_auto_join_domain") @db.VarChar(253)
+  /// FR-AUTH-004/005: roles that need 2FA also need it after a Google sign-in.
+  mfaForSso                     Boolean                    @default(true) @map("mfa_for_sso")
+  /// Set when the owner finished the onboarding wizard.
+  onboardedAt                   DateTime?                  @map("onboarded_at") @db.Timestamptz()
   createdAt                     DateTime                   @default(now()) @map("created_at") @db.Timestamptz()
   users                         User[]
   teams                         Team[]
@@ -127,6 +135,9 @@ model Organization {
   recordingConsents RecordingConsent[]
   leaveRequests     LeaveRequest[]
   publicHolidays    PublicHoliday[]
+  emailVerificationTokens EmailVerificationToken[]
+  oauthIdentities         OauthIdentity[]
+  ownershipTransfers      OwnershipTransfer[]
 
   @@map("organizations")
 }
@@ -140,6 +151,12 @@ model User {
   teamId              String?   @map("team_id") @db.Uuid
   managerId           String?   @map("manager_id") @db.Uuid
   customRoleId        String?   @map("custom_role_id") @db.Uuid
+  /// ADR 037: an owner of the workspace (always a SUPER_ADMIN); the last owner cannot be removed.
+  isOwner             Boolean   @default(false) @map("is_owner")
+  /// Descriptive only (Developer, QA, ...); grants no access.
+  jobTitle            String?   @map("job_title") @db.VarChar(100)
+  /// Null only for a self-service signup until its link is used; invited, admin-created and seeded accounts count as verified.
+  emailVerifiedAt     DateTime? @default(now()) @map("email_verified_at") @db.Timestamptz()
   passwordHash        String?   @map("password_hash") @db.VarChar(255)
   mfaEnabled          Boolean   @default(false) @map("mfa_enabled")
   mfaSecret           String?   @map("mfa_secret") @db.VarChar(255)
@@ -237,6 +254,10 @@ model User {
   leaveRequests     LeaveRequest[]     @relation("LeaveRequester")
   leaveDecisions    LeaveRequest[]     @relation("LeaveDecider")
   holidaysCreated   PublicHoliday[]
+  emailVerificationTokens EmailVerificationToken[]
+  oauthIdentities         OauthIdentity[]
+  ownershipTransfersSent  OwnershipTransfer[] @relation("OwnershipFrom")
+  ownershipTransfersReceived OwnershipTransfer[] @relation("OwnershipTo")
 
   @@map("users")
 }
@@ -525,6 +546,8 @@ model Invitation {
   invitedBy  String    @map("invited_by") @db.Uuid
   expiresAt  DateTime  @map("expires_at") @db.Timestamptz()
   acceptedAt DateTime? @map("accepted_at") @db.Timestamptz()
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz()
+  lastSentAt DateTime  @default(now()) @map("last_sent_at") @db.Timestamptz()
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -532,6 +555,61 @@ model Invitation {
   inviter      User         @relation("InvitedByUser", fields: [invitedBy], references: [id], onDelete: Cascade)
 
   @@map("invitations")
+}
+
+/// ADR 037: single-use e-mail verification links for self-service signup.
+model EmailVerificationToken {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId     String    @map("org_id") @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash") @db.VarChar(128)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz()
+  usedAt    DateTime? @map("used_at") @db.Timestamptz()
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, userId])
+  @@map("email_verification_tokens")
+}
+
+/// FR-AUTH-005 (ADR 037): a Google account linked to a user; the subject is Google's stable id.
+model OauthIdentity {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId     String   @map("org_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  provider  String   @db.VarChar(20)
+  subject   String   @db.VarChar(255)
+  email     String   @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, subject])
+  @@unique([orgId, userId, provider])
+  @@map("oauth_identities")
+}
+
+/// ADR 037: ownership moves only when the new owner accepts.
+model OwnershipTransfer {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId         String    @map("org_id") @db.Uuid
+  fromUserId    String    @map("from_user_id") @db.Uuid
+  toUserId      String    @map("to_user_id") @db.Uuid
+  keepOwnership Boolean   @default(false) @map("keep_ownership")
+  status        String    @default("PENDING") @db.VarChar(10)
+  expiresAt     DateTime  @map("expires_at") @db.Timestamptz()
+  decidedAt     DateTime? @map("decided_at") @db.Timestamptz()
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  fromUser     User         @relation("OwnershipFrom", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser       User         @relation("OwnershipTo", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status])
+  @@map("ownership_transfers")
 }
 
 model AuthSession {
@@ -546,6 +624,8 @@ model AuthSession {
   ip               String?  @db.VarChar(45)
   userAgent        String?  @map("user_agent") @db.Text
   expiresAt        DateTime @map("expires_at") @db.Timestamptz()
+  /// ADR 037: PASSWORD, GOOGLE or AGENT; the 2FA-after-Google setting applies to GOOGLE sessions.
+  loginMethod      String    @default("PASSWORD") @map("login_method") @db.VarChar(10)
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz()
 

@@ -15,6 +15,7 @@ describe('Pre-join media error messages (FR-MEET-011)', () => {
       assert.match(m, /HTTPS/);
       assert.match(m, /localhost/);
       assert.match(m, /http:\/\/192\.168\.1\.20:3000/);
+      assert.match(m, /lan-https/, 'points to the LAN HTTPS guide');
     }
     assert.match(mediaErrorMessage(err('NotAllowedError'), 'microphone', { ...secure, hasMediaDevices: false }), /HTTPS/, 'no mediaDevices at all');
   });

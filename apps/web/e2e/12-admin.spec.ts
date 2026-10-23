@@ -35,7 +35,7 @@ test.describe.serial('Administration: policy, roles, retention, audit, consents 
     const editor = page.getByTestId('role-editor');
     await editor.getByLabel('Name').fill(ROLE);
     await editor.getByLabel('Use documents').uncheck();
-    await expect(editor.getByRole('status')).toHaveText('0 added, 1 removed compared with Employee.');
+    await expect(editor.getByRole('status')).toHaveText('0 added, 1 removed compared with Member.');
     await editor.getByRole('button', { name: 'Create role' }).click();
     await expect(page.getByTestId('custom-role').filter({ hasText: ROLE })).toContainText('− Use documents');
 
@@ -56,9 +56,9 @@ test.describe.serial('Administration: policy, roles, retention, audit, consents 
     await ctx.close();
 
     // Put things back for other specs.
-    await people.getByLabel(`Role for ${USERS.worker.name}`).selectOption({ label: 'Employee' });
+    await people.getByLabel(`Role for ${USERS.worker.name}`).selectOption({ label: 'Member' });
     await people.getByRole('row').filter({ hasText: USERS.worker.email }).getByRole('button', { name: 'Apply' }).click();
-    await expect(people.getByRole('row').filter({ hasText: USERS.worker.email }).getByRole('cell').nth(1)).toHaveText('Employee');
+    await expect(people.getByRole('row').filter({ hasText: USERS.worker.email }).getByRole('cell').nth(1)).toHaveText('Member');
     page.once('dialog', (d) => void d.accept());
     await page.getByTestId('custom-role').filter({ hasText: ROLE }).getByRole('button', { name: 'Delete' }).click();
     await expect(page.getByTestId('custom-role').filter({ hasText: ROLE })).toHaveCount(0);

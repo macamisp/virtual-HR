@@ -9,15 +9,17 @@
  *  - 2FA-grade permissions (MFA_SENSITIVE_PERMISSIONS) only on a base role that requires 2FA,
  *    so login always asks for 2FA when they are held.
  *  - SUPER_ADMIN is given and taken only by a SUPER_ADMIN.
+ *  - Owners (ADR 037): org.owner is never part of a role; an owner is changed only by an owner;
+ *    the last owner is never demoted, suspended or removed.
  */
 import {
   effectivePermissions,
   isMfaRequiredRole,
   MFA_SENSITIVE_PERMISSIONS,
+  Permission,
   ROLE_PERMISSIONS,
   UserRole,
 } from '../../../../packages/shared/src/auth/types.ts';
-import type { Permission } from '../../../../packages/shared/src/auth/types.ts';
 
 /** Holding the organisation-wide form of a permission covers the team form (x.all covers x.team). */
 export function covers(held: readonly Permission[], p: Permission): boolean {
@@ -31,7 +33,8 @@ export function checkRoleDefinition(input: {
   grantable: readonly Permission[];
   actorIsSuperAdmin: boolean;
 }): { added: Permission[]; removed: Permission[] } | { error: string } {
-  if (input.baseRole === UserRole.SUPER_ADMIN) return { error: 'A custom role cannot be based on Super admin' };
+  if (input.baseRole === UserRole.SUPER_ADMIN) return { error: 'A custom role cannot be based on Owner (super admin)' };
+  if (input.added.includes(Permission.ORG_OWNER)) return { error: 'Workspace ownership cannot be granted through a role' };
   const base = ROLE_PERMISSIONS[input.baseRole] ?? [];
   // Keep only changes that change something; a permission cannot be both added and removed.
   const added = [...new Set(input.added)].filter((p) => !base.includes(p)).sort();
@@ -62,5 +65,28 @@ export function mayAssign(input: {
   if (superAdmin) return null;
   if (input.currentPermissions.some((p) => !covers(input.actor.permissions, p))) return 'This user has permissions you do not hold';
   if (input.newPermissions.some((p) => !covers(input.actor.permissions, p))) return 'You cannot grant permissions you do not hold';
+  return null;
+}
+
+/**
+ * Owner protection (ADR 037). Null when allowed, otherwise the reason and the status to answer
+ * with: 403 when the actor may not, 409 when the workspace would be left without an owner.
+ */
+export function ownerChangeProblem(input: {
+  actorIsOwner: boolean;
+  targetIsOwner: boolean;
+  /** True when the target is the only active owner. */
+  targetIsLastOwner: boolean;
+  /** What the change does to the target's ownership. */
+  change: 'ROLE' | 'STATUS' | 'REMOVE_OWNERSHIP';
+  newRole?: UserRole;
+  newStatus?: string;
+}): { status: 403 | 409; error: string } | null {
+  if (!input.targetIsOwner) return null;
+  if (!input.actorIsOwner) return { status: 403, error: 'Only an owner can change an owner' };
+  const losesOwnership = input.change === 'REMOVE_OWNERSHIP'
+    || (input.change === 'ROLE' && input.newRole !== UserRole.SUPER_ADMIN)
+    || (input.change === 'STATUS' && input.newStatus !== 'ACTIVE');
+  if (losesOwnership && input.targetIsLastOwner) return { status: 409, error: 'The last owner cannot be removed or demoted. Transfer ownership first.' };
   return null;
 }

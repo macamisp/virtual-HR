@@ -33,6 +33,8 @@ import type {
 import { findDay, refreshDay } from '../timesheets/timesheet-store.ts';
 import { hasPermission, Permission } from '../../../../packages/shared/src/auth/types.ts';
 import type { TimesheetDayRow } from '../timesheets/timesheet-store.ts';
+import { lockTenantParents } from '../common/lock-order.ts';
+import { withConflictRetry } from '../common/db-retry.ts';
 
 export type SessionClosedListener = (session: AttendanceSession) => Promise<void>;
 
@@ -290,16 +292,25 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
 
   public async saveSession(session: AttendanceSession, input?: AttendanceInputRecord): Promise<void> {
     if (!session.orgId) throw new Error('Tenant context missing: orgId is required');
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(`SELECT set_config('app.org_id', $1, true)`, [session.orgId]);
-      await this.persistSession(session, client, input);
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally { client.release(); }
+    // ADR 038: the whole transaction is retried on a deadlock or serialization failure. It is
+    // idempotent: it writes a session state computed beforehand (upserts) plus that state's raw
+    // input, a rolled-back attempt leaves nothing behind, and the listeners below run once, after
+    // the commit.
+    await withConflictRetry('attendance.saveSession', async () => {
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(`SELECT set_config('app.org_id', $1, true)`, [session.orgId]);
+        // ADR 038 lock order: the organisation and the person before the session row, so the
+        // foreign-key checks later in this transaction never wait while it holds a session row.
+        await lockTenantParents(client, session.orgId, [session.userId]);
+        await this.persistSession(session, client, input);
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally { client.release(); }
+    });
     // FR-TS-003: a real clock-out stops the running task timer. Not for the midnight split
     // (work continues) nor for corrections re-saving an old session.
     if (
@@ -731,7 +742,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
 
   // Daily Records & Timesheets (FR-ATT-015 & FR-TS-001)
   public async saveDailyAttendance(r: AttendanceDaily): Promise<void> {
-    await this.queryWithRls(
+    // ADR 038: one upsert of a recomputed day; repeating it gives the same row.
+    await withConflictRetry('attendance.saveDaily', () => this.queryWithRls(
       r.orgId,
       `INSERT INTO attendance_daily (
          org_id, user_id, work_date, first_in, last_out, active_seconds, idle_seconds,
@@ -771,7 +783,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         r.dayStatus,
         r.excessBreakMinutes ?? 0,
       ],
-    );
+    ));
   }
 
   public async findDailyAttendance(orgId: string, userId: string, workDate: string): Promise<AttendanceDaily | null> {
@@ -979,7 +991,15 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     return '{' + pairs.join(',') + '}';
   }
 
+  /**
+   * ADR 038: retried as a whole on a deadlock or serialization failure. The aborted attempt is
+   * rolled back, so the retry links to the then-current end of the chain and appends exactly once.
+   */
   public async recordAuditLog(entry: Omit<AuditLogEntry, 'id' | 'prevHash' | 'hash'>): Promise<AuditLogEntry> {
+    return await withConflictRetry('audit.append', () => this.appendAuditLogOnce(entry));
+  }
+
+  private async appendAuditLogOnce(entry: Omit<AuditLogEntry, 'id' | 'prevHash' | 'hash'>): Promise<AuditLogEntry> {
     if (!entry.orgId || entry.orgId.trim() === '') {
       throw new Error('Tenant context missing: orgId is required for audit logs');
     }
@@ -989,8 +1009,9 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       await client.query('BEGIN');
       await client.query(`SELECT set_config('app.org_id', $1, true)`, [entry.orgId]);
 
-      // Advisory transaction lock per organization: serializes audit log appends within the same tenant
-      // while allowing parallel appends across different organizations.
+      // ADR 038 lock order: parent rows first, then the per-organisation advisory lock that
+      // serialises the hash chain (appends of different organisations still run in parallel).
+      await lockTenantParents(client, entry.orgId, [entry.actorId]);
       await client.query(`SELECT pg_advisory_xact_lock(hashtext('audit_logs:' || $1::text))`, [entry.orgId]);
 
       const lastRes = await client.query(
@@ -1286,7 +1307,12 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     }
   }
 
+  private closed = false;
+
+  /** Ends the pools once; a second call (Nest shutdown after a test's own close) is a no-op. */
   public async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
     await this.pool.end();
     await this.adminPool.end();
     await this.retentionPool.end();

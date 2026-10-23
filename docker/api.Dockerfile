@@ -15,6 +15,8 @@ RUN npm ci --ignore-scripts && npm rebuild argon2
 COPY tsconfig.json ./
 COPY apps/api apps/api
 COPY packages/shared packages/shared
+# tsconfig.json compiles scripts/*.ts too (the LAN helpers; apps/api/test/lan-config.test.ts imports one).
+COPY scripts scripts
 RUN npx prisma generate --schema apps/api/prisma/schema.prisma && npx tsc -p tsconfig.json
 
 # Runtime dependencies only (root "dependencies"; no web, agent or dev packages).

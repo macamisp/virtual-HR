@@ -17,7 +17,7 @@ export interface MediaContext {
 
 export function mediaErrorMessage(err: unknown, device: MediaDevice, ctx: MediaContext): string {
   if (!ctx.secure || !ctx.hasMediaDevices) {
-    return `The ${device} only works on a secure connection. This page is open at ${ctx.origin}, which is not HTTPS. Open the HTTPS address of HRVO (or http://localhost on this computer) and try again.`;
+    return `The ${device} only works on a secure connection. This page is open at ${ctx.origin}, which is not HTTPS, so the browser does not offer the ${device} at all (no permission setting changes that). Open the HTTPS address of HRVO, or http://localhost on the computer that runs it. To set up HTTPS for other devices, follow the guide docs/runbooks/lan-https.md.`;
   }
   const name = typeof err === 'object' && err !== null && 'name' in err ? String((err as { name: unknown }).name) : '';
   switch (name) {

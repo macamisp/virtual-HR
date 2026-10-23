@@ -11,6 +11,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
+import { lockUsersForWrite } from '../common/lock-order.ts';
 import type { RequestContext } from '../common/decorators/request-context.decorator.ts';
 import { NotificationsService } from '../notifications/notifications.service.ts';
 import { approversFor } from '../timesheets/timesheets.service.ts';
@@ -125,7 +126,7 @@ export class LeaveService {
       const today = await this.today(db, user.orgId);
       if (dto.startDate < addDaysIso(today, -LEAVE_MAX_PAST_DAYS)) throw new BadRequestException(`Leave can be reported up to ${LEAVE_MAX_PAST_DAYS} days back`);
       // One open or approved request per day and person.
-      await db.query(`SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, [user.id]);
+      await lockUsersForWrite(db, [user.id]);
       const overlap = await db.query(`SELECT 1 FROM leave_requests WHERE user_id = $1 AND status IN ('PENDING', 'APPROVED') AND start_date <= $3::date AND end_date >= $2::date`, [user.id, dto.startDate, dto.endDate]);
       if (overlap.rowCount) throw new ConflictException('You already have a request covering some of these days');
       const id = (await db.query<{ id: string }>(

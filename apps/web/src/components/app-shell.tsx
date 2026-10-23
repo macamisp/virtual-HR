@@ -18,6 +18,7 @@ import { logout, refreshSession, secondsUntilExpiry } from '@/lib/session';
 import { Permission, useCan } from '@/lib/permissions';
 import { useConsent } from '@/lib/queries';
 import { useMyAccess } from '@/lib/admin-queries';
+import { useOrgProfile } from '@/lib/workspace-queries';
 import { useHeartbeat } from '@/heartbeat/use-heartbeat';
 import { cn } from '@/lib/utils';
 import { ROLE_LABEL } from '@hrvo/shared';
@@ -104,12 +105,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canReportsAll = useCan(Permission.REPORTS_ALL);
   const canReports = canReportsTeam || canReportsAll;
   const canManageRoles = useCan(Permission.ROLES_MANAGE);
+  const canInvite = useCan(Permission.USERS_INVITE);
   const canPrivacy = useCan(Permission.PRIVACY_MANAGE);
   const canApproveTimesheets = canApproveTeam || canApproveAll;
   const canRates = canManageRates || canReadAllTimesheets;
   const [navOpen, setNavOpen] = useState(false);
   const pathname = usePathname();
   useEffect(() => setNavOpen(false), [pathname]);
+  // ADR 037: a new workspace's owner is taken to the onboarding wizard until it is finished.
+  const orgProfile = useOrgProfile(canManageOrg);
+  const needsOnboarding = !!access.data?.isOwner && !!orgProfile.data && !orgProfile.data.onboardedAt;
+  useEffect(() => {
+    if (needsOnboarding && pathname !== '/onboarding') router.replace('/onboarding');
+  }, [needsOnboarding, pathname, router]);
 
   if (status !== 'authenticated' || !user) {
     return (
@@ -312,8 +320,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <NavLink href="/account/agents" icon={Laptop}>My desktop agents</NavLink>
               </li>
             ) : null}
-            {canManageOrg || canManageUsers || canSchedules || canSubcontractors || canManageRoles || canAudit || canPrivacy ? (
+            <li>
+              <NavLink href="/account/profile" icon={IdCard}>My profile</NavLink>
+            </li>
+            {canManageOrg || canManageUsers || canInvite || canSchedules || canSubcontractors || canManageRoles || canAudit || canPrivacy ? (
               <li className="px-2 pt-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground" aria-hidden="true">Administration</li>
+            ) : null}
+            {canManageUsers ? (
+              <li>
+                <NavLink href="/admin/users" icon={Users}>Users</NavLink>
+              </li>
+            ) : null}
+            {canInvite ? (
+              <li>
+                <NavLink href="/admin/invitations" icon={UserCheck}>Invitations</NavLink>
+              </li>
+            ) : null}
+            {canManageOrg ? (
+              <li>
+                <NavLink href="/onboarding" icon={Building2}>Workspace settings</NavLink>
+              </li>
             ) : null}
             {canManageOrg ? (
               <li>

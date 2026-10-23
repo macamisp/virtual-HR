@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
   NotFoundException,
+  ConflictException,
 } from '@nestjs/common';
 import { AttendanceGateway } from '../attendance/attendance.gateway.ts';
 import argon2 from 'argon2';
@@ -15,6 +16,7 @@ import { consumeTotpStep, totpStep } from './totp.ts';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
+import { PermissionResolver } from '../common/permission-resolver.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
 import type { AuditEntry } from '../common/audit-chain.ts';
 import { MAIL_TRANSPORT } from '../common/mailer.ts';
@@ -26,11 +28,16 @@ import {
 import type { BreachedPasswordChecker } from './breached-password.ts';
 import { signAccessToken, signMfaEnrollmentToken } from './tokens.ts';
 import {
-  hasPermission,
   userCan,
   isMfaRequiredRole,
   Permission,
+  ROLE_PERMISSIONS,
+  UserRole,
 } from '../../../../packages/shared/src/auth/types.ts';
+import { covers } from '../admin/role-rules.ts';
+import { revokeSessionsOf } from './session-revocation.ts';
+import type { RevokeReason } from './session-revocation.ts';
+import type { InvitationRow } from '../../../../packages/shared/src/auth/workspace.ts';
 import type {
   LoginDto,
   InviteUserDto,
@@ -42,7 +49,7 @@ function sha256(data: string): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
-const ARGON2_OPTIONS = {
+export const ARGON2_OPTIONS = {
   type: argon2.argon2id,
   memoryCost: 65536, // 64 MB
   timeCost: 3,
@@ -54,10 +61,9 @@ const LOCKOUT_MS = 15 * 60 * 1000;
 const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000; // FR-AUTH-003
 export const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000; // FR-AUTH-008
 
-/** Why an auth_sessions row was revoked. ROTATED is a normal refresh and does not end the login. */
-export type RevokeReason = 'ROTATED' | 'LOGOUT' | 'FAMILY_REUSE' | 'PASSWORD_RESET' | 'USER_DEACTIVATED' | 'DEVICE_REVOKED' | 'ADMIN_REVOKED';
+export type { RevokeReason };
 
-interface AuthUserRow {
+export interface AuthUserRow {
   id: string;
   org_id: string;
   email: string;
@@ -70,7 +76,11 @@ interface AuthUserRow {
   mfa_secret: string | null;
   failed_login_attempts: number;
   locked_until: Date | null;
+  is_owner: boolean;
+  email_verified_at: Date | null;
 }
+
+interface WorkspaceRow { org_id: string; name: string; slug: string; user_id: string; status: string }
 
 interface RequestMeta {
   ip?: string;
@@ -87,13 +97,14 @@ export class AuthService {
     @Inject(BREACHED_PASSWORD_CHECKER) private breachChecker: BreachedPasswordChecker,
     @Inject(MAIL_TRANSPORT) private mailer: MailTransport,
     private readonly attendance: AttendanceGateway,
+    private readonly resolver: PermissionResolver,
   ) {}
 
   /**
    * FR-AUTH-002: minimum 12 characters and not present in a breach corpus (k-anonymity).
    * Fails closed: if the breach service cannot be reached the password is not accepted.
    */
-  private async assertPasswordAcceptable(password: string): Promise<void> {
+  async assertPasswordAcceptable(password: string): Promise<void> {
     if (password.length < 12) {
       throw new BadRequestException('Password must be at least 12 characters long');
     }
@@ -112,8 +123,9 @@ export class AuthService {
   }
 
   /**
-   * FR-AUTH-001: Invitation-only signup
-   * An Admin or HR Manager creates an invitation expiring in 7 days.
+   * FR-AUTH-001: invitation-only signup. Anyone with users.invite creates an invitation that
+   * expires in 7 days and is e-mailed; the role is chosen at invite time and must be within the
+   * inviter's own permissions (ADR 037). Owners (SUPER_ADMIN) are invited only by super admins.
    */
   async createInvitation(
     inviter: AuthenticatedUser,
@@ -121,56 +133,124 @@ export class AuthService {
     ip?: string,
     userAgent?: string,
   ) {
-    if (!hasPermission(inviter.role, Permission.USERS_INVITE)) {
+    if (!userCan(inviter, Permission.USERS_INVITE)) {
       throw new ForbiddenException('Permission denied: cannot invite users');
+    }
+    if (inviter.role !== UserRole.SUPER_ADMIN) {
+      if (dto.role === UserRole.SUPER_ADMIN) throw new ForbiddenException('Only an owner can invite someone as Owner');
+      const mine = inviter.permissions ?? ROLE_PERMISSIONS[inviter.role] ?? [];
+      const missing = (ROLE_PERMISSIONS[dto.role] ?? []).filter((p) => !covers(mine, p));
+      if (missing.length > 0) throw new ForbiddenException(`You cannot invite a role with permissions you do not hold: ${missing.join(', ')}`);
     }
 
     const inviteToken = randomBytes(32).toString('hex');
     const tokenHash = sha256(inviteToken);
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+    const email = dto.email.toLowerCase();
 
-    return await this.prisma.runWithTenantContext(inviter.orgId, async (client) => {
-      const existing = await client.query(
-        'SELECT id FROM users WHERE org_id = $1 AND email = $2',
-        [inviter.orgId, dto.email.toLowerCase()],
-      );
+    const created = await this.prisma.runWithTenantContext(inviter.orgId, async (client) => {
+      const existing = await client.query('SELECT id FROM users WHERE org_id = $1 AND email = $2', [inviter.orgId, email]);
       if (existing.rows.length > 0) {
         throw new BadRequestException('A user with this email already exists in the organization');
       }
+      const open = await client.query(
+        `SELECT id FROM invitations WHERE org_id = $1 AND email = $2 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()`,
+        [inviter.orgId, email],
+      );
+      if (open.rows.length > 0) throw new ConflictException('This address already has a pending invitation; resend or revoke it instead');
 
       const res = await client.query(
         `INSERT INTO invitations (org_id, email, role, team_id, token_hash, invited_by, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, org_id, email, role, expires_at, created_at`,
-        [
-          inviter.orgId,
-          dto.email.toLowerCase(),
-          dto.role,
-          dto.teamId || null,
-          tokenHash,
-          inviter.id,
-          expiresAt,
-        ],
+        [inviter.orgId, email, dto.role, dto.teamId || null, tokenHash, inviter.id, expiresAt],
       );
-
       await this.recordAudit(client, {
-        orgId: inviter.orgId,
-        actorId: inviter.id,
-        action: 'INVITATION_CREATED',
-        entityType: 'INVITATION',
-        entityId: res.rows[0].id,
-        after: { email: dto.email, role: dto.role, expiresAt },
-        ip,
-        userAgent,
+        orgId: inviter.orgId, actorId: inviter.id, action: 'INVITATION_CREATED', entityType: 'INVITATION', entityId: res.rows[0].id,
+        after: { email, role: dto.role, expiresAt }, ip, userAgent,
       });
+      return res.rows[0];
+    });
+    await this.sendInvitation(email, inviteToken, inviter.displayName ?? inviter.email);
+    return {
+      id: created.id,
+      inviteToken, // Also returned so the inviter can copy the link.
+      email: created.email,
+      role: created.role,
+      expiresAt: created.expires_at,
+    };
+  }
 
-      return {
-        id: res.rows[0].id,
-        inviteToken, // Return the raw token so it can be emailed / copied
-        email: res.rows[0].email,
-        role: res.rows[0].role,
-        expiresAt: res.rows[0].expires_at,
-      };
+  private async sendInvitation(to: string, inviteToken: string, inviterName: string): Promise<void> {
+    const base = process.env.APP_WEB_URL || 'http://localhost:3000';
+    await this.mailer.send({
+      to,
+      subject: `${inviterName} invited you to HRVO`,
+      text: [
+        `${inviterName} invited you to join their workspace on HRVO.`,
+        '',
+        `Accept the invitation (valid for 7 days, single use): ${base}/accept-invitation#token=${inviteToken}`,
+        '',
+        'If you were not expecting this, you can ignore this e-mail.',
+      ].join('\n'),
+    });
+  }
+
+  private static invitationStatus(r: { accepted_at: Date | null; revoked_at: Date | null; expires_at: Date }): InvitationRow['status'] {
+    if (r.accepted_at) return 'ACCEPTED';
+    if (r.revoked_at) return 'REVOKED';
+    if (new Date(r.expires_at).getTime() <= Date.now()) return 'EXPIRED';
+    return 'PENDING';
+  }
+
+  private static readonly INVITATION_SELECT = `
+    SELECT i.id, i.email, i.role, i.team_id, i.expires_at, i.last_sent_at, i.accepted_at, i.revoked_at, i.created_at,
+           u.id AS inviter_id, u.display_name AS inviter_name, u.email AS inviter_email
+    FROM invitations i JOIN users u ON u.id = i.invited_by`;
+
+  private mapInvitation(r: Record<string, unknown>): InvitationRow {
+    const row = r as { id: string; email: string; role: InvitationRow['role']; team_id: string | null; expires_at: Date; last_sent_at: Date; accepted_at: Date | null; revoked_at: Date | null; created_at: Date; inviter_id: string; inviter_name: string | null; inviter_email: string };
+    return {
+      id: row.id, email: row.email, role: row.role, teamId: row.team_id,
+      status: AuthService.invitationStatus(row),
+      invitedBy: { id: row.inviter_id, displayName: row.inviter_name, email: row.inviter_email },
+      expiresAt: row.expires_at.toISOString(), lastSentAt: row.last_sent_at.toISOString(),
+      acceptedAt: row.accepted_at?.toISOString() ?? null, revokedAt: row.revoked_at?.toISOString() ?? null, createdAt: row.created_at.toISOString(),
+    };
+  }
+
+  async listInvitations(user: AuthenticatedUser): Promise<InvitationRow[]> {
+    return await this.prisma.runWithTenantContext(user.orgId, async (client) =>
+      (await client.query(`${AuthService.INVITATION_SELECT} ORDER BY i.created_at DESC`)).rows.map((r) => this.mapInvitation(r)));
+  }
+
+  /** A fresh link (7 days); the previous one stops working. Pending and expired invitations only. */
+  async resendInvitation(user: AuthenticatedUser, id: string, ip?: string, userAgent?: string): Promise<InvitationRow> {
+    const inviteToken = randomBytes(32).toString('hex');
+    const row = await this.prisma.runWithTenantContext(user.orgId, async (client) => {
+      const current = (await client.query(`${AuthService.INVITATION_SELECT} WHERE i.id = $1 FOR UPDATE OF i`, [id])).rows[0];
+      if (!current) throw new NotFoundException('Invitation not found');
+      const status = AuthService.invitationStatus(current as { accepted_at: Date | null; revoked_at: Date | null; expires_at: Date });
+      if (status === 'ACCEPTED' || status === 'REVOKED') throw new ConflictException(`This invitation was ${status.toLowerCase()} and cannot be resent`);
+      await client.query(
+        `UPDATE invitations SET token_hash = $2, expires_at = $3, last_sent_at = now() WHERE id = $1`,
+        [id, sha256(inviteToken), new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)],
+      );
+      await this.recordAudit(client, { orgId: user.orgId, actorId: user.id, action: 'INVITATION_RESENT', entityType: 'INVITATION', entityId: id, after: { email: current.email }, ip, userAgent });
+      return (await client.query(`${AuthService.INVITATION_SELECT} WHERE i.id = $1`, [id])).rows[0];
+    });
+    await this.sendInvitation(row.email as string, inviteToken, user.displayName ?? user.email);
+    return this.mapInvitation(row);
+  }
+
+  async revokeInvitation(user: AuthenticatedUser, id: string, ip?: string, userAgent?: string): Promise<InvitationRow> {
+    return await this.prisma.runWithTenantContext(user.orgId, async (client) => {
+      const current = (await client.query(`${AuthService.INVITATION_SELECT} WHERE i.id = $1 FOR UPDATE OF i`, [id])).rows[0];
+      if (!current) throw new NotFoundException('Invitation not found');
+      if (current.accepted_at) throw new ConflictException('This invitation was already accepted');
+      await client.query(`UPDATE invitations SET revoked_at = COALESCE(revoked_at, now()) WHERE id = $1`, [id]);
+      await this.recordAudit(client, { orgId: user.orgId, actorId: user.id, action: 'INVITATION_REVOKED', entityType: 'INVITATION', entityId: id, after: { email: current.email }, ip, userAgent });
+      return this.mapInvitation((await client.query(`${AuthService.INVITATION_SELECT} WHERE i.id = $1`, [id])).rows[0]);
     });
   }
 
@@ -200,6 +280,9 @@ export class AuthService {
     if (invite.accepted_at) {
       throw new BadRequestException('Invitation has already been accepted');
     }
+    if (invite.revoked_at) {
+      throw new BadRequestException('Invitation has been revoked');
+    }
 
     if (new Date(invite.expires_at).getTime() < Date.now()) {
       throw new BadRequestException('Invitation token has expired');
@@ -218,8 +301,8 @@ export class AuthService {
       }
 
       const userRes = await client.query(
-        `INSERT INTO users (org_id, email, display_name, role, team_id, password_hash, status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE')
+        `INSERT INTO users (org_id, email, display_name, role, team_id, password_hash, status, email_verified_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', CURRENT_TIMESTAMP)
          RETURNING id, org_id, email, display_name, role, created_at`,
         [
           invite.org_id,
@@ -268,13 +351,45 @@ export class AuthService {
       [dto.email.toLowerCase()],
     );
 
-    if (userRes.rows.length === 0) {
+    // ADR 037: one address may belong to several workspaces (self-service signup). Which one is
+    // meant comes from `workspace`; without it, and after the password has been checked, the
+    // person is asked to choose, so the list never reveals anything to someone without the password.
+    let candidates = userRes.rows;
+    let workspaces: WorkspaceRow[] = [];
+    if (candidates.length > 1 || dto.workspace) {
+      workspaces = (await pool.query<WorkspaceRow>(`SELECT * FROM fn_lookup_workspaces_for_email($1)`, [dto.email.toLowerCase()])).rows;
+      if (dto.workspace) {
+        const chosen = workspaces.find((w) => w.slug === dto.workspace);
+        candidates = chosen ? candidates.filter((u) => u.id === chosen.user_id) : [];
+      }
+    }
+
+    if (candidates.length === 0) {
       // No tenant to attribute an audit entry to; equalise timing instead.
       await argon2.verify(await this.getDummyHash(), dto.password).catch(() => false);
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    const user = userRes.rows[0];
+    let user = candidates[0]!;
+    if (candidates.length > 1) {
+      const matching: AuthUserRow[] = [];
+      for (const c of candidates) {
+        const open = !(c.locked_until && new Date(c.locked_until).getTime() > Date.now());
+        if (open && c.password_hash && await argon2.verify(c.password_hash, dto.password)) matching.push(c);
+      }
+      if (matching.length === 0) {
+        for (const c of candidates) await this.registerFailedAttempt(c, 'LOGIN_FAILED', meta).catch(() => undefined);
+        throw new UnauthorizedException('Invalid email or password');
+      }
+      if (matching.length > 1) {
+        return {
+          chooseWorkspace: true as const,
+          workspaces: matching.map((u) => { const w = workspaces.find((x) => x.user_id === u.id); return { slug: w?.slug ?? '', name: w?.name ?? '' }; }),
+          message: 'This address belongs to several workspaces. Choose one.',
+        };
+      }
+      user = matching[0]!;
+    }
 
     // FR-AUTH-007: 5 failed attempts -> 15 min lockout
     if (user.locked_until && new Date(user.locked_until).getTime() > Date.now()) {
@@ -295,6 +410,12 @@ export class AuthService {
     if (user.status !== 'ACTIVE') {
       await this.auditUser(user, 'LOGIN_REJECTED_INACTIVE', meta, { status: user.status });
       throw new UnauthorizedException('Account is not active');
+    }
+
+    // ADR 037: a self-created workspace opens once its owner's address is verified.
+    if (!user.email_verified_at) {
+      await this.auditUser(user, 'LOGIN_REJECTED_UNVERIFIED', meta);
+      throw new ForbiddenException({ statusCode: 403, message: 'Verify your e-mail address first. We sent you a link; you can request a new one.', code: 'EMAIL_NOT_VERIFIED' });
     }
 
     if (user.mfa_enabled) {
@@ -352,7 +473,7 @@ export class AuthService {
   }
 
   /** Counts a failed password or 2FA attempt toward lockout, audits it, and throws 401. */
-  private async registerFailedAttempt(
+  async registerFailedAttempt(
     user: AuthUserRow,
     action: 'LOGIN_FAILED' | '2FA_FAILED',
     meta: RequestMeta,
@@ -418,14 +539,15 @@ export class AuthService {
     user: Pick<AuthUserRow, 'id' | 'org_id' | 'email' | 'display_name' | 'role' | 'team_id'>,
     meta: RequestMeta,
     auditAction: string,
+    method: 'PASSWORD' | 'GOOGLE' | 'AGENT' = 'PASSWORD',
   ) {
     const sessionId = randomUUID();
     const familyId = randomUUID();
     const refreshToken = randomBytes(32).toString('hex');
 
     await client.query(
-      `INSERT INTO auth_sessions (id, org_id, user_id, family_id, refresh_token_hash, expires_at, ip, user_agent)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      `INSERT INTO auth_sessions (id, org_id, user_id, family_id, refresh_token_hash, expires_at, ip, user_agent, login_method)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         sessionId,
         user.org_id,
@@ -435,6 +557,7 @@ export class AuthService {
         new Date(Date.now() + REFRESH_TTL_MS),
         meta.ip || null,
         meta.userAgent || null,
+        method,
       ],
     );
 
@@ -460,7 +583,7 @@ export class AuthService {
       action: auditAction,
       entityType: 'SESSION',
       entityId: sessionId,
-      after: { role: user.role, ip: meta.ip },
+      after: { role: user.role, ip: meta.ip, method },
       ip: meta.ip,
       userAgent: meta.userAgent,
     });
@@ -487,7 +610,7 @@ export class AuthService {
     user: Pick<AuthUserRow, 'id' | 'org_id' | 'email' | 'display_name' | 'role' | 'team_id'>,
     meta: RequestMeta,
   ) {
-    return await this.issueSession(client, user, meta, 'AGENT_PAIRED_LOGIN');
+    return await this.issueSession(client, user, meta, 'AGENT_PAIRED_LOGIN', 'AGENT');
   }
 
   /** ADR 018: revoking a desktop agent revokes its session family (sockets are dropped via hrvo_auth_events). */
@@ -495,31 +618,17 @@ export class AuthService {
     return await this.revokeSessions(client, orgId, { familyId }, 'DEVICE_REVOKED');
   }
 
-  /**
-   * Revokes every still-valid session in a family (or of a user). Rows already revoked for a
-   * non-rotation reason keep their original reason. Fires the hrvo_auth_events trigger.
-   */
+  /** Revokes every still-valid session in a family (or of a user); sockets drop via hrvo_auth_events. */
   private async revokeSessions(
     client: pg.PoolClient,
     orgId: string,
     scope: { familyId: string } | { userId: string },
     reason: Exclude<RevokeReason, 'ROTATED'>,
   ): Promise<number> {
-    const [column, value] = 'familyId' in scope ? ['family_id', scope.familyId] : ['user_id', scope.userId];
-    const res = await client.query(
-      `UPDATE auth_sessions
-       SET is_revoked = true, revoked_reason = $3, updated_at = CURRENT_TIMESTAMP
-       WHERE org_id = $1 AND ${column} = $2
-         AND (NOT is_revoked OR revoked_reason IS NULL OR revoked_reason = 'ROTATED')
-       RETURNING id`,
-      [orgId, value, reason],
-    );
-    await client.query(
-      `DELETE FROM session_secrets
-       WHERE org_id = $1 AND session_id IN (SELECT id::text FROM auth_sessions WHERE org_id = $1 AND ${column} = $2)`,
-      [orgId, value],
-    );
-    return res.rowCount ?? 0;
+    const n = await revokeSessionsOf(client, orgId, scope, reason);
+    // Access tokens of the revoked sessions stop working on their next request (FR-AUTH-009).
+    this.resolver.invalidateOrg(orgId);
+    return n;
   }
 
   /**
@@ -584,8 +693,8 @@ export class AuthService {
       const newRefreshToken = randomBytes(32).toString('hex');
 
       await client.query(
-        `INSERT INTO auth_sessions (id, org_id, user_id, family_id, refresh_token_hash, expires_at, ip, user_agent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        `INSERT INTO auth_sessions (id, org_id, user_id, family_id, refresh_token_hash, expires_at, ip, user_agent, login_method)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, (SELECT login_method FROM auth_sessions WHERE id = $9))`,
         [
           newSessionId,
           session.org_id,
@@ -595,6 +704,7 @@ export class AuthService {
           new Date(Date.now() + REFRESH_TTL_MS),
           ip || null,
           userAgent || null,
+          session.id,
         ],
       );
 
@@ -943,7 +1053,40 @@ export class AuthService {
     return { success: true };
   }
 
-  private async auditUser(user: AuthUserRow, action: string, meta: RequestMeta, after?: Record<string, unknown>) {
+  // ---------------------------------------------------------------- ADR 037: used by Google sign-in
+
+  /** A person by id, in their tenant (null when missing). */
+  async loadAuthUser(orgId: string, userId: string): Promise<AuthUserRow | null> {
+    return await this.prisma.runWithTenantContext(orgId, async (client) =>
+      (await client.query<AuthUserRow>(`SELECT * FROM users WHERE id = $1`, [userId])).rows[0] ?? null);
+  }
+
+  /** The TOTP or recovery-code check, once an external identity has been verified. */
+  async verifySecondFactor(user: AuthUserRow, code: string, meta: RequestMeta): Promise<boolean> {
+    const step = user.mfa_secret ? totpStep(user.mfa_secret, code) : null;
+    const valid = step !== null && await this.prisma.runWithTenantContext(user.org_id, (client) => consumeTotpStep(client, user.id, step));
+    if (valid) return true;
+    return await this.consumeRecoveryCode(user, code, meta);
+  }
+
+  /** A new login for a person whose identity was verified by other means (Google), audited as such. */
+  async issueSessionFor(user: AuthUserRow, meta: RequestMeta, auditAction: string, method: 'PASSWORD' | 'GOOGLE' = 'GOOGLE') {
+    return await this.prisma.runWithTenantContext(user.org_id, async (client) => {
+      await client.query(`UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`, [user.id]);
+      return await this.issueSession(client, user, meta, auditAction, method);
+    });
+  }
+
+  /** The short-lived token that only opens /auth/2fa/setup and /auth/2fa/verify (FR-AUTH-004). */
+  async mfaEnrollmentToken(user: AuthUserRow, meta: RequestMeta): Promise<string> {
+    await this.auditUser(user, '2FA_ENROLLMENT_REQUIRED', meta);
+    return signMfaEnrollmentToken({
+      sub: user.id, orgId: user.org_id, email: user.email, role: user.role as AuthenticatedUser['role'],
+      displayName: user.display_name ?? undefined, teamId: user.team_id,
+    });
+  }
+
+  async auditUser(user: AuthUserRow, action: string, meta: RequestMeta, after?: Record<string, unknown>) {
     await this.prisma.runWithTenantContext(user.org_id, async (client) => {
       await this.recordAudit(client, {
         orgId: user.org_id,

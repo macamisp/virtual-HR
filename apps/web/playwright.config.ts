@@ -7,8 +7,11 @@ import { defineConfig, devices } from '@playwright/test';
  */
 const API_PORT = 3101;
 const WEB_PORT = 3100;
+// A local OpenID Connect provider standing in for Google (apps/api/test/support/fake-google.ts).
+const FAKE_GOOGLE_PORT = 3102;
 const apiUrl = `http://localhost:${API_PORT}`;
 const webUrl = `http://localhost:${WEB_PORT}`;
+const fakeGoogleUrl = `http://localhost:${FAKE_GOOGLE_PORT}`;
 
 export default defineConfig({
   testDir: './e2e',
@@ -65,7 +68,26 @@ export default defineConfig({
         // attendance reconciler, which the accuracy spec (23) needs for tab-close and network-loss.
         JOBS_ENABLED: 'false',
         ATTENDANCE_RECONCILE_INLINE_MS: '5000',
+        // Sign in with Google against the fake provider (FR-AUTH-005; ADR 037); the specs start
+        // many sign-ins per minute, so the signup and OAuth buckets are raised like the login one.
+        RATE_LIMIT_SIGNUP: '500',
+        RATE_LIMIT_OAUTH: '500',
+        APP_WEB_URL: webUrl,
+        GOOGLE_CLIENT_ID: 'fake-google-client',
+        GOOGLE_CLIENT_SECRET: 'fake-google-secret',
+        GOOGLE_REDIRECT_URI: `${apiUrl}/auth/google/callback`,
+        GOOGLE_OAUTH_AUTH_URL: `${fakeGoogleUrl}/auth`,
+        GOOGLE_OAUTH_TOKEN_URL: `${fakeGoogleUrl}/token`,
+        GOOGLE_OIDC_JWKS_URL: `${fakeGoogleUrl}/certs`,
+        GOOGLE_OIDC_ISSUER: fakeGoogleUrl,
       } as Record<string, string>,
+    },
+    {
+      command: 'node --experimental-strip-types --no-warnings=ExperimentalWarning ../api/test/support/fake-google-server.ts',
+      url: `${fakeGoogleUrl}/.well-known/openid-configuration`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      env: { ...process.env, NODE_ENV: 'development', FAKE_GOOGLE_PORT: String(FAKE_GOOGLE_PORT) } as Record<string, string>,
     },
     {
       command: `npx next build && npx next start -p ${WEB_PORT}`,

@@ -84,17 +84,32 @@ export type RetentionOverview = z.infer<typeof RetentionOverviewSchema>;
 
 // ---------------------------------------------------------------- FR-ADM-002 roles
 
+/** Display names of the built-in roles (ADR 037): SUPER_ADMIN is shown as Owner, EMPLOYEE as Member. */
 export const ROLE_LABEL: Record<UserRole, string> = {
-  SUPER_ADMIN: 'Super admin',
+  SUPER_ADMIN: 'Owner',
   ADMIN: 'Admin',
   HR_MANAGER: 'HR manager',
   HR: 'HR',
-  MANAGER: 'Manager',
+  MANAGER: 'Project manager',
   TEAM_LEAD: 'Team lead',
-  EMPLOYEE: 'Employee',
+  EMPLOYEE: 'Member',
   SUBCONTRACTOR: 'Subcontractor',
   INTERN: 'Intern',
-  AUDITOR: 'Auditor',
+  AUDITOR: 'Finance / Auditor',
+};
+
+/** One line per built-in role for the roles screen and the invitation form. */
+export const ROLE_DESCRIPTION: Record<UserRole, string> = {
+  SUPER_ADMIN: 'Everything, including organisation settings, billing and ownership transfer.',
+  ADMIN: 'Users, roles and settings; cannot touch owners.',
+  HR_MANAGER: 'People, contracts, leave, all attendance, confidential HR documents and reports.',
+  HR: 'HR operations without the most sensitive reveals.',
+  MANAGER: 'Projects, task assignment, project timesheet approval and team attendance.',
+  TEAM_LEAD: 'Own-team tasks, the live board and correction review.',
+  EMPLOYEE: 'Own attendance, tasks, timesheets and documents, meetings and chat.',
+  SUBCONTRACTOR: 'Like a member, limited to own and assigned-project data.',
+  INTERN: 'Like a member, for a fixed period.',
+  AUDITOR: 'Read-only timesheets, exports and the audit log.',
 };
 
 const permissionValues = Object.values(Permission) as [Permission, ...Permission[]];
@@ -155,6 +170,10 @@ export const AdminUserRowSchema = z.object({
   status: z.string(),
   customRoleId: z.string().nullable(),
   customRoleName: z.string().nullable(),
+  isOwner: z.boolean(),
+  jobTitle: z.string().nullable(),
+  mfaEnabled: z.boolean(),
+  emailVerified: z.boolean(),
 });
 export type AdminUserRow = z.infer<typeof AdminUserRowSchema>;
 export const AdminUserListSchema = z.array(AdminUserRowSchema);
@@ -163,6 +182,10 @@ export const MyAccessSchema = z.object({
   role: z.enum(roleValues),
   customRoleName: z.string().nullable(),
   permissions: permissionList,
+  isOwner: z.boolean(),
+  jobTitle: z.string().nullable(),
+  /** FR-AUTH-005: password and/or Google. */
+  signInMethods: z.object({ password: z.boolean(), google: z.boolean(), googleEmail: z.string().nullable() }),
 });
 export type MyAccess = z.infer<typeof MyAccessSchema>;
 

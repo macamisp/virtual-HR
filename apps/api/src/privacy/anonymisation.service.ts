@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
+import { lockUsersForWrite } from '../common/lock-order.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
 import { PermissionResolver } from '../common/permission-resolver.ts';
 import { PostgresAttendanceRepository } from '../attendance/attendance-repository.ts';
@@ -159,7 +160,7 @@ export class AnonymisationService {
         await db.query(`UPDATE privacy_requests SET status = 'BLOCKED', blockers = $2, updated_at = now() WHERE id = $1`, [requestId, JSON.stringify(check.blockers)]);
         throw new ConflictException(`Cannot anonymise yet: ${check.blockers.map((b) => b.detail).join(' ')}`);
       }
-      await db.query(`SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+      await lockUsersForWrite(db, [userId]);
       // Lets the time-entries lock guard accept free-text redaction on locked sheets (this transaction only).
       await db.query(`SELECT set_config('app.anonymising', 'on', true)`);
       const result: Record<string, number> = {};

@@ -17,3 +17,14 @@ verify-logs/
 .env.demo-internet
 infra/demo/cloudflared.yml
 .demo-internet/
+
+# LAN HTTPS (docs/runbooks/lan-https.md): mkcert certificates, keys, pids, logs and the generated env.
+# Never commit certificates, private keys or a CA (rootCA.pem / rootCA-key.pem).
+.lan-https/
+.env.lan
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+rootCA*

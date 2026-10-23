@@ -35,7 +35,7 @@ The SRS has 151 functional requirement IDs.
 
 | Module | IDs | DONE | PARTIAL | MISSING | Missing IDs |
 | --- | ---: | ---: | ---: | ---: | --- |
-| AUTH | 12 | 6 | 4 | 2 | FR-AUTH-005, 012 |
+| AUTH | 12 | 6 | 5 | 1 | FR-AUTH-012 |
 | ORG | 12 | 5 | 5 | 2 | FR-ORG-007, 008 |
 | VO | 14 | 11 | 1 | 2 | FR-VO-011, 014 |
 | MEET | 14 | 9 | 4 | 1 | FR-MEET-014 |
@@ -241,7 +241,7 @@ ClamAV needs a few minutes after its first start to load its signatures. Until t
 **What does not work yet**
 - Everything listed under MISSING and PARTIAL in section 2. The most visible gaps:
   - no organisation administration (organisation profile, teams, schedules, onboarding and off-boarding);
-  - no SSO login (Google or Microsoft);
+  - no Microsoft sign-in (Google sign-in is done: ADR 037, docs/runbooks/google-signin.md);
   - no web push;
   - no map editor;
   - no guest links;
@@ -331,7 +331,7 @@ Four slices on branch `feat/org-people`, each with migration, API, screens, test
 
 Proofs asked for: `subcontractor-profile-e2e` › "a subcontractor cannot read, reveal, edit or list another person's profile…" and › "a database dump does not reveal tax or bank values: every row of every table, as text, in plain, hex or base64 form" (with a positive control), plus a log-capture test. Engine and crypto tests were written first (`schedule-compliance`, `profile-crypto`).
 
-Gates on the branch (19 October 2026): lint and typecheck clean; API **743 / 744** with coverage 97.2 % lines, 80.8 % branches, 95.5 % functions (the one failure is the date-dependent timesheet reminder test below); Playwright **67 passed, 2 skipped** (recording needs Egress), 1 failed and 1 not run in the full run: `11-vault` › "a share link opens one document…" got a generic download file name under load and passes alone (3 / 3). Two suites also hit a Postgres deadlock in their setup (`DELETE FROM organizations` racing another suite's `presence_events` inserts); existing, load-dependent, not touched by this work.
+Gates on the branch (19 October 2026): lint and typecheck clean; API **743 / 744** with coverage 97.2 % lines, 80.8 % branches, 95.5 % functions (the one failure is the date-dependent timesheet reminder test below); Playwright **67 passed, 2 skipped** (recording needs Egress), 1 failed and 1 not run in the full run: `11-vault` › "a share link opens one document…" got a generic download file name under load and passes alone (3 / 3). Two suites also hit a Postgres deadlock in their setup (`DELETE FROM organizations` racing another suite's `presence_events` inserts). Root cause found and fixed on 23 October 2026 (ADR 038): inconsistent lock order between session saves, audit appends and parent-row writers, plus attendance writes outliving `app.close()`; reproduced deterministically in `lock-order.test.ts`.
 
 Found on the way, not fixed here: three tests fail on `main` as well on 19 October 2026 (`timesheets-e2e` › "owners are reminded to submit on the last day…", `reports-e2e` › "per assignee…", `attendance-guards-e2e` › "several open items alert the manager once per week"); they look date-dependent and need their own fix. The server accepts a 2FA code only inside its own 30-second step (no tolerance); the new e2e admin sign-in waits for a fresh step.
 

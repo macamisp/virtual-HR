@@ -22,6 +22,8 @@ const USERS = [
   { id: '44440000-0000-4000-8000-000000000013', email: 'worker@acme.demo', name: 'Wendy Worker', role: 'EMPLOYEE', team: true },
   { id: '44440000-0000-4000-8000-000000000014', email: 'sam@acme.demo', name: 'Sam Subcontractor', role: 'SUBCONTRACTOR', team: true },
   { id: '44440000-0000-4000-8000-000000000015', email: 'admin@acme.demo', name: 'Ada Admin', role: 'ADMIN', team: false },
+  // ADR 037: the workspace owner (SUPER_ADMIN with is_owner); ownership, sign-in settings and billing.
+  { id: '44440000-0000-4000-8000-000000000016', email: 'owner@acme.demo', name: 'Oona Owner', role: 'SUPER_ADMIN', team: false },
 ];
 
 async function main(): Promise<void> {
@@ -40,9 +42,9 @@ async function main(): Promise<void> {
     const hash = await argon2.hash(PASSWORD, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 });
     for (const u of USERS) {
       await pool.query(
-        `INSERT INTO users (id, org_id, email, display_name, role, team_id, password_hash, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE')`,
-        [u.id, ORG_ID, u.email, u.name, u.role, u.team ? TEAM_ID : null, hash],
+        `INSERT INTO users (id, org_id, email, display_name, role, team_id, password_hash, status, is_owner)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE', $8)`,
+        [u.id, ORG_ID, u.email, u.name, u.role, u.team ? TEAM_ID : null, hash, u.role === 'SUPER_ADMIN'],
       );
     }
     const lead = USERS[1]!.id;
@@ -60,7 +62,7 @@ async function main(): Promise<void> {
     const web = process.env.APP_WEB_URL || 'http://localhost:3000';
     console.log('Seeded demo organisation "Acme Demo". All passwords:', PASSWORD);
     for (const u of USERS) console.log(`  ${u.role.padEnd(14)} ${u.email}`);
-    console.log('HR must enrol TOTP on first sign-in (authenticator app needed).');
+    console.log('HR, Admin and the Owner must enrol TOTP on first sign-in (authenticator app needed).');
     console.log(`Invitation link for newhire@acme.demo:\n  ${web}/accept-invitation#token=${inviteToken}`);
   } finally {
     await pool.end();

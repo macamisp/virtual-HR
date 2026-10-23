@@ -2,7 +2,9 @@ import { z } from 'zod';
 import {
   Controller,
   Delete,
+  Get,
   Param,
+  Query,
   Post,
   Body,
   Req,
@@ -16,6 +18,8 @@ import {
 import type { Request, Response } from 'express';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service.ts';
+import { WorkspaceService } from './workspace.service.ts';
+import { GoogleSignInService, OAUTH_COOKIE, OAUTH_COOKIE_PATH } from './google-signin.service.ts';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.ts';
 import { PermissionsGuard } from '../common/guards/permissions.guard.ts';
 import { Public } from '../common/decorators/public.decorator.ts';
@@ -38,6 +42,11 @@ import {
   Verify2faDtoSchema,
   PasswordForgotDtoSchema,
   PasswordResetDtoSchema,
+  WorkspaceSignupDtoSchema,
+  VerifyEmailDtoSchema,
+  ResendVerificationDtoSchema,
+  GoogleStartDtoSchema,
+  GoogleTotpDtoSchema,
 } from '../../../../packages/shared/src/index.ts';
 import type {
   LoginDto,
@@ -47,6 +56,11 @@ import type {
   PasswordForgotDto,
   PasswordResetDto,
   AuthenticatedUser,
+  WorkspaceSignupDto,
+  VerifyEmailDto,
+  ResendVerificationDto,
+  GoogleStartDto,
+  GoogleTotpDto,
 } from '../../../../packages/shared/src/index.ts';
 import { SelfService } from '../common/decorators/self-service.decorator.ts';
 
@@ -74,7 +88,118 @@ function moveRefreshTokenToCookie<T extends object>(res: Response, result: T): O
 @Controller('auth')
 @UseGuards(ThrottlerGuard, JwtAuthGuard, PermissionsGuard)
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(private readonly authService: AuthService, private readonly workspaces: WorkspaceService, private readonly google: GoogleSignInService) {}
+
+  // ---------------------------------------------------------------- ADR 037: self-service workspaces
+
+  @Public()
+  @Post('signup')
+  @RateLimit('signup')
+  @HttpCode(HttpStatus.CREATED)
+  @UsePipes(new ZodValidationPipe(WorkspaceSignupDtoSchema))
+  async signup(@Body() dto: WorkspaceSignupDto, @Req() req: Request) {
+    const [ip, userAgent] = requestMeta(req);
+    return await this.workspaces.signup(dto, { ip, userAgent });
+  }
+
+  @Public()
+  @Post('email/verify')
+  @RateLimit('signup')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(VerifyEmailDtoSchema))
+  async verifyEmail(@Body() dto: VerifyEmailDto, @Req() req: Request) {
+    const [ip, userAgent] = requestMeta(req);
+    return await this.workspaces.verifyEmail(dto.token, { ip, userAgent });
+  }
+
+  @Public()
+  @Post('email/resend')
+  @RateLimit('signup')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @UsePipes(new ZodValidationPipe(ResendVerificationDtoSchema))
+  async resendVerification(@Body() dto: ResendVerificationDto) {
+    return await this.workspaces.resendVerification(dto);
+  }
+
+  // ---------------------------------------------------------------- FR-AUTH-005: sign in with Google
+
+  /** Returns Google's authorization URL; the state, nonce and PKCE verifier go into a signed cookie. */
+  @Public()
+  @Post('google/start')
+  @RateLimit('signup')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(GoogleStartDtoSchema))
+  googleStart(@Body() dto: GoogleStartDto, @Res({ passthrough: true }) res: Response) {
+    const r = this.google.start(dto);
+    res.cookie(r.cookie.name, r.cookie.value, r.cookie.options);
+    return { authorizeUrl: r.authorizeUrl };
+  }
+
+  /** Google redirects here; the browser is sent on to the web app with the outcome. */
+  @Public()
+  @Get('google/callback')
+  @RateLimit('oauth')
+  async googleCallback(@Query() q: Record<string, unknown>, @Req() req: Request, @Res() res: Response): Promise<void> {
+    const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+    const [ip, userAgent] = requestMeta(req);
+    const cookie: unknown = req.cookies?.[OAUTH_COOKIE];
+    const r = await this.google.callback({ code: str(q.code), state: str(q.state), error: str(q.error) }, typeof cookie === 'string' ? cookie : undefined, { ip, userAgent });
+    res.clearCookie(OAUTH_COOKIE, { path: OAUTH_COOKIE_PATH });
+    if (r.refreshToken) res.cookie(REFRESH_COOKIE_NAME, r.refreshToken, { ...refreshCookieOptions(), maxAge: REFRESH_MAX_AGE_MS });
+    res.redirect(302, r.redirect);
+  }
+
+  /** Signed in: add Google to the account (any verified Google address the person controls). */
+  @SelfService()
+  @Post('google/link')
+  @RateLimit('signup')
+  @HttpCode(HttpStatus.OK)
+  googleLink(@CurrentUser() user: AuthenticatedUser, @Res({ passthrough: true }) res: Response) {
+    const r = this.google.start({ mode: 'link' }, { id: user.id, orgId: user.orgId });
+    res.cookie(r.cookie.name, r.cookie.value, r.cookie.options);
+    return { authorizeUrl: r.authorizeUrl };
+  }
+
+  /** Remove Google from the account; refused while it is the only sign-in method. */
+  @SelfService()
+  @Delete('google/link')
+  @HttpCode(HttpStatus.OK)
+  async googleUnlink(@CurrentUser() user: AuthenticatedUser, @Req() req: Request) {
+    const [ip, userAgent] = requestMeta(req);
+    return await this.google.unlink({ id: user.id, orgId: user.orgId }, { ip, userAgent });
+  }
+
+  @Public()
+  @Post('google/totp')
+  @RateLimit('login')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(GoogleTotpDtoSchema))
+  async googleTotp(@Body() dto: GoogleTotpDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const [ip, userAgent] = requestMeta(req);
+    return moveRefreshTokenToCookie(res, await this.google.completeTotp(dto, { ip, userAgent }));
+  }
+
+  // ---------------------------------------------------------------- FR-AUTH-001 invitations
+
+  @Get('invitations')
+  @RequirePermissions(Permission.USERS_INVITE)
+  async listInvitations(@CurrentUser() user: AuthenticatedUser) {
+    return await this.authService.listInvitations(user);
+  }
+
+  @Post('invitations/:id/resend')
+  @RequirePermissions(Permission.USERS_INVITE)
+  @HttpCode(HttpStatus.OK)
+  async resendInvitation(@CurrentUser() user: AuthenticatedUser, @Param('id', new ZodValidationPipe(z.uuid())) id: string, @Req() req: Request) {
+    return await this.authService.resendInvitation(user, id, ...requestMeta(req));
+  }
+
+  @Post('invitations/:id/revoke')
+  @RequirePermissions(Permission.USERS_INVITE)
+  @HttpCode(HttpStatus.OK)
+  async revokeInvitation(@CurrentUser() user: AuthenticatedUser, @Param('id', new ZodValidationPipe(z.uuid())) id: string, @Req() req: Request) {
+    return await this.authService.revokeInvitation(user, id, ...requestMeta(req));
+  }
 
   @Post('invitations/invite')
   @RequirePermissions(Permission.USERS_INVITE)

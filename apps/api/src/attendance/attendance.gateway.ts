@@ -167,7 +167,12 @@ export class AttendanceGateway
   }
 
   /** On disconnect, trigger the 120-second disconnect grace window (FR-ATT-002, Section 6.2 Row 10). */
-  async handleDisconnect(client: Socket): Promise<void> {
+  handleDisconnect(client: Socket): Promise<void> {
+    // ADR 038: shutdown waits for this (the socket server closes before the pools do).
+    return this.attendanceService.trackWork(this.recordDisconnect(client));
+  }
+
+  private async recordDisconnect(client: Socket): Promise<void> {
     this.clearExpiry(client.id);
     const auth = client.data?.auth as SocketAuth | undefined;
     if (auth?.user.sub) {

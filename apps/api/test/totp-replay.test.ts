@@ -22,7 +22,7 @@ describe('2FA codes cannot be replayed (FR-AUTH-004)', { concurrency: false }, (
   let app: INestApplication;
   let admin: pg.Pool;
   const secret = generateSecret();
-  const base = 'http://localhost:3097';
+  const base = 'http://localhost:3043';
   const nowSec = () => Math.floor(Date.now() / 1000);
   const code = (offsetSeconds = 0) => generateSync({ secret, epoch: nowSec() + offsetSeconds });
   const login = async (totpCode: string) => {
@@ -44,7 +44,7 @@ describe('2FA codes cannot be replayed (FR-AUTH-004)', { concurrency: false }, (
     await admin.query(`INSERT INTO users (id, org_id, email, display_name, role, password_hash, status, mfa_enabled, mfa_secret) VALUES ($1, $2, 'r@replay2fa.test', 'R', 'HR', $3, 'ACTIVE', true, $4)`, [USER, ORG, hash, secret]);
     app = await NestFactory.create(AppModule, { logger: false });
     configureApp(app);
-    await app.listen(3097);
+    await app.listen(3043);
   });
 
   after(async () => {

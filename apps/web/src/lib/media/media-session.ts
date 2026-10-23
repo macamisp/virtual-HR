@@ -14,6 +14,7 @@ import { MEETING_DATA_TOPIC } from '@hrvo/shared';
 import type { MediaToken, MeetingDataMessage } from '@hrvo/shared';
 import { usePresenceStore } from '@/heartbeat/presence-store';
 import type { DevicePrefs } from './devices';
+import { followPageHost } from '@hrvo/shared/local-url';
 
 export interface Tile {
   identity: string;
@@ -98,7 +99,8 @@ export class MediaSession {
         } catch { /* ignore malformed data */ }
       });
     try {
-      await room.connect(token.url, token.token);
+      // The signalling address follows the host this page was opened from (docs/runbooks/lan-https.md).
+      await room.connect(followPageHost(token.url, window.location), token.token);
       this.status = 'connected';
       this.count();
       await room.localParticipant.setMicrophoneEnabled(prefs.micOn).catch((e: unknown) => this.fail(e, 'The microphone could not be started'));

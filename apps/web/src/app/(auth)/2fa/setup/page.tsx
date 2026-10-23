@@ -13,6 +13,7 @@ import { LoadingState } from '@/components/state-views';
 import { apiFetch } from '@/lib/api';
 import { useAuthStore } from '@/lib/auth-store';
 import { otpauthQrDataUrl } from '@/lib/qr';
+import { useUrlToken } from '@/lib/url-token';
 
 function groupSecret(secret: string): string {
   return secret.replace(/(.{4})/g, '$1 ').trim();
@@ -26,7 +27,11 @@ function SetupFlow() {
   const enrollmentToken = useAuthStore((s) => s.enrollmentToken);
   const accessToken = useAuthStore((s) => s.accessToken);
   const setSession = useAuthStore((s) => s.setSession);
-  const hasToken = !!(enrollmentToken ?? accessToken);
+  const setEnrollmentToken = useAuthStore((s) => s.setEnrollmentToken);
+  // A Google sign-in (FR-AUTH-005) lands here with the enrolment token in the URL fragment.
+  const urlToken = useUrlToken();
+  useEffect(() => { if (urlToken) setEnrollmentToken(urlToken); }, [urlToken, setEnrollmentToken]);
+  const hasToken = !!(enrollmentToken ?? accessToken ?? urlToken);
 
   const [setup, setSetup] = useState<MfaSetupResponse | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);

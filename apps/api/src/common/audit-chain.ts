@@ -4,6 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import type pg from 'pg';
+import { lockTenantParents } from './lock-order.ts';
 import { PostgresAttendanceRepository } from '../attendance/attendance-repository.ts';
 
 export interface AuditEntry {
@@ -21,7 +22,9 @@ export interface AuditEntry {
 const GENESIS = '0'.repeat(64);
 
 export async function appendAuditEntry(client: pg.PoolClient, entry: AuditEntry): Promise<void> {
-  // Concurrency-safe hash chaining with a per-org advisory lock
+  // ADR 038 lock order: parent rows (the organisation and the actor) before the per-org
+  // advisory lock that serialises the hash chain, never the other way round.
+  await lockTenantParents(client, entry.orgId, [entry.actorId]);
   await client.query(`SELECT pg_advisory_xact_lock(hashtext('audit_logs:' || $1::text))`, [entry.orgId]);
 
   const lastRes = await client.query<{ hash: string }>(

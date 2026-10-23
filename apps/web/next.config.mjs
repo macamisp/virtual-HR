@@ -1,33 +1,16 @@
 // @ts-check
 import { fileURLToPath } from 'node:url';
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
-const wsUrl = apiUrl.replace(/^http/, 'ws');
-// Browsers upload documents straight to object storage through presigned URLs (ADR 009).
-const storageUrl = process.env.NEXT_PUBLIC_STORAGE_URL ?? '';
-const isDev = process.env.NODE_ENV !== 'production';
-// LiveKit signalling (wss) and its HTTP validate endpoint (ADR 016).
-const liveKitUrl = (process.env.NEXT_PUBLIC_LIVEKIT_URL ?? 'ws://localhost:7880').replace(/\/$/, '');
-const liveKitHttp = liveKitUrl.replace(/^ws/, 'http');
+import { networkInterfaces } from 'node:os';
 
-// Next.js App Router injects inline bootstrap scripts, so script-src needs 'unsafe-inline'
-// until nonce-based CSP is adopted (ADR 006). Everything else is locked down.
-const csp = [
-  "default-src 'self'",
-  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''}`,
-  "style-src 'self' 'unsafe-inline'",
-  // blob: = document previews, fetched with the access token and shown from memory.
-  "img-src 'self' data: blob:",
-  // blob: = meeting recordings (ADR 024), decrypted by the API and played from memory.
-  "media-src 'self' blob:",
-  "frame-src blob:",
-  "font-src 'self'",
-  `connect-src 'self' ${apiUrl} ${wsUrl} ${liveKitUrl} ${liveKitHttp}${storageUrl ? ` ${storageUrl}` : ''}${isDev ? ' ws://localhost:3000' : ''}`,
-  "worker-src 'self' blob:",
-  "frame-ancestors 'none'",
-  "base-uri 'none'",
-  "form-action 'self'",
-  "object-src 'none'",
-].join('; ');
+// The Content Security Policy is set per request in src/middleware.ts (its connect-src follows the
+// host the page was opened from, docs/runbooks/lan-https.md). The static headers are below.
+
+// Hosts other than localhost that may load the dev server's /_next/* assets: this computer's own
+// network addresses, plus LAN_HOST (a fixed address or a name such as hrvo.local).
+const localAddresses = Object.values(networkInterfaces()).flat()
+  .filter((i) => i && i.family === 'IPv4' && !i.internal)
+  .map((i) => i.address);
+const allowedDevOrigins = [...new Set([...localAddresses, process.env.LAN_HOST ?? ''].filter(Boolean))];
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -37,6 +20,7 @@ const nextConfig = {
   // Container images (docker/web.Dockerfile) use the standalone server; `next start` does not.
   ...(process.env.NEXT_OUTPUT === 'standalone' ? { output: 'standalone', outputFileTracingRoot: fileURLToPath(new URL('../..', import.meta.url)) } : {}),
   poweredByHeader: false,
+  allowedDevOrigins,
   transpilePackages: ['@hrvo/shared'],
   // The image optimizer is unused and has had RCE/DoS advisories; keep it off.
   images: { unoptimized: true },
@@ -45,7 +29,6 @@ const nextConfig = {
       {
         source: '/:path*',
         headers: [
-          { key: 'Content-Security-Policy', value: csp },
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'Referrer-Policy', value: 'no-referrer' },
           { key: 'X-Frame-Options', value: 'DENY' },

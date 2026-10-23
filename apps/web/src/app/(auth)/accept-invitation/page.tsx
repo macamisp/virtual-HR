@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { AcceptInvitationResponseSchema } from '@hrvo/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,14 +12,18 @@ import { LoadingState } from '@/components/state-views';
 import { apiFetch } from '@/lib/api';
 import { passwordProblems } from '@/lib/password';
 import { useUrlToken } from '@/lib/url-token';
+import { GoogleButton } from '@/components/google-button';
+import { ssoErrorMessage } from '@/lib/sso';
 
-export default function AcceptInvitationPage() {
+function AcceptInvitation() {
   const token = useUrlToken();
+  const params = useSearchParams();
+  const ssoError = params.get('sso') === 'error' ? ssoErrorMessage(params.get('code')) : null;
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [touched, setTouched] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(ssoError);
   const [pending, setPending] = useState(false);
   const [done, setDone] = useState<string | null>(null);
 
@@ -30,7 +35,7 @@ export default function AcceptInvitationPage() {
   if (!token) {
     return (
       <Alert variant="destructive">
-        <AlertDescription>This invitation link is incomplete. Ask your HR contact to send a new one.</AlertDescription>
+        <AlertDescription>{ssoError ?? 'This invitation link is incomplete. Ask your HR contact to send a new one.'}</AlertDescription>
       </Alert>
     );
   }
@@ -93,12 +98,18 @@ export default function AcceptInvitationPage() {
           <FormField label="Confirm password" type="password" autoComplete="new-password" required value={confirm}
             onChange={(e) => setConfirm(e.target.value)} error={touched ? problems.confirm : null} />
         </CardContent>
-        <CardFooter>
+        <CardFooter className="flex flex-col items-stretch gap-3">
           <Button type="submit" disabled={pending}>
             {pending ? 'Creating account…' : 'Create account'}
           </Button>
+          <GoogleButton label="Continue with Google instead" dto={{ mode: 'invite', inviteToken: token, displayName: displayName.trim() || undefined }} onError={setError} />
+          <p className="text-center text-xs text-muted-foreground">The Google account must use the invited e-mail address.</p>
         </CardFooter>
       </form>
     </Card>
   );
+}
+
+export default function AcceptInvitationPage() {
+  return <Suspense><AcceptInvitation /></Suspense>;
 }
