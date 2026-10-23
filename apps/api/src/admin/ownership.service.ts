@@ -10,6 +10,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
+import { lockOrgForWrite } from '../common/lock-order.ts';
 import { PermissionResolver } from '../common/permission-resolver.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
 import { AttendanceService } from '../attendance/attendance.service.ts';
@@ -80,7 +81,7 @@ export class OwnershipService {
     const ownerOnly = dto.ssoAutoJoinDomain !== undefined || dto.mfaForSso !== undefined;
     if (ownerOnly && !userCan(user, Permission.ORG_OWNER)) throw new ForbiddenException('Only an owner can change the sign-in settings');
     const after = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      await db.query(`SELECT 1 FROM organizations WHERE id = $1 FOR UPDATE`, [user.orgId]);
+      await lockOrgForWrite(db, user.orgId);
       const before = await this.readProfile(db, user.orgId);
       await db.query(
         `UPDATE organizations SET
@@ -151,7 +152,7 @@ export class OwnershipService {
       if (!t) throw new NotFoundException('Transfer not found');
       if (t.to_user_id !== user.id) throw new ForbiddenException('Only the person named in the transfer can accept it');
       if (t.status !== 'PENDING' || t.expires_at.getTime() <= Date.now()) throw new ConflictException('This transfer is no longer open');
-      const from = (await db.query<{ is_owner: boolean; status: string }>(`SELECT is_owner, status FROM users WHERE id = $1 FOR UPDATE`, [t.from_user_id])).rows[0];
+      const from = (await db.query<{ is_owner: boolean; status: string }>(`SELECT is_owner, status FROM users WHERE id = $1 FOR NO KEY UPDATE`, [t.from_user_id])).rows[0];
       if (!from || !from.is_owner || from.status !== 'ACTIVE') throw new ConflictException('The person who started this transfer is no longer an owner');
       await db.query(`UPDATE users SET role = 'SUPER_ADMIN', custom_role_id = NULL, is_owner = true WHERE id = $1`, [t.to_user_id]);
       if (!t.keep_ownership) await db.query(`UPDATE users SET is_owner = false, role = 'ADMIN' WHERE id = $1`, [t.from_user_id]);
@@ -186,7 +187,7 @@ export class OwnershipService {
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       await db.query(`SELECT pg_advisory_xact_lock(hashtext('ownership:' || $1::text))`, [user.orgId]);
       await verifyReauth(db, user.id, proof);
-      const target = (await db.query<{ is_owner: boolean }>(`SELECT is_owner FROM users WHERE id = $1 FOR UPDATE`, [targetId])).rows[0];
+      const target = (await db.query<{ is_owner: boolean }>(`SELECT is_owner FROM users WHERE id = $1 FOR NO KEY UPDATE`, [targetId])).rows[0];
       if (!target) throw new NotFoundException('User not found');
       if (!target.is_owner) throw new ConflictException('This person is not an owner');
       const others = (await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM users WHERE is_owner AND status = 'ACTIVE' AND id <> $1`, [targetId])).rows[0]!.n;

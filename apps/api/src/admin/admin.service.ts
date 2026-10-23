@@ -1,6 +1,7 @@
 import { AttendanceGateway } from '../attendance/attendance.gateway.ts';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service.ts';
+import { lockOrgForWrite } from '../common/lock-order.ts';
 import { PermissionResolver } from '../common/permission-resolver.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
 import { AttendanceService } from '../attendance/attendance.service.ts';
@@ -100,7 +101,7 @@ export class AdminService {
     const problems = validateAttendancePolicy(dto);
     if (problems.length > 0) throw new BadRequestException(problems.join('; '));
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      await db.query(`SELECT 1 FROM organizations WHERE id = $1 FOR UPDATE`, [user.orgId]);
+      await lockOrgForWrite(db, user.orgId);
       const before = withoutTimezone(await readOrgPolicy(db, user.orgId));
       await writeOrgPolicy(db, user.orgId, dto);
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'ORG_POLICY_UPDATED', entityType: 'ORGANIZATION', entityId: user.orgId, before, after: dto });
@@ -119,7 +120,7 @@ export class AdminService {
     const bad = dto.allowedCidrs.filter((c) => !parseCidr(c));
     if (bad.length) throw new BadRequestException(`Not a valid IP range: ${bad.join(', ')}`);
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      await db.query(`SELECT 1 FROM organizations WHERE id = $1 FOR UPDATE`, [user.orgId]);
+      await lockOrgForWrite(db, user.orgId);
       const before = await readAttendanceGuards(db, user.orgId);
       await writeAttendanceGuards(db, user.orgId, dto);
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'ATTENDANCE_GUARDS_UPDATED', entityType: 'ORGANIZATION', entityId: user.orgId, before, after: dto });
@@ -307,7 +308,7 @@ export class AdminService {
     const actorIsOwner = this.actorPermissions(user).includes(Permission.ORG_OWNER);
     let changed = false;
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      const target = (await db.query<{ status: string; is_owner: boolean; role: UserRole; team_id: string | null }>(`SELECT status, is_owner, role, team_id FROM users WHERE id = $1 FOR UPDATE`, [targetId])).rows[0];
+      const target = (await db.query<{ status: string; is_owner: boolean; role: UserRole; team_id: string | null }>(`SELECT status, is_owner, role, team_id FROM users WHERE id = $1 FOR NO KEY UPDATE`, [targetId])).rows[0];
       if (!target) throw new NotFoundException('User not found');
       if (target.status === 'OFFBOARDED') throw new ConflictException('An offboarded person cannot be changed; invite them again instead');
       if (target.status === dto.status) return;
@@ -344,7 +345,7 @@ export class AdminService {
   async updateProfile(user: AuthenticatedUser, targetId: string, dto: ProfileUpdateDto, ctx: RequestContext): Promise<AdminUserRow> {
     if (dto.displayName === undefined && dto.jobTitle === undefined) throw new BadRequestException('Nothing to change');
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      const before = (await db.query<{ display_name: string | null; job_title: string | null }>(`SELECT display_name, job_title FROM users WHERE id = $1 FOR UPDATE`, [targetId])).rows[0];
+      const before = (await db.query<{ display_name: string | null; job_title: string | null }>(`SELECT display_name, job_title FROM users WHERE id = $1 FOR NO KEY UPDATE`, [targetId])).rows[0];
       if (!before) throw new NotFoundException('User not found');
       const jobTitle = dto.jobTitle === undefined ? before.job_title : (dto.jobTitle?.trim() || null);
       const displayName = dto.displayName ?? before.display_name;
@@ -382,7 +383,7 @@ export class AdminService {
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const target = (await db.query<{ role: UserRole; custom_role_id: string | null; added: Permission[] | null; removed: Permission[] | null; mfa_enabled: boolean; is_owner: boolean }>(
         `SELECT u.role, u.custom_role_id, r.added_permissions AS added, r.removed_permissions AS removed, u.mfa_enabled, u.is_owner
-         FROM users u LEFT JOIN org_roles r ON r.id = u.custom_role_id WHERE u.id = $1 FOR UPDATE OF u`,
+         FROM users u LEFT JOIN org_roles r ON r.id = u.custom_role_id WHERE u.id = $1 FOR NO KEY UPDATE OF u`,
         [targetId],
       )).rows[0];
       if (!target) throw new NotFoundException('User not found');

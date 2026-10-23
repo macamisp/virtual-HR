@@ -172,7 +172,46 @@ export class AttendanceService {
     return entry;
   }
 
-  private async withSessionLock<T>(orgId: string | undefined, userId: string, fn: () => Promise<T>): Promise<T> {
+  // ADR 038: attendance work still running when the API shuts down (socket disconnects, the
+  // reconciler). app.close() waits for it before the database pools close, so nothing is lost and
+  // nothing writes after shutdown returned.
+  private readonly inflight = new Set<Promise<unknown>>();
+
+  /** Registers work that shutdown must wait for; returns the same promise. */
+  public trackWork<T>(work: Promise<T>): Promise<T> {
+    this.inflight.add(work);
+    work.then(() => this.inflight.delete(work), () => this.inflight.delete(work));
+    return work;
+  }
+
+  /** Waits for tracked work, at most `timeoutMs`; false when some was still running. */
+  public async drain(timeoutMs = 5000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (this.inflight.size > 0) {
+      const left = deadline - Date.now();
+      if (left <= 0) return false;
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        Promise.allSettled([...this.inflight]),
+        new Promise((resolve) => { timer = setTimeout(resolve, left); }),
+      ]);
+      clearTimeout(timer);
+    }
+    return true;
+  }
+
+  /** Nest lifecycle (after the socket server closed): finish attendance writes, then close the pools. */
+  public async onApplicationShutdown(): Promise<void> {
+    if (!(await this.drain())) console.warn(JSON.stringify({ event: 'attendance_drain_timeout', pending: this.inflight.size }));
+    const repo = this.repository as { close?: () => Promise<void> } | undefined;
+    await repo?.close?.();
+  }
+
+  private withSessionLock<T>(orgId: string | undefined, userId: string, fn: () => Promise<T>): Promise<T> {
+    return this.trackWork(this.runWithSessionLock(orgId, userId, fn));
+  }
+
+  private async runWithSessionLock<T>(orgId: string | undefined, userId: string, fn: () => Promise<T>): Promise<T> {
     const key = `${orgId ?? ''}:${userId}`;
     const previous = this.sessionLocks.get(key) ?? Promise.resolve();
     let release!: () => void;

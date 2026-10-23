@@ -36,7 +36,7 @@ export class CallsService {
 
   async start(db: pg.PoolClient, user: AuthenticatedUser, meetingId: string, ids: string[]): Promise<void> {
     // Stable ordering prevents deadlocks for simultaneous group calls. Decisions use the same lock.
-    await db.query(`SELECT id FROM users WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE`, [[user.id, ...ids]]);
+    await db.query(`SELECT id FROM users WHERE id = ANY($1::uuid[]) ORDER BY id FOR NO KEY UPDATE`, [[user.id, ...ids]]);
     // Only callees are "busy": they are not rung and the caller sees it. The caller is never blocked;
     // LiveKit reports "left" some seconds after a call ends, and that lag must not refuse a new call.
     for (const id of ids) {
@@ -100,7 +100,7 @@ export class CallsService {
     // Expiration commits even when the late response is refused.
     await this.expire(user.orgId);
     const c = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      await db.query(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, [user.id]);
+      await db.query(`SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE`, [user.id]);
       const c = (await db.query<CallRow>(`${SELECT} WHERE c.meeting_id = $1 AND c.callee_id = $2 FOR UPDATE OF c`, [meetingId, user.id])).rows[0];
       if (!c) throw new NotFoundException('Call not found');
       if (c.state === (accept ? 'ACCEPTED' : 'DECLINED')) return c;

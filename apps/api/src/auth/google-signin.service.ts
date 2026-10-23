@@ -306,7 +306,7 @@ export class GoogleSignInService {
   /** Removes Google from the account; refused when it is the only way to sign in. */
   async unlink(user: { id: string; orgId: string }, meta: Meta): Promise<{ success: true }> {
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
-      const row = (await db.query<{ password_hash: string | null }>(`SELECT password_hash FROM users WHERE id = $1 FOR UPDATE`, [user.id])).rows[0];
+      const row = (await db.query<{ password_hash: string | null }>(`SELECT password_hash FROM users WHERE id = $1 FOR NO KEY UPDATE`, [user.id])).rows[0];
       if (!row) throw new UnauthorizedException('Account not found');
       if (!row.password_hash) throw new ConflictException('Google is your only way to sign in. Set a password first (Forgot your password? on the sign-in page), then remove Google.');
       const removed = await db.query(`DELETE FROM oauth_identities WHERE user_id = $1 AND provider = 'GOOGLE'`, [user.id]);
