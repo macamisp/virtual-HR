@@ -55,7 +55,7 @@ const workingOffset = (from: number, span = 1) => {
 const FUTURE = workingOffset(10, 4); // annual leave on +0..+1, the overlap probe on +1..+2, a plain absent day on +3
 const REJECT_DAY = workingOffset(Math.max(20, FUTURE + 4));
 const OTHER_DAY = workingOffset(Math.max(30, REJECT_DAY + 1));
-const SCHEDULE = { '1': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '2': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '3': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '4': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '5': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '6': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '7': { startTime: '09:00', endTime: '17:00', expectedHours: 8 } };
+const SCHEDULE = { '1': { start: '09:00', end: '17:00', expectedHours: 8 }, '2': { start: '09:00', end: '17:00', expectedHours: 8 }, '3': { start: '09:00', end: '17:00', expectedHours: 8 }, '4': { start: '09:00', end: '17:00', expectedHours: 8 }, '5': { start: '09:00', end: '17:00', expectedHours: 8 }, '6': { start: '09:00', end: '17:00', expectedHours: 8 }, '7': { start: '09:00', end: '17:00', expectedHours: 8 } };
 
 describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { concurrency: false }, () => {
   let app: INestApplication;
@@ -255,11 +255,28 @@ describe('Leave and public holidays (FR-ORG-010, FR-ORG-011, FR-ATT-022)', { con
     assert.equal((await ok(await api('emp', '/holidays?year=2027'), 200, HolidayListSchema)).defaultsAvailable, false);
   });
 
-  it('a holiday is excluded from expected time and suppresses the absence flag', async () => {
+  it('a holiday is excluded from expected time and suppresses the absence and late flags', async () => {
     // 4 February 2026, Independence Day, a Wednesday on the employee's 7-day schedule.
     const daily = await attendance.computeDailySummary(ORG, U.emp.id, '2026-02-04');
     assert.equal(daily.dayStatus, 'HOLIDAY');
     assert.equal(daily.expectedSeconds, 0);
+    assert.equal(daily.lateMinutes, 0);
+    // Someone who works anyway, starting 2.5 h after the scheduled 09:00, is not late on a holiday.
+    const late = new AttendanceStateMachine({ orgTimezone: TZ }).handleHeartbeat(null, {
+      orgId: ORG, userId: U.emp.id, sessionId: 'holiday-late', deviceId: 'test', sequenceNumber: 1, nonce: 'test', signature: 'test',
+      activeSeconds: 30, idleSeconds: 0, inCall: false, tabVisible: true, windowFocused: true,
+    }, new Date('2026-02-04T06:00:00Z'), '127.0.0.1').session;
+    const compliance = await attendance.computeScheduleCompliance({ orgId: ORG, userId: U.emp.id, workDate: '2026-02-04', sessions: [late] });
+    assert.equal(compliance.lateArrivalMinutes, 0);
+    assert.equal(compliance.isAbsent, false);
+    assert.deepEqual(compliance.flags, ['HOLIDAY']);
+    // The same late start on an ordinary working day is late (the control case).
+    const ordinary = new AttendanceStateMachine({ orgTimezone: TZ }).handleHeartbeat(null, {
+      orgId: ORG, userId: U.emp.id, sessionId: 'workday-late', deviceId: 'test', sequenceNumber: 1, nonce: 'test', signature: 'test',
+      activeSeconds: 30, idleSeconds: 0, inCall: false, tabVisible: true, windowFocused: true,
+    }, new Date('2026-02-05T06:00:00Z'), '127.0.0.1').session;
+    const workday = await attendance.computeScheduleCompliance({ orgId: ORG, userId: U.emp.id, workDate: '2026-02-05', sessions: [ordinary] });
+    assert.ok(workday.lateArrivalMinutes > 0, `late on a working day: ${JSON.stringify(workday)}`);
     assert.equal((await attendance.computeDailySummary(ORG, U.emp.id, '2026-02-05')).dayStatus, 'ABSENT');
     assert.equal((await attendance.clockInReminderDue(ORG, U.emp.id, new Date('2026-02-04T06:00:00Z'))).due, false);
   });

@@ -60,7 +60,7 @@ test.describe.serial('Leave requests and public holidays', () => {
     await page.getByRole('button', { name: 'Verify' }).click();
     await passNoticeGate(page);
     await page.goto('/admin/holidays');
-    await page.getByLabel('Year').selectOption('2026');
+    await page.getByLabel('Year', { exact: true }).selectOption('2026');
     await page.getByRole('button', { name: /Load the Sri Lanka 2026 calendar/ }).click();
     const rows = page.getByTestId('holidays').getByRole('row');
     await expect(rows).toHaveCount(26); // header + 25 dates

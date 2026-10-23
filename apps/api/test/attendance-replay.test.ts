@@ -54,7 +54,7 @@ describe('Nightly replay of daily totals (NFR-ACC-004)', { concurrency: false },
     await admin.query(`INSERT INTO organizations (id, name, slug, timezone) VALUES ($1, 'Replay Ltd', 'replay-test', 'Asia/Colombo')`, [ORG]);
     await admin.query(`INSERT INTO users (id, org_id, email, display_name, role, password_hash, status) VALUES ($1, $3, 'hr@replay.test', 'Hana', 'HR', 'x', 'ACTIVE'), ($2, $3, 'emp@replay.test', 'Eve', 'EMPLOYEE', 'x', 'ACTIVE')`, [U.hr, U.emp, ORG]);
     await admin.query(`INSERT INTO work_schedules (org_id, user_id, days, flexible, grace_minutes, effective_from) VALUES ($1, $2, $3, false, 10, '2026-01-01')`,
-      [ORG, U.emp, JSON.stringify({ '1': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '2': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '3': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '4': { startTime: '09:00', endTime: '17:00', expectedHours: 8 }, '5': { startTime: '09:00', endTime: '17:00', expectedHours: 8 } })]);
+      [ORG, U.emp, JSON.stringify({ '1': { start: '09:00', end: '17:00', expectedHours: 8 }, '2': { start: '09:00', end: '17:00', expectedHours: 8 }, '3': { start: '09:00', end: '17:00', expectedHours: 8 }, '4': { start: '09:00', end: '17:00', expectedHours: 8 }, '5': { start: '09:00', end: '17:00', expectedHours: 8 } })]);
     prisma = new PrismaService();
     await prisma.onModuleInit();
     const repo = new PostgresAttendanceRepository();

@@ -1,6 +1,6 @@
 # What is not tested automatically, and what is skipped
 
-As of 19 October 2026 (API tests: 759; browser tests: 71 run plus 2 skipped). This list was made by checking the code, not from memory: every page of the web app was matched against the browser tests that visit it, and every claim below was searched for in the test files. "Browser test" means a Playwright test that drives the real web app. "API test" means a test that calls the API and the database directly.
+As of 19 October 2026 (one correction on 23 October: the accept-invitation page is now driven by browser specs `31-workspace-signup` and `32-google-signin`) (API tests: 759; browser tests: 71 run plus 2 skipped). This list was made by checking the code, not from memory: every page of the web app was matched against the browser tests that visit it, and every claim below was searched for in the test files. "Browser test" means a Playwright test that drives the real web app. "API test" means a test that calls the API and the database directly.
 
 ## 1. Skipped tests
 
@@ -30,7 +30,6 @@ Each of these is a screen a person can open. The API behind it has tests (named 
 
 | Page | What a person does there | Covered by |
 | --- | --- | --- |
-| Accept invitation (`/accept-invitation`) | set a name and password from an invitation link | API `auth-hardening-e2e`, `app-shell-e2e` |
 | Forgot password, Reset password | ask for a link, choose a new password | API `auth-hardening-e2e`; `attendance-logout-e2e` (a reset closes the open session) |
 | Calendar sync (`/account/calendar`) | connect Google or Outlook, see busy times | API `calendar-sync-e2e` with fake calendar providers; **no real Google or Microsoft account is ever used** |
 | Contracts (`/documents/contracts`) | list contracts, add one with end date and notice period | API `documents-e2e` (contract reminders) |

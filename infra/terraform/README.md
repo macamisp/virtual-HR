@@ -29,3 +29,37 @@ Push the new images, run the `migrate` task with the new tag, then `terraform ap
 ## Checks
 
 The CI job `terraform` runs `fmt -check` and `validate` with no backend and no credentials.
+
+## Database conflict retries (ADR 038)
+
+There is **no metrics package** in the API yet (adding one needs the owner's approval). The signal
+for a transaction that Postgres aborted with a deadlock or serialization failure, and that the API
+retried, is a single JSON log line, plus an in-process counter (`conflictRetryStats()`) used by the
+tests:
+
+```
+{"event":"db_conflict_retry","op":"attendance.saveSession","kind":"deadlock","code":"40P01","attempt":1,"maxAttempts":3}
+```
+
+The line carries no parameters, tokens or personal data. Each retry is normal on its own; a steady
+stream means a lock-order regression. At the first production deployment, add a log metric filter
+and an alarm next to `api_errors` in `modules/platform/monitoring.tf`, for example:
+
+```hcl
+resource "aws_cloudwatch_log_metric_filter" "db_conflict_retries" {
+  for_each       = toset(["api", "realtime"])
+  name           = "${local.name}-${each.key}-db-conflict-retries"
+  log_group_name = aws_cloudwatch_log_group.app[each.key].name
+  pattern        = "{ $.event = \"db_conflict_retry\" }"
+  metric_transformation {
+    name      = "DbConflictRetries"
+    namespace = "HRVO/${var.env}"
+    value     = "1"
+  }
+}
+# Alarm: Sum of DbConflictRetries >= 10 in 5 minutes -> aws_sns_topic.alerts (same topic as the others).
+```
+
+Also alarm on `{ $.event = "attendance_drain_timeout" }` (a shutdown that did not finish its
+attendance writes within 5 s; any occurrence is worth a look). Until that is in place, search the
+API log group for `db_conflict_retry` after each release.

@@ -100,9 +100,13 @@ recompute, same person and organisation) **103 deadlocks** in 68 s.
   or person for its duration.
 - New code that locks an organisation or person row uses the helpers; new code that writes child
   rows and then audits keeps parent → audit lock → child order.
-- No metrics library exists in the API (adding one needs approval); the retry counter is in-process
-  and the JSON log line is the operational signal (CloudWatch metric filter on
-  `"event":"db_conflict_retry"`).
+- **Decision: no metrics package yet.** The API has no metrics library and adding one needs the
+  owner's approval. Until then the signal is the `db_conflict_retry` JSON log line (and the
+  in-process counter `conflictRetryStats()`, which the tests read). The alarm is a CloudWatch log
+  metric filter on `{ $.event = "db_conflict_retry" }` (and one on `attendance_drain_timeout`),
+  added at the first production deployment; the exact Terraform is in `infra/terraform/README.md`,
+  section "Database conflict retries". Revisit when a metrics package is approved: the counter
+  then becomes a real metric and the filter can go.
 - The first CI run of this change was cancelled by an unrelated clash: `totp-replay` and
   `vault-e2e` both listened on 3097, and `google-signin-e2e`'s fake Google shared 3085 with
   `attendance-guards-e2e` (both pairs came with ADR 037). They now use 3043 and 3044, and
