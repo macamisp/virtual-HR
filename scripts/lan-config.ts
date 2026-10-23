@@ -90,3 +90,22 @@ export function insecureUrls(env: Record<string, string | undefined>): string[] 
   if ((env.CORS_ORIGINS ?? '').split(',').some((o) => /^http:\/\//i.test(o.trim()))) bad.push('CORS_ORIGINS');
   return bad;
 }
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+const hostOf = (url: string | undefined): string | null => {
+  try { return url ? new URL(url).hostname : null; } catch { return null; }
+};
+
+/**
+ * ADR 039: e-mailed links (confirm address, invitation, password reset) are built from
+ * APP_WEB_URL. When it still says localhost while the other addresses point at the network, a
+ * link opened on a phone or another computer goes nowhere. Returns the warning, or null.
+ */
+export function localhostLinkWarning(env: Record<string, string | undefined>): string | null {
+  const app = hostOf(env.APP_WEB_URL);
+  if (!app || !LOCAL_HOSTS.has(app)) return null;
+  const others = ['NEXT_PUBLIC_API_URL', 'NEXT_PUBLIC_LIVEKIT_URL', 'NEXT_PUBLIC_STORAGE_URL', 'S3_PUBLIC_ENDPOINT']
+    .filter((k) => { const h = hostOf(env[k]); return h !== null && !LOCAL_HOSTS.has(h); });
+  if (!others.length) return null;
+  return `APP_WEB_URL is ${env.APP_WEB_URL}, but ${others.join(', ')} ${others.length === 1 ? 'points' : 'point'} at the network: links in e-mails (confirm address, invitation, password reset) would open localhost on the reader's own device. Set APP_WEB_URL to the LAN HTTPS address (npm run lan:env) or the public HTTPS address.`;
+}

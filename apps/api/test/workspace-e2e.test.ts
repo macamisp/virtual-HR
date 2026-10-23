@@ -18,7 +18,7 @@ import type { InMemoryMailTransport } from '../src/common/mailer.ts';
 import { freshCode } from './support/totp.ts';
 import { Permission } from '../../../packages/shared/src/auth/types.ts';
 import type { AdminUserRow, MyAccess, CustomRole } from '../../../packages/shared/src/admin/types.ts';
-import type { EffectiveAccess, InvitationRow, OrgProfile, OwnershipTransfer, SignupResponse } from '../../../packages/shared/src/auth/workspace.ts';
+import type { EffectiveAccess, InvitationRow, OrgProfile, OwnershipTransfer, SignupResponse, VerifyEmailResponse } from '../../../packages/shared/src/auth/workspace.ts';
 
 const PORT = 3083;
 const PASSWORD = 'WorkspaceOwnerPass!2026';
@@ -70,6 +70,8 @@ describe('Self-service workspaces, owners and roles (FR-AUTH-001/006/009, FR-ORG
     process.env.MAIL_TRANSPORT = 'memory';
     process.env.RATE_LIMIT_LOGIN = '1000';
     process.env.RATE_LIMIT_SIGNUP = '1000';
+    // ADR 039: this suite resends at once; the per-address cooldown has its own test (account-emails-e2e).
+    process.env.VERIFICATION_RESEND_COOLDOWN_SECONDS = '0';
     process.env.JOBS_ENABLED = 'false';
     process.env.AUTH_MFA_ENFORCEMENT = '';
     process.env.SIGNUP_BLOCK_DISPOSABLE_EMAILS = 'true';
@@ -128,8 +130,11 @@ describe('Self-service workspaces, owners and roles (FR-AUTH-001/006/009, FR-ORG
       const second = tokenIn(lastMailTo('owner@signup.test')?.text)!;
       assert.notEqual(first, second);
       assert.equal((await req('/auth/email/verify', { body: { token: first } })).status, 400, 'superseded link');
-      await ok(await req('/auth/email/verify', { body: { token: second } }), 200);
-      assert.equal((await req('/auth/email/verify', { body: { token: second } })).status, 400, 'single use');
+      const verified = await ok<VerifyEmailResponse>(await req('/auth/email/verify', { body: { token: second } }), 200);
+      assert.deepEqual(verified, { success: true, email: 'owner@signup.test', alreadyVerified: false });
+      // ADR 039: opening the link again (a second click, a mail scanner) says so instead of failing.
+      const again = await ok<VerifyEmailResponse>(await req('/auth/email/verify', { body: { token: second } }), 200);
+      assert.equal(again.alreadyVerified, true, 'single use: a second open verifies nothing new');
       assert.equal(await auditCount(acme.orgId, 'EMAIL_VERIFIED'), 1);
 
       const needsSetup = await ok<{ requires2faSetup: true; enrollmentToken: string }>(await login('owner@signup.test'), 200);
@@ -379,6 +384,15 @@ describe('Self-service workspaces, owners and roles (FR-AUTH-001/006/009, FR-ORG
         assert.equal(adminNow.user.role, 'SUPER_ADMIN', 'still a super admin, no longer an owner');
         await ok(await req('/org/profile', { method: 'PUT', token: adminNow.accessToken, body: { name: 'Acme Renamed' } }), 200);
         assert.equal((await req('/org/profile', { method: 'PUT', token: adminNow.accessToken, body: { ssoAutoJoinDomain: 'signup.test' } })).status, 403);
+        // ADR 039: joining is by invitation; domain auto-join is off until the owner turns it on,
+        // and only for the owner's own domain, never a public mail service.
+        assert.equal((await ok<OrgProfile>(await req('/org/profile', { token: acme.ownerToken }), 200)).ssoAutoJoinDomain, null, 'off by default');
+        const gmail = await req('/org/profile', { method: 'PUT', token: acme.ownerToken, body: { ssoAutoJoinDomain: 'gmail.com' } });
+        assert.equal(gmail.status, 400);
+        assert.match(await gmail.text(), /public e-mail service/);
+        const foreign = await req('/org/profile', { method: 'PUT', token: acme.ownerToken, body: { ssoAutoJoinDomain: 'other-company.test' } });
+        assert.equal(foreign.status, 400);
+        assert.match(await foreign.text(), /signup\.test/);
         const updated = await ok<OrgProfile>(await req('/org/profile', { method: 'PUT', token: acme.ownerToken, body: { ssoAutoJoinDomain: 'signup.test', mfaForSso: false } }), 200);
         assert.equal(updated.ssoAutoJoinDomain, 'signup.test');
         assert.equal(updated.mfaForSso, false);

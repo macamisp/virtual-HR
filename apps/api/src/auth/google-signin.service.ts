@@ -350,10 +350,13 @@ export class GoogleSignInService {
     const needsMfa = requiresMfa(user.role, access?.permissions ?? []);
     // Enrolment, the TOTP step and the finished login all continue on the sign-in page, whatever
     // the flow started as (signup, invitation or login): that page knows how to take them on.
-    if (org.mfa_for_sso && needsMfa && !user.mfa_enabled && mfaEnforced()) {
+    // ADR 039 (owner decision, FR-AUTH-004): roles that need 2FA (Owner, Admin, HR) always answer
+    // it after Google, exactly as after a password; the organisation's `mfa_for_sso` switch only
+    // decides whether people who turned 2FA on for themselves are asked too.
+    if (needsMfa && !user.mfa_enabled && mfaEnforced()) {
       return { redirect: this.resultUrl(web, 'login', 'enroll', { returnTo: st.returnTo }, await this.auth.mfaEnrollmentToken(user, meta)) };
     }
-    if (org.mfa_for_sso && user.mfa_enabled) {
+    if (user.mfa_enabled && (needsMfa || org.mfa_for_sso)) {
       await this.auth.auditUser(user, '2FA_CHALLENGE_ISSUED', meta, { method: 'google' });
       const challenge = jwt.sign({ sub: user.id, orgId: user.org_id, returnTo: st.returnTo }, getJwtSecret(), { expiresIn: CHALLENGE_TTL_SECONDS, issuer: ISSUER, audience: AUD_CHALLENGE, algorithm: 'HS256' });
       return { redirect: this.resultUrl(web, 'login', 'totp', { returnTo: st.returnTo }, challenge) };

@@ -21,6 +21,7 @@ import { appendAuditEntry } from '../common/audit-chain.ts';
 import type { AuditEntry } from '../common/audit-chain.ts';
 import { MAIL_TRANSPORT } from '../common/mailer.ts';
 import type { MailTransport } from '../common/mailer.ts';
+import { appWebUrl, renderActionEmail } from '../common/email-layout.ts';
 import {
   BREACHED_PASSWORD_CHECKER,
   BreachCheckUnavailableError,
@@ -171,7 +172,7 @@ export class AuthService {
       });
       return res.rows[0];
     });
-    await this.sendInvitation(email, inviteToken, inviter.displayName ?? inviter.email);
+    await this.sendInvitation(email, inviteToken, inviter.displayName ?? inviter.email, await this.workspaceName(inviter.orgId));
     return {
       id: created.id,
       inviteToken, // Also returned so the inviter can copy the link.
@@ -181,19 +182,22 @@ export class AuthService {
     };
   }
 
-  private async sendInvitation(to: string, inviteToken: string, inviterName: string): Promise<void> {
-    const base = process.env.APP_WEB_URL || 'http://localhost:3000';
-    await this.mailer.send({
-      to,
-      subject: `${inviterName} invited you to HRVO`,
-      text: [
-        `${inviterName} invited you to join their workspace on HRVO.`,
-        '',
-        `Accept the invitation (valid for 7 days, single use): ${base}/accept-invitation#token=${inviteToken}`,
-        '',
-        'If you were not expecting this, you can ignore this e-mail.',
-      ].join('\n'),
-    });
+  /** The organisation's display name, for e-mails. */
+  async workspaceName(orgId: string): Promise<string> {
+    const r = await this.prisma.runWithTenantContext(orgId, (db) => db.query<{ name: string }>(`SELECT name FROM organizations WHERE id = $1`, [orgId]));
+    return r.rows[0]?.name ?? 'your workspace';
+  }
+
+  /** ADR 039: also used when an invitee asks for a fresh link from an expired one. */
+  async sendInvitation(to: string, inviteToken: string, inviterName: string, workspaceName: string): Promise<void> {
+    await this.mailer.send({ to, ...renderActionEmail({
+      subject: `${inviterName} invited you to ${workspaceName} on HRVO`,
+      intro: `${inviterName} invited you to join "${workspaceName}" on HRVO.`,
+      paragraphs: ['Accept the invitation to choose your name and password (or use your Google account with this address). Then you sign in.'],
+      buttonLabel: 'Accept invitation',
+      url: `${appWebUrl()}/accept-invitation#token=${inviteToken}`,
+      footer: ['The invitation works once and expires in 7 days. If it has expired, the page it opens can send you a new one.', 'If you were not expecting this, you can ignore this e-mail.'],
+    }) });
   }
 
   private static invitationStatus(r: { accepted_at: Date | null; revoked_at: Date | null; expires_at: Date }): InvitationRow['status'] {
@@ -239,7 +243,7 @@ export class AuthService {
       await this.recordAudit(client, { orgId: user.orgId, actorId: user.id, action: 'INVITATION_RESENT', entityType: 'INVITATION', entityId: id, after: { email: current.email }, ip, userAgent });
       return (await client.query(`${AuthService.INVITATION_SELECT} WHERE i.id = $1`, [id])).rows[0];
     });
-    await this.sendInvitation(row.email as string, inviteToken, user.displayName ?? user.email);
+    await this.sendInvitation(row.email as string, inviteToken, user.displayName ?? user.email, await this.workspaceName(user.orgId));
     return this.mapInvitation(row);
   }
 
@@ -978,18 +982,14 @@ export class AuthService {
       });
 
       // The token travels in the URL fragment so it is not sent to servers or in Referer headers.
-      const base = process.env.APP_WEB_URL || 'http://localhost:3000';
-      await this.mailer.send({
-        to: user.email,
+      await this.mailer.send({ to: user.email, ...renderActionEmail({
         subject: 'Reset your HRVO password',
-        text: [
-          'A password reset was requested for your HRVO account.',
-          '',
-          `Reset link (valid for 30 minutes, single use): ${base}/reset-password#token=${token}`,
-          '',
-          'If you did not request this, you can ignore this email. Resetting signs you out everywhere.',
-        ].join('\n'),
-      });
+        intro: 'A password reset was requested for your HRVO account.',
+        paragraphs: ['Choose a new password, then sign in with it. Resetting signs you out on every device.'],
+        buttonLabel: 'Choose a new password',
+        url: `${appWebUrl()}/reset-password#token=${token}`,
+        footer: ['The link works once and expires in 30 minutes. If it has expired, the page it opens sends you a new one.', 'If you did not ask for this, ignore this e-mail; your password stays as it is.'],
+      }) });
     }
 
     return { success: true, message: 'If the account exists, a reset link has been sent.' };

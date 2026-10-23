@@ -27,7 +27,7 @@
 
 | Module | IDs | DONE | PARTIAL | MISSING | Missing IDs |
 | --- | ---: | ---: | ---: | ---: | --- |
-| AUTH | 12 | 5 | 6 | 1 | FR-AUTH-012 |
+| AUTH | 12 | 7 | 4 | 1 | FR-AUTH-012 |
 | ORG | 12 | 5 | 5 | 2 | FR-ORG-007, 008 |
 | VO | 14 | 9 | 3 | 2 | FR-VO-011, 014 |
 | MEET | 14 | 9 | 4 | 1 | FR-MEET-014 |
@@ -39,7 +39,7 @@
 | REP | 8 | 5 | 2 | 1 | FR-REP-007 |
 | ADM | 8 | 3 | 2 | 3 | FR-ADM-003, 005, 008 |
 | AUD | 5 | 4 | 1 | 0 | none |
-| **Total** | **151** | **93** | **38** | **20** | |
+| **Total** | **151** | **95** | **36** | **20** | |
 
 ### By phase
 
@@ -47,17 +47,21 @@
 
 | Phase | IDs | DONE | PARTIAL | MISSING | % DONE | Weighted |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| P1 Core HR MVP | 74 | 55 | 18 | 1 | 74 % | 86 % |
+| P1 Core HR MVP | 74 | 57 | 16 | 1 | 77 % | 88 % |
 | P2 Virtual office and meetings | 60 | 32 | 19 | 9 | 53 % | 69 % |
 | P3 Hardening and advanced | 17 | 6 | 1 | 10 | 35 % | 38 % |
-| **All** | **151** | **93** | **38** | **20** | **62 %** | **74 %** |
+| **All** | **151** | **95** | **36** | **20** | **63 %** | **75 %** |
 
 The only P1 requirement that is MISSING is FR-ORG-008: an onboarding checklist for each new person. The `/onboarding` wizard sets up the workspace for the owner; it is not that checklist.
 
 ### What changed since 19 October
 
+**Owner's decisions, applied on 23 October (ADR 039, SRS 1.1):** FR-AUTH-001 and FR-AUTH-004 are DONE.
+- **FR-AUTH-001:** the SRS now says what the product does. Anyone may create a new workspace. People join an existing one by invitation only. The one exception is an owner-enabled own-domain Google join, off by default, which refuses public mail domains.
+- **FR-AUTH-004:** Owner, Admin and HR always answer 2FA after a Google sign-in. The owner's switch now covers only people who turned 2FA on for themselves.
+
 **Moved from DONE to PARTIAL, each confirmed in the code:**
-- **FR-AUTH-004, 2FA mandatory for Admin and HR.** An owner can switch off "2FA after a Google sign-in". An HR manager then signs in with Google alone. A test confirms it: `google-signin-e2e` › "with "2FA after Google" switched off by the owner, Google alone signs an HR manager in". This needs a decision (section 6).
+- **FR-AUTH-004, 2FA mandatory for Admin and HR:** an owner could switch off "2FA after a Google sign-in". *Fixed the same day (decision above).*
 - **FR-VO-002, avatars.** An avatar is a coloured disc with initials. There is no photo and no chosen character.
 - **FR-VO-005, proximity.** The radius is fixed at 96 when the office is created. No screen or API changes it.
 - **FR-ATT-013, corrections with evidence.** Evidence is an unchecked document id in the API. No screen attaches or shows it, and no test uses it.
@@ -66,17 +70,15 @@ The only P1 requirement that is MISSING is FR-ORG-008: an onboarding checklist f
 - **FR-REP-006, PDF export.** The four reports under Reports export PDF. The timesheet report exports only CSV and XLSX.
 
 **Same verdict, new reason:**
-- **FR-AUTH-001:** invitations are now e-mailed, resent and revoked. But "accounts by invitation only" no longer holds, because self-service workspace signup and Google join-by-domain create accounts without one (ADR 037). This needs a decision (section 6).
+- **FR-AUTH-001:** invitations are e-mailed, resent and revoked, but self-service signup conflicted with "invitation only". *Resolved the same day by the SRS amendment (decision above).*
 - **FR-ORG-001:** the organisation now has a profile and an onboarding wizard (name, time zone, work week). Logo, currency and colours are still missing.
 - **FR-ORG-009:** people can now be suspended and offboarded, with sessions ended and tasks reassigned. Timesheets are not locked, and retention is not applied, at offboarding.
 
-**Totals:** 100 / 30 / 21 became 93 / 38 / 20. The old total row also had one arithmetic slip: its module rows added up to 20 MISSING, not 21.
+**Totals:** 100 / 30 / 21 became 93 / 38 / 20, and after the owner's decisions of 23 October (below) 95 / 36 / 20. The old total row also had one arithmetic slip: its module rows added up to 20 MISSING, not 21.
 
 ### What makes each PARTIAL partial
 
 **AUTH**
-- **FR-AUTH-001:** see above; accounts are no longer created by invitation only. No test checks that an invitation older than 7 days is refused.
-- **FR-AUTH-004:** see above; 2FA can be bypassed through Google when the owner allows it.
 - **FR-AUTH-005:** Google works end to end (ADR 037). Microsoft is missing. The client id is per server, not per organisation.
 - **FR-AUTH-007:** lockout works, but there is no CAPTCHA on sign-in and no lockout e-mail.
 - **FR-AUTH-009:** an administrator can end a session or suspend a person, but nobody can list sessions, and a person cannot see or end their own devices.
@@ -173,7 +175,7 @@ The only P1 requirement that is MISSING is FR-ORG-008: an onboarding checklist f
    - the office page would show everyone offline.
 
    `docs/verification/single-instance-assumptions.md` lists all 16 places that assume one API instance, with the change each needs. A local or single-server install is not affected.
-2. **2FA can be skipped through Google, and accounts can be created without an invitation.** Both were designed in ADR 037 and both conflict with the SRS (section 6).
+2. **Mail must be set up to receive account e-mails.** In development run Mailhog with `MAIL_TRANSPORT=smtp`; for real delivery use Resend (`docs/runbooks/mail.md`). With `MAIL_TRANSPORT=memory` nothing arrives. Links use `APP_WEB_URL`, which must be the LAN or public HTTPS address when people open e-mails on other devices.
 3. **Meeting time does not count separately in attendance.** It counts as ordinary active time.
 4. **The office avatar is a disc with initials**, and the proximity radius cannot be changed.
 5. **No onboarding checklist for new people, no CSV import, no policy acknowledgement, no invoices, no multi-level approvals, no recurring tasks, no scheduled reports, no web push, no guest links, no map editor and no Microsoft sign-in.** These are the MISSING and PARTIAL items in section 2.
@@ -185,8 +187,8 @@ The only P1 requirement that is MISSING is FR-ORG-008: an onboarding checklist f
 
 ## 6. Decisions needed from the owner
 
-1. **FR-AUTH-004 vs ADR 037:** should Admin, HR and Owner always need 2FA, even after a Google sign-in? If yes, remove the owner's "2FA after Google" switch for those roles. If no, amend the SRS row.
-2. **FR-AUTH-001 vs ADR 037:** the SRS says accounts are created by invitation only. Self-service workspace signup and Google join-by-domain create accounts without one. Amend the SRS, or restrict those paths.
+1. **Decided on 23 October (applied in ADR 039):** Owner, Admin and HR always need 2FA after a Google sign-in. Self-service workspace creation stays. Joining an existing workspace is by invitation only, and domain auto-join stays off by default.
+2. *(no open decision)*
 3. **Branches.** After the merge of PR #1 on 23 October, every branch except one is fully contained in `main`:
    - **`feat/workspace-signup-owner`** (local and remote): merged.
    - **`feat/audit-hardening`** (local and remote): merged.

@@ -112,6 +112,15 @@ Menu names differ slightly between makers; search Settings for "certificate" if 
 
 For a one-off look on a test device you can tell Chrome to treat the plain `http://` address as secure, so the camera and microphone work without a certificate. On that device open `chrome://flags/#unsafely-treat-insecure-origin-as-secure`, enter `http://192.168.52.124:3000` (your address), set it to **Enabled**, and relaunch Chrome. This changes only that browser on that device; it does not make the connection encrypted, and Safari has no such setting. Remove the entry when you are done.
 
+## Links in e-mails (APP_WEB_URL)
+
+Confirmation, invitation and password-reset e-mails link to `APP_WEB_URL` (ADR 039). `npm run lan:env`
+sets it to this computer's LAN HTTPS address, so the links open on phones and other computers. If
+the API is started without `npm run lan:up`, it reads `.env` instead, and an `APP_WEB_URL` of
+`http://localhost:3000` there would send links that open nothing on another device.
+`npm run lan:check` warns about exactly that. E-mails sent before a change keep the old address; open
+the link and use **Send a new link**. Mail set-up: `docs/runbooks/mail.md`.
+
 ## When something does not work
 
 | What you see | What to do |

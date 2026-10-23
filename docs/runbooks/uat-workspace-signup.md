@@ -23,10 +23,14 @@ Google steps otherwise.
 
 1. Open http://localhost:3000/login → **New here? Create a workspace**.
 2. Workspace name `Blue Harbour`, your name, an e-mail you can read in Mailhog, a 12+ character
-   password. **Create workspace** → "Check your e-mail".
+   password. **Create workspace** → "Check your e-mail": your address, three steps, **Resend e-mail
+   (in 60 s)** counting down, **Open Mailhog** (development) and **Already confirmed? Sign in**.
 3. Try to sign in now: the error says *Verify your e-mail address first* with a **Send it again** link.
-4. Open Mailhog → "Verify your e-mail for Blue Harbour on HRVO" → click the link → "E-mail verified" → **Sign in**.
-5. Sign in. Owners need 2FA: scan the QR code, enter the code, **Verify and enable**, tick the recovery-codes box, **Continue**.
+4. Open Mailhog → "Confirm your e-mail to open Blue Harbour on HRVO": a blue **Confirm e-mail and sign
+   in** button with the same link written under it → press it → "E-mail confirmed" → **Continue to
+   sign in** (your address is already filled in). Open the same e-mail again later: "Your e-mail is
+   already confirmed".
+5. Enter the password and sign in. Owners need 2FA: scan the QR code, enter the code, **Verify and enable**, tick the recovery-codes box, **Continue**.
 6. Accept the monitoring notice. You land on **Set up your workspace** (step 1 of 3).
 7. Company name, time zone (e.g. Europe/Berlin), untick Saturday/Sunday → **Save and continue**.
 8. Step 2: invite `member@example.com` as **Member** → the green confirmation → **Finish setup** → **Open HRVO**.
@@ -38,12 +42,15 @@ Expected in the audit log (Administration → Audit log): `WORKSPACE_CREATED`, `
 ## 2. Invitations
 
 1. Administration → **Invitations**: the pending invitation for member@example.com, invited by you, expiry in 7 days.
-2. **Resend** → a second e-mail in Mailhog; the first link now says *invalid*.
-3. **Revoke** → status *revoked*; the link says *revoked*. Invite the address again (a fresh e-mail).
+2. **Resend** → a second e-mail in Mailhog; the first link now says *This invitation is not valid*.
+3. **Revoke** → status *revoked*; the link says *This invitation was withdrawn* (ask the inviter; no
+   new link is offered). Invite the address again (a fresh e-mail).
 
 ## 3. Accept as the member (browser B, private window)
 
-1. Open the link from the newest e-mail → name, password → **Create account** → **Sign in**.
+1. In the newest e-mail press **Accept invitation** → the page says *You are joining Blue Harbour as
+   member@example.com* → name, password → **Create account** → *Account created* → **Continue to
+   sign in** (address filled in).
 2. Sign in, accept the notice. Navigation shows My attendance, Tasks, Timesheets, Documents, Meetings, Chat; **no** Live board and **no** Administration section.
 3. Type http://localhost:3000/admin/users by hand → "not available" page; the API answers 403 (Network tab).
 4. **My profile** (left navigation): job title `Developer` → Save. Nothing else changes.
@@ -99,6 +106,6 @@ id, secret and redirect URI in `.env`, run `npm run google:check` (all `OK`), re
 2. **My profile → Sign-in methods** shows *Password: set* and *Google: linked (address)*. **Remove Google** works (a password remains); **Link Google** adds it back.
 3. Invitation page → **Continue with Google instead** with a different Google address → *uses a different e-mail address than the invitation*. The invitation stays pending.
 4. Signup page → workspace name → **Continue with Google** → a workspace is created at once (no verification e-mail), 2FA setup follows. On that owner's profile, **Remove Google** is refused: *Google is your only way to sign in*.
-5. Workspace settings (owner) → "Let Google accounts on this domain join by themselves" = your domain → a colleague on that domain signs in with Google without an invitation and becomes a Member. Switch it off again.
+5. Workspace settings (owner) → the domain exception = your own e-mail domain (gmail.com and other domains are refused) → a colleague on that domain signs in with Google without an invitation and becomes a Member. Clear it again (invitation only is the default).
 6. Press **Cancel** on Google's page → HRVO explains: cancelled, or the app is in Testing mode and your address is not a test user.
 7. Audit log: every attempt above is there, failures as `GOOGLE_LOGIN_FAILED` with the reason.

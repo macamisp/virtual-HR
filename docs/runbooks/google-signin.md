@@ -70,10 +70,13 @@ present (never their values), and fetches Google's discovery document.
 - **New visitor:** on the signup page, *Continue with Google* stays disabled until the workspace
   name is entered; it then creates the workspace and makes them its owner (2FA set-up follows for
   owners). No password and no verification e-mail are needed on this path.
-- **Joining by domain** is off unless the owner switches it on under Workspace settings → Sign-in
-  settings ("Let Google accounts on this domain join by themselves"); such people join as Member.
-- **2FA:** owners, admins and HR still enter their code after Google unless the owner switched
-  "Roles that need 2FA also need it after a Google sign-in" off.
+- **Joining by domain** is off by default: people join a workspace by invitation (ADR 039). An
+  owner can make one exception under Workspace settings → Sign-in settings ("let Google accounts of
+  your own domain join as Member"). Only the domain of the owner's own e-mail address is accepted,
+  never a public one such as gmail.com.
+- **2FA:** owners, admins and HR always enter their code after Google, exactly as after a
+  password (ADR 039). The owner's switch "People who turned on 2FA for themselves also enter their
+  code after a Google sign-in" covers only everyone else.
 - **Profile → Sign-in methods** shows Password and Google; Google can be linked or removed there,
   but never as the last remaining method.
 

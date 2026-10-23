@@ -26,6 +26,7 @@ A virtual-office workspace with built-in HR: automatic attendance, timesheets, t
 | --- | --- | --- | --- |
 | 0.1 | 13 Oct 2026 | Product owner / AI assistant | Initial complete draft |
 | 1.0 | 13 Oct 2026 | Product owner / AI assistant | Full SRS for approval |
+| 1.1 | 23 Oct 2026 | Product owner / AI assistant | FR-AUTH-001 amended: self-service workspace creation; joining an existing workspace by invitation only (owner-enabled own-domain Google exception, off by default). FR-AUTH-004 clarified: mandatory 2FA also after single sign-on. |
 
 
 **Table of Contents**
@@ -331,10 +332,10 @@ A virtual-office workspace with built-in HR: automatic attendance, timesheets, t
 
 | ID | Requirement | Priority | Phase |
 | --- | --- | --- | --- |
-| FR-AUTH-001 | Accounts shall be created by invitation only. An HR Manager or Admin sends an email invite whose single-use token expires after 7 days. | Must | P1 |
+| FR-AUTH-001 | Accounts in an existing workspace shall be created by invitation only: an HR Manager or Admin sends an email invite whose single-use token expires after 7 days, and the role comes from the invitation. Anyone may create a new workspace (becoming its owner) after confirming their email address, or with a Google account whose address Google has verified. The only exception to invitation-only joining is an owner-enabled option, off by default, that lets Google accounts of the organisation's own email domain (never a public mail domain) join as Member. *(Amended 23 Oct 2026, owner decision; ADR 037, ADR 039.)* | Must | P1 |
 | FR-AUTH-002 | Passwords shall be hashed with Argon2id; minimum 12 characters; the system shall reject passwords found in known breach lists (k-anonymity check). | Must | P1 |
 | FR-AUTH-003 | Authentication shall use short-lived JWT access tokens (15 min) and rotating refresh tokens (7 days) in httpOnly, Secure, SameSite cookies, with refresh-token reuse detection that revokes the whole token family. | Must | P1 |
-| FR-AUTH-004 | The system shall support TOTP two-factor authentication (authenticator apps) with recovery codes; 2FA shall be mandatory for Super Admin and HR Manager roles. | Must | P1 |
+| FR-AUTH-004 | The system shall support TOTP two-factor authentication (authenticator apps) with recovery codes; 2FA shall be mandatory for Super Admin and HR Manager roles, whatever the sign-in method (password or single sign-on). *(Clarified 23 Oct 2026, owner decision: no organisation setting can waive it after a Google sign-in; ADR 039.)* | Must | P1 |
 | FR-AUTH-005 | The system shall support single sign-on with Google and Microsoft (OIDC), configurable per organisation. | Should | P2 |
 | FR-AUTH-006 | Authorisation shall be role-based (RBAC) with permissions such as attendance.read.team, document.confidential.view, timesheet.approve. System roles are fixed; custom roles may be created by Super Admin. | Must | P1 |
 | FR-AUTH-007 | After 5 failed logins the account shall be locked for 15 minutes and a CAPTCHA required; the user is notified by email. | Must | P1 |

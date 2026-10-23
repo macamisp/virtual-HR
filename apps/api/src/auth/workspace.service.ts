@@ -12,11 +12,18 @@ import { PrismaService } from '../common/prisma.service.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
 import { MAIL_TRANSPORT } from '../common/mailer.ts';
 import type { MailTransport } from '../common/mailer.ts';
+import { appWebUrl, renderActionEmail } from '../common/email-layout.ts';
 import { ARGON2_OPTIONS, AuthService } from './auth.service.ts';
-import type { ResendVerificationDto, SignupResponse, WorkspaceSignupDto } from '../../../../packages/shared/src/auth/workspace.ts';
+import type { ResendVerificationDto, SignupResponse, VerifyEmailResponse, WorkspaceSignupDto } from '../../../../packages/shared/src/auth/workspace.ts';
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 export const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** ADR 039: at most one verification e-mail per address per this many seconds (default 60). */
+export function verificationResendCooldownSeconds(env: Record<string, string | undefined> = process.env): number {
+  const n = Number.parseInt(env.VERIFICATION_RESEND_COOLDOWN_SECONDS ?? '', 10);
+  return Number.isFinite(n) && n >= 0 && n <= 3600 ? n : 60;
+}
 
 // ---------------------------------------------------------------- CAPTCHA hook
 
@@ -77,6 +84,25 @@ export function emailDomain(email: string): string {
   return email.slice(email.lastIndexOf('@') + 1).toLowerCase();
 }
 
+/** Free webmail: anyone can have an address there, so it can never be a "join by domain" domain. */
+const PUBLIC_MAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'yahoo.com', 'ymail.com', 'icloud.com',
+  'me.com', 'mac.com', 'aol.com', 'proton.me', 'protonmail.com', 'pm.me', 'gmx.com', 'gmx.net', 'gmx.de', 'mail.com', 'zoho.com',
+  'yandex.com', 'yandex.ru', 'mail.ru', 'qq.com', '163.com', 'web.de', 'tutanota.com', 'fastmail.com', 'hey.com',
+]);
+
+/**
+ * ADR 039 (owner decision, FR-AUTH-001): people join an existing workspace by invitation. The one
+ * exception, off by default, is an owner letting Google accounts of the organisation's own domain
+ * join as Member: only the domain of the owner's own address, and never a public mail domain.
+ */
+export function autoJoinDomainProblem(domain: string, ownerEmail: string): string | null {
+  const d = domain.trim().toLowerCase();
+  if (PUBLIC_MAIL_DOMAINS.has(d)) return `${d} is a public e-mail service: anyone could join. Invite people instead.`;
+  if (d !== emailDomain(ownerEmail)) return `Only your own organisation's domain (${emailDomain(ownerEmail)}, from your e-mail address) can be allowed.`;
+  return null;
+}
+
 /** Null when allowed, otherwise the reason. */
 export function disposableEmailProblem(email: string, env: Record<string, string | undefined> = process.env): string | null {
   if (env.SIGNUP_BLOCK_DISPOSABLE_EMAILS === 'false') return null;
@@ -121,6 +147,7 @@ export class WorkspaceService {
       success: true,
       workspace: { name: dto.workspaceName, slug: created.slug },
       message: 'Check your e-mail for the verification link. The workspace opens once the address is verified.',
+      resendAfterSeconds: verificationResendCooldownSeconds(),
     };
   }
 
@@ -163,21 +190,26 @@ export class WorkspaceService {
     throw new ConflictException('That workspace name is taken in too many variants; please choose another');
   }
 
-  /** The e-mailed link: single use, 24 hours, the newest one only. Returns {success}. */
-  async verifyEmail(token: string, meta: Meta): Promise<{ success: true }> {
-    const invalid = () => new BadRequestException('This verification link is invalid or has expired. Request a new one from the sign-in page.');
+  /**
+   * The e-mailed link: single use, 24 hours, the newest one only. A link opened again after it
+   * worked (a second click, a mail scanner) answers "already verified" instead of an error.
+   */
+  async verifyEmail(token: string, meta: Meta): Promise<VerifyEmailResponse> {
+    const invalid = () => new BadRequestException('This confirmation link has expired or was replaced by a newer one. Send yourself a new link below.');
     const row = (await this.prisma.getPool().query<{ id: string; org_id: string; user_id: string; expires_at: Date; used_at: Date | null }>(
       `SELECT * FROM fn_lookup_email_verification($1)`, [sha256(token)])).rows[0];
-    if (!row || row.used_at || new Date(row.expires_at).getTime() <= Date.now()) throw invalid();
-    const ok = await this.prisma.runWithTenantContext(row.org_id, async (db) => {
+    if (!row) throw new BadRequestException('This confirmation link is not valid. Check that the whole link was copied, or send yourself a new one below.');
+    return await this.prisma.runWithTenantContext(row.org_id, async (db) => {
+      const user = (await db.query<{ email: string; email_verified_at: Date | null }>(`SELECT email, email_verified_at FROM users WHERE id = $1`, [row.user_id])).rows[0];
+      if (!user) throw invalid();
+      if (user.email_verified_at) return { success: true as const, email: user.email, alreadyVerified: true };
+      if (row.used_at || new Date(row.expires_at).getTime() <= Date.now()) throw invalid();
       const claim = await db.query(`UPDATE email_verification_tokens SET used_at = now() WHERE id = $1 AND used_at IS NULL AND expires_at > now() RETURNING id`, [row.id]);
-      if (claim.rowCount === 0) return false;
+      if (claim.rowCount === 0) throw invalid();
       await db.query(`UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()) WHERE id = $1`, [row.user_id]);
       await appendAuditEntry(db, { orgId: row.org_id, actorId: row.user_id, action: 'EMAIL_VERIFIED', entityType: 'USER', entityId: row.user_id, ip: meta.ip, userAgent: meta.userAgent });
-      return true;
+      return { success: true as const, email: user.email, alreadyVerified: false };
     });
-    if (!ok) throw invalid();
-    return { success: true };
   }
 
   /** Always answers the same way, so it does not reveal whether an address or workspace exists. */
@@ -186,14 +218,27 @@ export class WorkspaceService {
       `SELECT * FROM fn_lookup_workspaces_for_email($1)`, [dto.email])).rows;
     for (const w of rows) {
       if (w.status !== 'ACTIVE' || (dto.workspace && w.slug !== dto.workspace)) continue;
-      const token = await this.prisma.runWithTenantContext(w.org_id, async (db) => {
-        const u = (await db.query<{ email_verified_at: Date | null }>(`SELECT email_verified_at FROM users WHERE id = $1`, [w.user_id])).rows[0];
-        if (!u || u.email_verified_at) return null;
-        return this.issueVerification(db, w.org_id, w.user_id);
-      });
-      if (token) await this.sendVerification(dto.email, w.name, token);
+      await this.resendForUser(w.org_id, w.user_id, w.name);
     }
-    return { success: true, message: 'If the address needs verification, a new link has been sent.' };
+    return { success: true, message: 'If the address still needs confirming, a new link is on its way. It can take a minute to arrive.' };
+  }
+
+  /**
+   * ADR 039: a new verification e-mail for one unverified person, at most one per cooldown
+   * (rate limit per address, on top of the per-IP `signup` bucket). Returns whether one was sent.
+   */
+  async resendForUser(orgId: string, userId: string, workspaceName: string): Promise<boolean> {
+    const cooldown = verificationResendCooldownSeconds();
+    const issued = await this.prisma.runWithTenantContext(orgId, async (db) => {
+      const u = (await db.query<{ email: string; email_verified_at: Date | null }>(`SELECT email, email_verified_at FROM users WHERE id = $1 FOR NO KEY UPDATE`, [userId])).rows[0];
+      if (!u || u.email_verified_at) return null;
+      const recent = await db.query(`SELECT 1 FROM email_verification_tokens WHERE org_id = $1 AND user_id = $2 AND created_at > now() - make_interval(secs => $3)`, [orgId, userId, cooldown]);
+      if (recent.rowCount) return null;
+      return { email: u.email, token: await this.issueVerification(db, orgId, userId) };
+    });
+    if (!issued) return false;
+    await this.sendVerification(issued.email, workspaceName, issued.token);
+    return true;
   }
 
   private async issueVerification(db: pg.PoolClient, orgId: string, userId: string): Promise<string> {
@@ -206,17 +251,13 @@ export class WorkspaceService {
 
   private async sendVerification(to: string, workspaceName: string, token: string): Promise<void> {
     // The token travels in the URL fragment so it is not sent to servers or in Referer headers.
-    const base = process.env.APP_WEB_URL || 'http://localhost:3000';
-    await this.mailer.send({
-      to,
-      subject: `Verify your e-mail for ${workspaceName} on HRVO`,
-      text: [
-        `Welcome to HRVO. Confirm this address to open the workspace "${workspaceName}":`,
-        '',
-        `${base}/verify-email#token=${token}`,
-        '',
-        'The link works once and expires in 24 hours. If you did not create this workspace, ignore this e-mail.',
-      ].join('\n'),
-    });
+    await this.mailer.send({ to, ...renderActionEmail({
+      subject: `Confirm your e-mail to open ${workspaceName} on HRVO`,
+      intro: `Welcome to HRVO. Confirm this address to open your workspace "${workspaceName}".`,
+      paragraphs: ['After confirming you sign in with the e-mail address and password you chose, and set up two-factor authentication.'],
+      buttonLabel: 'Confirm e-mail and sign in',
+      url: `${appWebUrl()}/verify-email#token=${token}`,
+      footer: ['The link works once and expires in 24 hours. If it has expired, the page it opens sends you a new one.', 'If you did not create this workspace, ignore this e-mail.'],
+    }) });
   }
 }

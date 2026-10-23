@@ -24,7 +24,7 @@ import { networkInterfaces, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
-import { insecureUrls, lanEnv, LAN_UPSTREAMS, parseLanHost } from './lan-config.ts';
+import { insecureUrls, lanEnv, LAN_UPSTREAMS, localhostLinkWarning, parseLanHost } from './lan-config.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE = join(ROOT, '.lan-https');
@@ -243,6 +243,14 @@ async function check(): Promise<void> {
   console.log('HRVO LAN HTTPS check\n\nURLs in use:');
   for (const k of ['APP_WEB_URL', 'NEXT_PUBLIC_API_URL', 'NEXT_PUBLIC_LIVEKIT_URL', 'NEXT_PUBLIC_STORAGE_URL', 'S3_PUBLIC_ENDPOINT', 'CORS_ORIGINS']) console.log(`  ${k.padEnd(24)} ${env[k] ?? '(not set)'}`);
   console.log('');
+
+  // ADR 039: e-mailed links must open on other devices too.
+  const linkWarning = localhostLinkWarning(env);
+  if (linkWarning) warn(linkWarning);
+  const plainEnv = readEnvFile(join(ROOT, '.env'));
+  const plainWarning = localhostLinkWarning({ ...plainEnv, ...Object.fromEntries(Object.entries(env).filter(([k]) => k !== 'APP_WEB_URL')) });
+  if (!linkWarning && plainWarning) warn(`.env (used when the API is started without npm run lan:up): ${plainWarning}`);
+  if (!linkWarning && !plainWarning) ok(`e-mailed links use ${env.APP_WEB_URL}`);
 
   const insecure = insecureUrls(env);
   if (insecure.length) fail(`still http:// or ws://: ${insecure.join(', ')}`, 'run npm run lan:env, then restart with npm run lan:up');

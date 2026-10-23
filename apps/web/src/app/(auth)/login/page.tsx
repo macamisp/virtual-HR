@@ -40,7 +40,7 @@ function LoginForm() {
   const setEnrollmentToken = useAuthStore((s) => s.setEnrollmentToken);
   const signedOutReason = useAuthStore((s) => s.signedOutReason);
 
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(params.get('email') ?? '');
   const [password, setPassword] = useState('');
   const [totpCode, setTotpCode] = useState('');
   const [workspace, setWorkspace] = useState('');
