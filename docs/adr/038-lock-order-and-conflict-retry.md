@@ -103,3 +103,7 @@ recompute, same person and organisation) **103 deadlocks** in 68 s.
 - No metrics library exists in the API (adding one needs approval); the retry counter is in-process
   and the JSON log line is the operational signal (CloudWatch metric filter on
   `"event":"db_conflict_retry"`).
+- The first CI run of this change was cancelled by an unrelated clash: `totp-replay` and
+  `vault-e2e` both listened on 3097, and `google-signin-e2e`'s fake Google shared 3085 with
+  `attendance-guards-e2e` (both pairs came with ADR 037). They now use 3043 and 3044, and
+  `test/test-ports.test.ts` fails whenever two test files bind the same port.

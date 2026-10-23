@@ -19,7 +19,7 @@ import { refreshCookie, refreshWithCookie } from './support/refresh-cookie.ts';
 import { freshCode } from './support/totp.ts';
 
 const PORT = 3084;
-const G_PORT = 3085;
+const G_PORT = 3044;
 const CLIENT_ID = 'hrvo-test-client';
 const CLIENT_SECRET = 'hrvo-test-secret';
 const PASSWORD = 'GoogleSigninPass!2026';
