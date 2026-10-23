@@ -259,8 +259,10 @@ describe('Attendance safeguards (FR-ATT-017, 018, 021, 023)', { concurrency: fal
     it('a session closed by the server tells the person, with the reason', async () => {
       // Near midnight the first pass only splits the session; the second, 3 hours later, times it out.
       const t = Date.now() + 3 * 3600_000;
-      await work().attendanceReconcile(new Date(t));
-      await work().attendanceReconcile(new Date(t + 3 * 3600_000));
+      // Only this organisation: with the clock 3 h ahead, a run over every organisation would also
+      // time out the sessions of test files running at the same moment (attendance-logout-e2e).
+      await work().attendanceReconcile(new Date(t), [ORG]);
+      await work().attendanceReconcile(new Date(t + 3 * 3600_000), [ORG]);
       const n = await notes('emp', 'ATTENDANCE_AUTO_CLOCK_OUT');
       assert.equal(n.length, 1);
       assert.match(n[0].body, /stopped sending activity.*request a correction/);

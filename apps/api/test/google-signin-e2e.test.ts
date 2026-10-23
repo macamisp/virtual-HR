@@ -176,14 +176,22 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     assert.equal(setup.status, 200, 'the enrolment token opens 2FA setup');
   });
 
-  it('with "2FA after Google" switched off by the owner, Google alone signs an HR manager in', async () => {
+  it('Owner, Admin and HR always answer 2FA after Google, even with the owner\'s switch off; the switch only covers people who chose 2FA themselves (ADR 039)', async () => {
     await adminPool.query(`UPDATE organizations SET mfa_for_sso = false WHERE id = $1`, [ORG]);
+    // The employee turned 2FA on for themselves (their role does not require it).
+    await adminPool.query(`UPDATE users SET mfa_enabled = true, mfa_secret = $2 WHERE id = $1`, [U.emp.id, U.hr.totp]);
     try {
-      const r = await callback(await start({ mode: 'login' }), { email: U.hr.email, sub: 'google-sub-hr' });
-      assert.equal(r.sso, 'ok');
-      assert.ok(r.refresh);
+      const hr = await callback(await start({ mode: 'login' }), { email: U.hr.email, sub: 'google-sub-hr' });
+      assert.equal(hr.sso, 'totp', 'HR still answers the 2FA challenge');
+      assert.equal(hr.refresh, null, 'no session before the code');
+      const emp = await callback(await start({ mode: 'login' }), { email: U.emp.email, sub: 'google-sub-emp' });
+      assert.equal(emp.sso, 'ok', 'switch off: a person who chose 2FA is not asked after Google');
+      await adminPool.query(`UPDATE organizations SET mfa_for_sso = true WHERE id = $1`, [ORG]);
+      const empAsked = await callback(await start({ mode: 'login' }), { email: U.emp.email, sub: 'google-sub-emp' });
+      assert.equal(empAsked.sso, 'totp', 'switch on (the default): they are asked');
     } finally {
       await adminPool.query(`UPDATE organizations SET mfa_for_sso = true WHERE id = $1`, [ORG]);
+      await adminPool.query(`UPDATE users SET mfa_enabled = false, mfa_secret = NULL WHERE id = $1`, [U.emp.id]);
     }
   });
 
@@ -309,10 +317,13 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     assert.equal(unlink.status, 200, await unlink.text());
     // The Google-only owner of GSignup has no password: removing Google is refused.
     const gail = (await adminPool.query<{ id: string; org_id: string }>(`SELECT id, org_id FROM users WHERE email = 'gail@gsignup.test'`)).rows[0]!;
+    // An owner always sets up 2FA after Google (ADR 039), whatever the organisation's switch says.
     await adminPool.query(`UPDATE organizations SET mfa_for_sso = false WHERE id = $1`, [gail.org_id]);
     const gailLogin = await callback(await start({ mode: 'login' }), { email: 'gail@gsignup.test', sub: 'google-sub-gail' });
-    assert.equal(gailLogin.sso, 'ok', gailLogin.location.toString());
-    const gailSession = JSON.parse(await (await refreshWithCookie(base, gailLogin.refresh!)).text()) as { accessToken: string };
+    assert.equal(gailLogin.sso, 'enroll', gailLogin.location.toString());
+    const gailSetup = JSON.parse(await (await json('/auth/2fa/setup', {}, gailLogin.fragmentToken!)).text()) as { secret: string };
+    const gailSession = JSON.parse(await (await json('/auth/2fa/verify', { code: await freshCode(gailSetup.secret) }, gailLogin.fragmentToken!)).text()) as { accessToken: string };
+    assert.ok(gailSession.accessToken, 'signed in once 2FA is set up');
     const refused = await fetch(`${base}/auth/google/link`, { method: 'DELETE', headers: { Authorization: `Bearer ${gailSession.accessToken}` } });
     assert.equal(refused.status, 409);
     assert.match(await refused.text(), /only way to sign in/);

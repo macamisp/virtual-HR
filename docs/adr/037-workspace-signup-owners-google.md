@@ -108,3 +108,14 @@ with the request and response contracts as Zod schemas in `packages/shared`.
 - **Verified on this date** with lint, both typechecks, `google-signin-e2e.test.ts` and
   `workspace-e2e.test.ts` (33 tests), Playwright 31 and 32 against the fake provider, a full-history
   gitleaks scan (no leaks) and `npm run google:check` against Google's real discovery document.
+
+## Amendment 2026-10-23 (owner decisions): see ADR 039
+
+- **2FA after Google:** roles that need 2FA (Owner, Admin, HR) always answer it after a Google
+  sign-in. The `mfa_for_sso` switch in decision 4 now only covers people who turned 2FA on for
+  themselves (FR-AUTH-004).
+- **Joining:** self-service workspace creation stays; an existing workspace is joined by
+  invitation. `sso_auto_join_domain` stays off by default and accepts only the owner's own
+  e-mail domain, never a public mail service (FR-AUTH-001, amended in SRS 1.1).
+- **E-mails and their pages:** confirmation, invitation and reset e-mails, and the pages they open,
+  are reworked in ADR 039.

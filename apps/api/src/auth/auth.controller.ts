@@ -20,6 +20,7 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service.ts';
 import { WorkspaceService } from './workspace.service.ts';
 import { GoogleSignInService, OAUTH_COOKIE, OAUTH_COOKIE_PATH } from './google-signin.service.ts';
+import { AccountLinksService } from './account-links.service.ts';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.ts';
 import { PermissionsGuard } from '../common/guards/permissions.guard.ts';
 import { Public } from '../common/decorators/public.decorator.ts';
@@ -47,6 +48,7 @@ import {
   ResendVerificationDtoSchema,
   GoogleStartDtoSchema,
   GoogleTotpDtoSchema,
+  LinkTokenDtoSchema,
 } from '../../../../packages/shared/src/index.ts';
 import type {
   LoginDto,
@@ -61,6 +63,7 @@ import type {
   ResendVerificationDto,
   GoogleStartDto,
   GoogleTotpDto,
+  LinkTokenDto,
 } from '../../../../packages/shared/src/index.ts';
 import { SelfService } from '../common/decorators/self-service.decorator.ts';
 
@@ -88,7 +91,7 @@ function moveRefreshTokenToCookie<T extends object>(res: Response, result: T): O
 @Controller('auth')
 @UseGuards(ThrottlerGuard, JwtAuthGuard, PermissionsGuard)
 export class AuthController {
-  constructor(private readonly authService: AuthService, private readonly workspaces: WorkspaceService, private readonly google: GoogleSignInService) {}
+  constructor(private readonly authService: AuthService, private readonly workspaces: WorkspaceService, private readonly google: GoogleSignInService, private readonly links: AccountLinksService) {}
 
   // ---------------------------------------------------------------- ADR 037: self-service workspaces
 
@@ -119,6 +122,29 @@ export class AuthController {
   @UsePipes(new ZodValidationPipe(ResendVerificationDtoSchema))
   async resendVerification(@Body() dto: ResendVerificationDto) {
     return await this.workspaces.resendVerification(dto);
+  }
+
+  // ---------------------------------------------------------------- ADR 039: e-mailed links
+
+  /** What a confirmation, invitation or reset link can still do (valid, used, expired, withdrawn). */
+  @Public()
+  @Post('links/status')
+  @RateLimit('signup')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(LinkTokenDtoSchema))
+  async linkStatus(@Body() dto: LinkTokenDto) {
+    return await this.links.status(dto);
+  }
+
+  /** A new link, sent to the address the old one went to. Same answer whatever happened. */
+  @Public()
+  @Post('links/renew')
+  @RateLimit('signup')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @UsePipes(new ZodValidationPipe(LinkTokenDtoSchema))
+  async renewLink(@Body() dto: LinkTokenDto, @Req() req: Request) {
+    const [ip, userAgent] = requestMeta(req);
+    return await this.links.renew(dto, { ip, userAgent });
   }
 
   // ---------------------------------------------------------------- FR-AUTH-005: sign in with Google

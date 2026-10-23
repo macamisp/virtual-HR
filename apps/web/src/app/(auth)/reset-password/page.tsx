@@ -11,6 +11,8 @@ import { LoadingState } from '@/components/state-views';
 import { apiFetch } from '@/lib/api';
 import { passwordProblems } from '@/lib/password';
 import { useUrlToken } from '@/lib/url-token';
+import { LinkProblem } from '@/components/link-problem';
+import { signInHref, useLinkStatus } from '@/lib/account-links';
 
 export default function ResetPasswordPage() {
   const token = useUrlToken();
@@ -21,28 +23,23 @@ export default function ResetPasswordPage() {
   const [pending, setPending] = useState(false);
   const [done, setDone] = useState(false);
   const problems = passwordProblems(password, confirm);
+  const link = useLinkStatus('reset', token);
 
   if (token === undefined) return <LoadingState label="Reading reset link" rows={2} />;
-  if (!token) {
-    return (
-      <Alert variant="destructive">
-        <AlertDescription>
-          This reset link is incomplete. <Link href="/forgot-password" className="underline">Request a new one</Link>.
-        </AlertDescription>
-      </Alert>
-    );
-  }
+  if (!token) return <LinkProblem kind="reset" state="invalid" token={null} />;
+  if (!link.status && !link.error) return <LoadingState label="Checking your reset link" rows={2} />;
+  if (link.status && link.status.state !== 'valid' && !done) return <LinkProblem kind="reset" state={link.status.state} token={token} email={link.status.email} />;
 
   if (done) {
     return (
-      <Card>
+      <Card data-testid="reset-done">
         <CardHeader>
-          <CardTitle>Password changed</CardTitle>
-          <CardDescription>You have been signed out everywhere. Sign in with your new password.</CardDescription>
+          <CardTitle className="text-xl">Password changed</CardTitle>
+          <CardDescription>You have been signed out everywhere. Sign in{link.status?.email ? <> as <strong>{link.status.email}</strong></> : null} with your new password.</CardDescription>
         </CardHeader>
         <CardFooter>
           <Button asChild>
-            <Link href="/login">Sign in</Link>
+            <Link href={signInHref(link.status?.email)}>Sign in</Link>
           </Button>
         </CardFooter>
       </Card>
@@ -76,7 +73,7 @@ export default function ResetPasswordPage() {
           {error ? (
             <Alert variant="destructive">
               <AlertDescription>
-                {error} {/expired|invalid/i.test(error) ? <Link href="/forgot-password" className="underline">Request a new link</Link> : null}
+                {error} {/expired|invalid/i.test(error) ? <Link href="/forgot-password" className="underline">Send a new link</Link> : null}
               </AlertDescription>
             </Alert>
           ) : null}

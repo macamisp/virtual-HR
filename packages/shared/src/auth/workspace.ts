@@ -44,8 +44,36 @@ export const SignupResponseSchema = z.object({
   /** The workspace address; the person signs in once the e-mail is verified. */
   workspace: z.object({ name: z.string(), slug: z.string() }),
   message: z.string(),
+  /** ADR 039: the "Resend e-mail" button stays disabled this long after each e-mail. */
+  resendAfterSeconds: z.number().int().min(0),
 });
 export type SignupResponse = z.infer<typeof SignupResponseSchema>;
+
+// ---------------------------------------------------------------- e-mailed links (ADR 039)
+
+/** verify: confirm a new owner's address; invite: accept an invitation; reset: new password. */
+export const LINK_KINDS = ['verify', 'invite', 'reset'] as const;
+export type LinkKind = (typeof LINK_KINDS)[number];
+
+export const LinkTokenDtoSchema = z.object({ kind: z.enum(LINK_KINDS), token: z.string().min(32).max(128) }).strict();
+export type LinkTokenDto = z.infer<typeof LinkTokenDtoSchema>;
+
+/** What an e-mailed link can still do. `revoked`: an invitation withdrawn, or an account no longer active. */
+export const LINK_STATES = ['valid', 'used', 'expired', 'revoked', 'invalid'] as const;
+export type LinkState = (typeof LINK_STATES)[number];
+
+export const LinkStatusSchema = z.object({
+  state: z.enum(LINK_STATES),
+  /** The address the link was sent to (the holder of the link received it there); null when unknown. */
+  email: z.string().nullable(),
+  workspace: z.string().nullable(),
+  /** verify links: the address is confirmed already (for instance, the link was opened twice). */
+  alreadyVerified: z.boolean(),
+});
+export type LinkStatus = z.infer<typeof LinkStatusSchema>;
+
+export const VerifyEmailResponseSchema = z.object({ success: z.literal(true), email: z.string(), alreadyVerified: z.boolean() });
+export type VerifyEmailResponse = z.infer<typeof VerifyEmailResponseSchema>;
 
 /** A sign-in that needs the person to say which workspace they mean. */
 export const WorkspaceChoiceSchema = z.object({ slug: z.string(), name: z.string() });

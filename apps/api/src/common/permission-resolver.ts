@@ -86,10 +86,9 @@ export class PermissionResolver implements OnModuleInit, OnModuleDestroy {
     }
     const permissions = resolvePermissions(row);
     // A role change can make 2FA mandatory (FR-AUTH-004); until it is enrolled the old token
-    // stops working and the next sign-in leads to enrolment. A Google session is exempt where the
-    // owner switched "2FA after Google" off (ADR 037): Google already verified the person.
-    const googleExempt = row.login_method === 'GOOGLE' && !row.mfa_for_sso;
-    if (requiresMfa(row.role, permissions) && !row.mfa_enabled && mfaEnforced() && !googleExempt) {
+    // stops working and the next sign-in leads to enrolment. No exemption for Google sign-ins
+    // (ADR 039): these roles answer 2FA however they signed in.
+    if (requiresMfa(row.role, permissions) && !row.mfa_enabled && mfaEnforced()) {
       this.cache.delete(key);
       throw new UnauthorizedException('Two-factor authentication is required for your role. Sign in again to set it up.');
     }

@@ -2,76 +2,93 @@
 
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
-import { MessageResponseSchema } from '@hrvo/shared';
+import { LinkStatusSchema, MessageResponseSchema, VerifyEmailResponseSchema } from '@hrvo/shared';
+import type { LinkState, VerifyEmailResponse } from '@hrvo/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { FormField } from '@/components/form-field';
 import { LoadingState } from '@/components/state-views';
+import { LinkProblem } from '@/components/link-problem';
 import { apiFetch } from '@/lib/api';
+import { signInHref } from '@/lib/account-links';
 import { useUrlToken } from '@/lib/url-token';
 
-/** The e-mailed link lands here with the token in the fragment; the token is used once. */
+/**
+ * The confirmation e-mail's button lands here with the token in the fragment (ADR 039). Every
+ * outcome ends with a visible next step: Continue to sign in, Sign in, or Send a new link.
+ */
 export default function VerifyEmailPage() {
   const token = useUrlToken();
-  const [state, setState] = useState<'verifying' | 'done' | 'failed'>('verifying');
-  const [error, setError] = useState<string | null>(null);
-  const [email, setEmail] = useState('');
-  const [resent, setResent] = useState(false);
-  const [pending, setPending] = useState(false);
+  const [done, setDone] = useState<VerifyEmailResponse | null>(null);
+  const [problem, setProblem] = useState<{ state: Exclude<LinkState, 'valid'>; email: string | null } | null>(null);
   const started = useRef(false);
 
   useEffect(() => {
     if (token === undefined || started.current) return;
     started.current = true;
-    if (!token) { setState('failed'); setError('This verification link is incomplete.'); return; }
-    apiFetch('/auth/email/verify', { method: 'POST', auth: 'none', body: { token }, schema: MessageResponseSchema })
-      .then(() => setState('done'))
-      .catch((err: unknown) => { setState('failed'); setError(err instanceof Error ? err.message : 'Verification failed'); });
+    if (!token) { setProblem({ state: 'invalid', email: null }); return; }
+    apiFetch('/auth/email/verify', { method: 'POST', auth: 'none', body: { token }, schema: VerifyEmailResponseSchema })
+      .then(setDone)
+      .catch(async () => {
+        // Say why: expired, replaced by a newer link, or not a link we know.
+        const s = await apiFetch('/auth/links/status', { method: 'POST', auth: 'none', body: { kind: 'verify', token }, schema: LinkStatusSchema }).catch(() => null);
+        setProblem({ state: s && s.state !== 'valid' ? s.state : 'invalid', email: s?.email ?? null });
+      });
   }, [token]);
 
-  if (state === 'verifying') return <LoadingState label="Verifying your e-mail address" rows={2} />;
-
-  if (state === 'done') {
+  if (done) {
     return (
-      <Card>
+      <Card data-testid="verify-done">
         <CardHeader>
-          <CardTitle className="text-xl">E-mail verified</CardTitle>
-          <CardDescription>Your workspace is open. Sign in to set it up and invite your people.</CardDescription>
+          <CardTitle className="text-xl">{done.alreadyVerified ? 'Your e-mail is already confirmed' : 'E-mail confirmed'}</CardTitle>
+          <CardDescription>
+            Your workspace is open. Sign in as <strong>{done.email}</strong> with the password you chose; next you set up two-factor authentication and your workspace.
+          </CardDescription>
         </CardHeader>
-        <CardFooter><Button asChild><Link href="/login">Sign in</Link></Button></CardFooter>
+        <CardFooter><Button asChild><Link href={signInHref(done.email, '/onboarding')}>Continue to sign in</Link></Button></CardFooter>
       </Card>
     );
   }
+  if (problem && problem.state !== 'invalid') return <LinkProblem kind="verify" state={problem.state} token={token ?? null} email={problem.email} />;
+  if (problem) return <ResendByAddress />;
+  return <LoadingState label="Confirming your e-mail address" rows={2} />;
+}
 
+/** A link we do not recognise: ask for the address and send a new link there. */
+function ResendByAddress() {
+  const [email, setEmail] = useState('');
+  const [sent, setSent] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
   const resend = async (e: React.FormEvent) => {
     e.preventDefault();
     setPending(true);
+    setError(null);
     try {
-      await apiFetch('/auth/email/resend', { method: 'POST', auth: 'none', body: { email: email.trim() }, schema: MessageResponseSchema });
-      setResent(true);
+      const r = await apiFetch('/auth/email/resend', { method: 'POST', auth: 'none', body: { email: email.trim() }, schema: MessageResponseSchema });
+      setSent(r.message ?? 'If the address still needs confirming, a new link is on its way.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not send a new link');
     } finally {
       setPending(false);
     }
   };
-
   return (
-    <Card>
+    <Card data-testid="link-problem">
       <form onSubmit={resend} noValidate>
         <CardHeader>
-          <CardTitle className="text-xl">Verification link not valid</CardTitle>
-          <CardDescription>Links work once and expire after 24 hours. Enter your address to get a new one.</CardDescription>
+          <CardTitle className="text-xl">This confirmation link is not valid</CardTitle>
+          <CardDescription>Check that the whole link was copied from the e-mail, or enter your address to get a new one.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
-          {resent ? <Alert variant="success"><AlertDescription>If the address needs verification, a new link has been sent.</AlertDescription></Alert> : null}
+          {sent ? <Alert variant="success"><AlertDescription>{sent}</AlertDescription></Alert> : null}
           <FormField label="Email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
         </CardContent>
         <CardFooter className="flex flex-col items-stretch gap-3">
-          <Button type="submit" disabled={pending || resent}>{pending ? 'Sending…' : 'Send a new link'}</Button>
-          <Link href="/login" className="text-center text-sm text-primary underline-offset-4 hover:underline">Back to sign in</Link>
+          <Button type="submit" disabled={pending || !!sent || !email.trim()}>{pending ? 'Sending…' : sent ? 'New link sent' : 'Send a new link'}</Button>
+          <Button asChild variant="outline"><Link href="/login">Sign in</Link></Button>
         </CardFooter>
       </form>
     </Card>

@@ -17,8 +17,10 @@ import { AttendanceService } from '../attendance/attendance.service.ts';
 import { AttendanceGateway } from '../attendance/attendance.gateway.ts';
 import { MAIL_TRANSPORT } from '../common/mailer.ts';
 import type { MailTransport } from '../common/mailer.ts';
+import { appWebUrl, renderActionEmail } from '../common/email-layout.ts';
 import { verifyReauth } from '../auth/reauth.ts';
 import { revokeSessionsOf } from '../auth/session-revocation.ts';
+import { autoJoinDomainProblem } from '../auth/workspace.service.ts';
 import type { RequestContext } from '../common/decorators/request-context.decorator.ts';
 import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
@@ -80,6 +82,10 @@ export class OwnershipService {
   async updateProfile(user: AuthenticatedUser, dto: OrgProfileUpdateDto, ctx: RequestContext): Promise<OrgProfile> {
     const ownerOnly = dto.ssoAutoJoinDomain !== undefined || dto.mfaForSso !== undefined;
     if (ownerOnly && !userCan(user, Permission.ORG_OWNER)) throw new ForbiddenException('Only an owner can change the sign-in settings');
+    if (dto.ssoAutoJoinDomain) {
+      const problem = autoJoinDomainProblem(dto.ssoAutoJoinDomain, user.email);
+      if (problem) throw new BadRequestException(problem);
+    }
     const after = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       await lockOrgForWrite(db, user.orgId);
       const before = await this.readProfile(db, user.orgId);
@@ -123,16 +129,13 @@ export class OwnershipService {
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'OWNERSHIP_TRANSFER_REQUESTED', entityType: 'OWNERSHIP_TRANSFER', entityId: id, after: { to: dto.newOwnerId, keepOwnership: dto.keepOwnership }, ip: ctx.ip ?? undefined, userAgent: ctx.userAgent ?? undefined });
       return (await db.query<TransferRow>(`${TRANSFER_SELECT} WHERE t.id = $1`, [id])).rows[0]!;
     });
-    const base = process.env.APP_WEB_URL || 'http://localhost:3000';
-    await this.mailer.send({
-      to: row.to_email,
+    await this.mailer.send({ to: row.to_email, ...renderActionEmail({
       subject: 'You have been asked to take ownership of an HRVO workspace',
-      text: [
-        `${row.from_name ?? row.from_email} wants to make you an owner of their HRVO workspace${row.keep_ownership ? '' : ' and step down to Admin'}.`,
-        '', `Review and accept it here (valid for 7 days): ${base}/admin/users?transfer=${row.id}`, '',
-        'Nothing changes until you accept.',
-      ].join('\n'),
-    });
+      intro: `${row.from_name ?? row.from_email} wants to make you an owner of their HRVO workspace${row.keep_ownership ? '' : ' and step down to Admin'}.`,
+      buttonLabel: 'Review the request',
+      url: `${appWebUrl()}/admin/users?transfer=${row.id}`,
+      footer: ['You need to be signed in. The request is valid for 7 days. Nothing changes until you accept.'],
+    }) });
     return mapTransfer(row);
   }
 

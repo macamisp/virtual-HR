@@ -36,7 +36,11 @@ Background jobs (task reminders, carry-over, weekly summary, attendance close) r
 Redis when `JOBS_ENABLED=true` (the default). Set `JOBS_ENABLED=false` to run the API without
 Redis; notification emails are then sent inline and nothing is scheduled. Without jobs nothing
 closes a dropped attendance session, so also set `ATTENDANCE_RECONCILE_INLINE_MS=15000` to run the
-reconciler inside the API (ADR 026). Emails land in Mailhog.
+reconciler inside the API (ADR 026). Emails land in Mailhog when `.env` has `MAIL_TRANSPORT=smtp`
+(the default in `.env.example`). With `MAIL_TRANSPORT=memory`, a test setting, nothing arrives: the
+signup page would say "Check your e-mail" and no e-mail would come. The API warns about it at start.
+Mail set-up, real delivery with Resend, and links that open on other devices (`APP_WEB_URL`):
+`docs/runbooks/mail.md`.
 
 Documents (ADR 009) also need `NEXT_PUBLIC_STORAGE_URL` to be the storage address the browser uploads to (the default, `http://localhost:9000`, matches the compose file). The confidential vault (ADR 010) uses the separate recovery key from `npm run setup`. Share links point at `APP_WEB_URL`.
 

@@ -63,7 +63,6 @@ export default defineConfig({
         // The suite signs the same people in many times per minute; production default is 10/min.
         RATE_LIMIT_HEARTBEAT: '500',
         BREACHED_PASSWORD_CHECK: 'local',
-        MAIL_TRANSPORT: 'memory',
         // No Redis needed: notification emails are sent inline and no schedulers run, except the
         // attendance reconciler, which the accuracy spec (23) needs for tab-close and network-loss.
         JOBS_ENABLED: 'false',
@@ -73,6 +72,11 @@ export default defineConfig({
         RATE_LIMIT_SIGNUP: '500',
         RATE_LIMIT_OAUTH: '500',
         APP_WEB_URL: webUrl,
+        // ADR 039: every e-mail is written to apps/web/.e2e-mail; the specs open it and press its
+        // button (e2e/mail.ts). Resend opens again 3 s after an e-mail instead of 60 s.
+        MAIL_TRANSPORT: 'file',
+        MAIL_FILE_DIR: `${process.cwd()}/.e2e-mail`,
+        VERIFICATION_RESEND_COOLDOWN_SECONDS: '3',
         GOOGLE_CLIENT_ID: 'fake-google-client',
         GOOGLE_CLIENT_SECRET: 'fake-google-secret',
         GOOGLE_REDIRECT_URI: `${apiUrl}/auth/google/callback`,
@@ -102,6 +106,8 @@ export default defineConfig({
         NEXT_PUBLIC_LIVEKIT_URL: process.env.LIVEKIT_URL ?? 'ws://localhost:7880',
         NEXT_TELEMETRY_DISABLED: '1',
         NEXT_DIST_DIR: '.next-e2e',
+        // The "Open Mailhog" link on "Check your e-mail" (shown only when this is set, or in next dev).
+        NEXT_PUBLIC_MAIL_VIEWER_URL: 'http://localhost:8025',
       } as Record<string, string>,
     },
   ],

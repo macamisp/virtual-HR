@@ -120,15 +120,19 @@ export default function OnboardingPage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Sign-in settings (owners only)</CardTitle>
-            <CardDescription>{profile.data?.googleSignInAvailable ? 'Google sign-in is available on this server.' : 'Google sign-in is not configured on this server (GOOGLE_OAUTH_CLIENT_ID).'}</CardDescription>
+            <CardDescription>
+              {profile.data?.googleSignInAvailable ? 'Google sign-in is available on this server.' : 'Google sign-in is not configured on this server (GOOGLE_CLIENT_ID).'}{' '}
+              People join this workspace by invitation. Owners, admins and HR always confirm two-factor authentication, also after a Google sign-in.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-1.5">
-              <Label htmlFor={ids.domain}>Let Google accounts on this domain join by themselves</Label>
-              <Input id={ids.domain} value={domain} placeholder="example.com (empty = invitation only)" onChange={(e) => setDomain(e.target.value)} />
+              <Label htmlFor={ids.domain}>Exception (off unless you fill it in): let Google accounts of your own domain join as Member</Label>
+              <Input id={ids.domain} value={domain} placeholder="empty = invitation only (recommended)" onChange={(e) => setDomain(e.target.value)} />
+              <p className="text-xs text-muted-foreground">Only the domain of your own e-mail address is accepted, never a public one such as gmail.com.</p>
             </div>
             <label className="flex items-center gap-2 text-sm" htmlFor={ids.mfa}>
-              <input id={ids.mfa} type="checkbox" checked={mfaForSso} onChange={(e) => setMfaForSso(e.target.checked)} /> Roles that need 2FA also need it after a Google sign-in
+              <input id={ids.mfa} type="checkbox" checked={mfaForSso} onChange={(e) => setMfaForSso(e.target.checked)} /> People who turned on 2FA for themselves also enter their code after a Google sign-in
             </label>
           </CardContent>
           <CardFooter>
