@@ -112,12 +112,14 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
   });
 
   it('is refused while no client id and secret are configured; only openid email profile are requested', async () => {
-    const saved = process.env.GOOGLE_CLIENT_SECRET;
+    // Both the sign-in name and the calendar-sync fallback name (googleEnv) must be absent.
+    const saved = { GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET, GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET };
     delete process.env.GOOGLE_CLIENT_SECRET;
+    delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
     try {
       assert.equal((await json('/auth/google/start', { mode: 'login' })).status, 503);
     } finally {
-      process.env.GOOGLE_CLIENT_SECRET = saved;
+      for (const [k, v] of Object.entries(saved)) if (v !== undefined) process.env[k] = v;
     }
     assert.equal((await json('/auth/google/start', { mode: 'login', returnTo: '//evil.example' })).status, 400, 'no open redirect');
     assert.equal((await json('/auth/google/start', { mode: 'login', returnTo: 'https://evil.example/' })).status, 400, 'no open redirect');

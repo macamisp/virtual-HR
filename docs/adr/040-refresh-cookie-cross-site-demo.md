@@ -21,3 +21,18 @@ Nothing changes for local development, the LAN proxy or a named-tunnel demo: the
 - Option B2 (quick tunnels) keeps people signed in across reloads in Chrome, Edge and Firefox.
 - Safari blocks third-party cookies altogether, so on Safari and iPhone a reload still signs the visitor out (the 15-minute access token still works until then). Option B1 (named tunnel, one domain) remains the recommendation for anything longer than a short click-through.
 - `REFRESH_COOKIE_SAMESITE=none` must never be set for a same-site deployment: it only widens where the cookie travels, with no benefit.
+
+## Amendment (2026-10-28): the Google sign-in state cookie follows the same switch
+
+Sign in with Google (FR-AUTH-005, ADR 037) keeps state, nonce and PKCE verifier in a signed httpOnly cookie
+(`hrvo_oauth`, path `/auth/google`, ten minutes) on the API host, set by `POST /auth/google/start` and sent
+back on Google's redirect to `/auth/google/callback`. It was always `SameSite=Lax`. On quick tunnels the
+start request comes from the web app's site, and Chromium refuses to store a Lax cookie from a cross-site
+response (`SchemefulSameSiteLax`, confirmed on the demo of 2026-10-28), so the callback found no state and
+every Google sign-in ended in `invalid_state`.
+
+With `REFRESH_COOKIE_SAMESITE=none` this cookie is therefore sent as `SameSite=None; Secure` as well. It is
+not `Partitioned`: Google's redirect is a top-level navigation to the API host, where a cookie partitioned
+under the web app's site would not be presented. The exposure stays bounded: the cookie is signed, httpOnly,
+limited to `/auth/google`, short-lived, and the callback still checks state, nonce and the PKCE verifier.
+Nothing changes with the default `strict`.

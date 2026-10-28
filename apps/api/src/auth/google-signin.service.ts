@@ -19,7 +19,7 @@ import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
 import { PermissionResolver } from '../common/permission-resolver.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
-import { getJwtSecret, mfaEnforced, servedOverHttps } from '../common/config.ts';
+import { getJwtSecret, mfaEnforced, refreshCookieSameSite, servedOverHttps } from '../common/config.ts';
 import { pkcePair } from '../calendar/providers.ts';
 import { AuthService } from './auth.service.ts';
 import type { AuthUserRow } from './auth.service.ts';
@@ -72,8 +72,13 @@ export function googleEnv(env: Env = process.env) {
 }
 
 export function oauthCookieOptions(): CookieOptions {
-  // Lax: the cookie must come back on Google's top-level redirect to the callback.
-  return { httpOnly: true, secure: servedOverHttps(), sameSite: 'lax', path: OAUTH_COOKIE_PATH, maxAge: STATE_TTL_SECONDS * 1000 };
+  // Lax: the cookie must come back on Google's top-level redirect to the callback. When the web app that
+  // starts the flow is on another site (ADR 040, REFRESH_COOKIE_SAMESITE=none) the browser refuses a Lax
+  // cookie set by that cross-site request (SchemefulSameSiteLax), so it goes out as None; Secure instead.
+  // Never Partitioned: the callback is a top-level navigation to the API host, where a cookie partitioned
+  // under the web app's site would not be presented.
+  const sameSite = refreshCookieSameSite() === 'none' ? 'none' : 'lax';
+  return { httpOnly: true, secure: servedOverHttps(), sameSite, path: OAUTH_COOKIE_PATH, maxAge: STATE_TTL_SECONDS * 1000 };
 }
 
 @Injectable()

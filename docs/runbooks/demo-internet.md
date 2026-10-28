@@ -48,6 +48,7 @@ The hostnames stay the same every time, so you build the web app once.
 
 - The URLs **change on every start**, so steps 2 and 4 (env values, web rebuild) must be repeated each time.
 - The three URLs are three different sites (`trycloudflare.com` is a public suffix), so the `SameSite=Strict` refresh cookie is never sent. Set `REFRESH_COOKIE_SAMESITE=none` (ADR 040): the cookie is then `Secure` and `Partitioned`, and people stay signed in across reloads in Chrome, Edge and Firefox. Safari and iPhone block third-party cookies, so there a reload still signs the visitor out after the 15-minute access token. Use B1 for anything longer than a click-through.
+- The same switch covers the signed state cookie of sign in with Google (`hrvo_oauth`, ADR 040 amendment): without it the browser refuses that cookie too and every Google sign-in on quick tunnels ends in `invalid_state`. `GOOGLE_REDIRECT_URI` must be the API tunnel's `/auth/google/callback` (docs/runbooks/google-signin.md).
 - The storage tunnel must point at the port your storage publishes: `S3_PORT=8333 npm run demo:internet -- tunnels-start quick` when `.env` has `S3_ENDPOINT=http://localhost:8333` (the default is 9000, the compose port).
 
 ## 2. Set the demo environment
