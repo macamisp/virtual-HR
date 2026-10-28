@@ -15,7 +15,6 @@ import { GoogleButton } from '@/components/google-button';
 import { LoadingState } from '@/components/state-views';
 import { apiFetch, ApiError } from '@/lib/api';
 import { useAuthStore } from '@/lib/auth-store';
-import { refreshSession } from '@/lib/session';
 import { ssoErrorMessage } from '@/lib/sso';
 
 /** Only same-app relative paths; never an absolute URL (open-redirect guard). */
@@ -60,10 +59,13 @@ function LoginForm() {
     if (!sso || ssoHandled.current) return;
     ssoHandled.current = true;
     if (sso === 'ok') {
-      refreshSession().then(() => {
-        if (useAuthStore.getState().status === 'authenticated') router.replace(returnTo);
-        else { setFinishingSso(false); setError('Google sign-in did not complete. Please try again.'); }
-      });
+      // ADR 042: the callback leaves a single-use handoff token in the fragment; exchanging it from this
+      // site puts the refresh cookie where this site's requests present it (as a password login does).
+      const token = takeFragmentToken();
+      if (!token) { setFinishingSso(false); setError(ssoErrorMessage('invalid_state')); return; }
+      apiFetch('/auth/google/complete', { method: 'POST', auth: 'none', body: { handoffToken: token }, schema: SessionResponseSchema })
+        .then((res) => { setSession(res); router.replace(returnTo); })
+        .catch(() => { setFinishingSso(false); setError('Google sign-in did not complete. Please try again.'); });
     } else if (sso === 'totp') {
       const token = takeFragmentToken();
       if (token) { setChallengeToken(token); setStep('google-totp'); } else setError(ssoErrorMessage('invalid_state'));
@@ -71,7 +73,7 @@ function LoginForm() {
       const token = takeFragmentToken();
       if (token) { setEnrollmentToken(token); router.replace(`/2fa/setup?returnTo=${encodeURIComponent(returnTo)}`); } else setError(ssoErrorMessage('invalid_state'));
     }
-  }, [sso, returnTo, router, setEnrollmentToken]);
+  }, [sso, returnTo, router, setEnrollmentToken, setSession]);
 
   if (finishingSso) return <LoadingState label="Finishing your Google sign-in" rows={2} />;
 

@@ -544,6 +544,7 @@ export class AuthService {
     meta: RequestMeta,
     auditAction: string,
     method: 'PASSWORD' | 'GOOGLE' | 'AGENT' = 'PASSWORD',
+    expiresInMs: number = REFRESH_TTL_MS,
   ) {
     const sessionId = randomUUID();
     const familyId = randomUUID();
@@ -558,7 +559,7 @@ export class AuthService {
         user.id,
         familyId,
         sha256(refreshToken),
-        new Date(Date.now() + REFRESH_TTL_MS),
+        new Date(Date.now() + expiresInMs),
         meta.ip || null,
         meta.userAgent || null,
         method,
@@ -654,7 +655,32 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    const session = sessionRes.rows[0];
+    const session = sessionRes.rows[0] as SessionForRefreshRow;
+    return await this.rotateSession(session, meta);
+  }
+
+  /**
+   * Google sign-in handoff (ADR 042): the session the callback created is claimed once, by id, and
+   * rotated exactly like a refresh. A second claim is token reuse and revokes the whole family.
+   */
+  async rotateSessionById(orgId: string, sessionId: string, meta: RequestMeta) {
+    const session = await this.prisma.runWithTenantContext(orgId, async (client) =>
+      (await client.query<SessionForRefreshRow & { login_method: string }>(
+        `SELECT s.id, s.org_id, s.user_id, s.family_id, s.is_revoked, s.revoked_reason, s.expires_at, s.login_method,
+                u.email, u.display_name, u.role, u.team_id, u.status AS user_status
+         FROM auth_sessions s JOIN users u ON u.id = s.user_id
+         WHERE s.id = $1 AND s.org_id = $2`,
+        [sessionId, orgId],
+      )).rows[0]);
+    if (!session || session.login_method !== 'GOOGLE') {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+    return await this.rotateSession(session, meta);
+  }
+
+  /** Reuse detection, expiry and account checks, then a new token in the same family (ADR 018). */
+  private async rotateSession(session: SessionForRefreshRow, meta: RequestMeta) {
+    const { ip, userAgent } = meta;
 
     if (session.is_revoked) {
       if (session.revoked_reason === 'ROTATED' || session.revoked_reason === null) {
@@ -1070,10 +1096,10 @@ export class AuthService {
   }
 
   /** A new login for a person whose identity was verified by other means (Google), audited as such. */
-  async issueSessionFor(user: AuthUserRow, meta: RequestMeta, auditAction: string, method: 'PASSWORD' | 'GOOGLE' = 'GOOGLE') {
+  async issueSessionFor(user: AuthUserRow, meta: RequestMeta, auditAction: string, method: 'PASSWORD' | 'GOOGLE' = 'GOOGLE', expiresInMs?: number) {
     return await this.prisma.runWithTenantContext(user.org_id, async (client) => {
       await client.query(`UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`, [user.id]);
-      return await this.issueSession(client, user, meta, auditAction, method);
+      return await this.issueSession(client, user, meta, auditAction, method, expiresInMs);
     });
   }
 
@@ -1105,4 +1131,20 @@ export class AuthService {
   private async recordAudit(client: pg.PoolClient, entry: AuditEntry) {
     await appendAuditEntry(client, entry);
   }
+}
+
+/** A session joined with its user, as fn_lookup_session_for_refresh returns it. */
+interface SessionForRefreshRow {
+  id: string;
+  org_id: string;
+  user_id: string;
+  family_id: string;
+  is_revoked: boolean;
+  revoked_reason: string | null;
+  expires_at: Date | string;
+  email: string;
+  display_name: string | null;
+  role: AuthenticatedUser['role'];
+  team_id: string | null;
+  user_status: string;
 }

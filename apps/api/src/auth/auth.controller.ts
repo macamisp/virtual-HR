@@ -14,6 +14,7 @@ import {
   HttpStatus,
   UsePipes,
   ForbiddenException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ThrottlerGuard } from '@nestjs/throttler';
@@ -48,6 +49,7 @@ import {
   ResendVerificationDtoSchema,
   GoogleStartDtoSchema,
   GoogleTotpDtoSchema,
+  GoogleCompleteDtoSchema,
   LinkTokenDtoSchema,
 } from '../../../../packages/shared/src/index.ts';
 import type {
@@ -61,7 +63,7 @@ import type {
   WorkspaceSignupDto,
   VerifyEmailDto,
   ResendVerificationDto,
-  GoogleStartDto,
+  GoogleCompleteDto,
   GoogleTotpDto,
   LinkTokenDto,
 } from '../../../../packages/shared/src/index.ts';
@@ -149,16 +151,34 @@ export class AuthController {
 
   // ---------------------------------------------------------------- FR-AUTH-005: sign in with Google
 
-  /** Returns Google's authorization URL; the state, nonce and PKCE verifier go into a signed cookie. */
+  /**
+   * Sends the browser to Google; the state, nonce and PKCE verifier go into a signed cookie. A top-level
+   * navigation, not a fetch (ADR 042): the cookie is then a first-party cookie of the API site, which
+   * browsers that block third-party cookies still store and send back on the callback. Refused starts
+   * return to the web app with a result code, as the callback does.
+   */
   @Public()
-  @Post('google/start')
+  @Get('google/start')
   @RateLimit('signup')
-  @HttpCode(HttpStatus.OK)
-  @UsePipes(new ZodValidationPipe(GoogleStartDtoSchema))
-  googleStart(@Body() dto: GoogleStartDto, @Res({ passthrough: true }) res: Response) {
-    const r = this.google.start(dto);
+  googleStart(@Query() q: Record<string, unknown>, @Res() res: Response): void {
+    res.setHeader('Cache-Control', 'no-store');
+    const parsed = GoogleStartDtoSchema.safeParse(q);
+    if (!parsed.success || parsed.data.mode === 'link') {
+      res.redirect(302, this.google.errorRedirect(parsed.success ? parsed.data.mode : 'login', 'failed'));
+      return;
+    }
+    let r: ReturnType<GoogleSignInService['start']>;
+    try {
+      r = this.google.start(parsed.data);
+    } catch (err) {
+      if (err instanceof ServiceUnavailableException) {
+        res.redirect(302, this.google.errorRedirect(parsed.data.mode, 'not_configured'));
+        return;
+      }
+      throw err;
+    }
     res.cookie(r.cookie.name, r.cookie.value, r.cookie.options);
-    return { authorizeUrl: r.authorizeUrl };
+    res.redirect(302, r.authorizeUrl);
   }
 
   /** Google redirects here; the browser is sent on to the web app with the outcome. */
@@ -171,8 +191,18 @@ export class AuthController {
     const cookie: unknown = req.cookies?.[OAUTH_COOKIE];
     const r = await this.google.callback({ code: str(q.code), state: str(q.state), error: str(q.error) }, typeof cookie === 'string' ? cookie : undefined, { ip, userAgent });
     res.clearCookie(OAUTH_COOKIE, { path: OAUTH_COOKIE_PATH });
-    if (r.refreshToken) res.cookie(REFRESH_COOKIE_NAME, r.refreshToken, { ...refreshCookieOptions(), maxAge: REFRESH_MAX_AGE_MS });
     res.redirect(302, r.redirect);
+  }
+
+  /** Last step after the callback (ADR 042): the single-use handoff token becomes the session and refresh cookie. */
+  @Public()
+  @Post('google/complete')
+  @RateLimit('login')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(GoogleCompleteDtoSchema))
+  async googleComplete(@Body() dto: GoogleCompleteDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const [ip, userAgent] = requestMeta(req);
+    return moveRefreshTokenToCookie(res, await this.google.complete(dto, { ip, userAgent }));
   }
 
   /** Signed in: add Google to the account (any verified Google address the person controls). */

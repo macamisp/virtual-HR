@@ -115,6 +115,10 @@ export const GoogleTotpDtoSchema = z
   .strict();
 export type GoogleTotpDto = z.infer<typeof GoogleTotpDtoSchema>;
 
+/** Last step of a Google sign-in (ADR 042): the single-use handoff token the callback left in the URL fragment. */
+export const GoogleCompleteDtoSchema = z.object({ handoffToken: z.string().min(20).max(2048) }).strict();
+export type GoogleCompleteDto = z.infer<typeof GoogleCompleteDtoSchema>;
+
 /** Result codes carried back to the web app after the Google redirect (`?sso=` and `&code=`). */
 export const GOOGLE_RESULT_CODES = ['ok', 'totp', 'enroll', 'linked', 'email_mismatch', 'no_account', 'unverified_email', 'denied', 'invalid_state', 'failed', 'choose_workspace', 'not_configured', 'account_inactive', 'invitation_invalid', 'redirect_uri_mismatch', 'already_linked', 'token_invalid'] as const;
 export type GoogleResultCode = (typeof GOOGLE_RESULT_CODES)[number];

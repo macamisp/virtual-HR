@@ -28,6 +28,16 @@ host, port, path, no trailing slash). Google allows plain `http://` only for `lo
 address (docs/runbooks/lan-https.md) needs `https://192.168.x.x:3444/auth/google/callback`, and
 Google refuses raw IP addresses in redirect URIs, so use a name (e.g. `hrvo.local`) or a tunnel.
 
+For the internet demo with separate quick tunnels, use the API tunnel host, not the web host:
+`https://<api-tunnel-host>/auth/google/callback`. Register that exact URI in Google Cloud Console
+and set the same value as `GOOGLE_REDIRECT_URI` before restarting the API. The web origin remains
+the authorised JavaScript origin.
+
+The browser starts the flow with a **navigation** to `GET /auth/google/start` (ADR 042), so the
+state cookie is a first-party cookie of the API site and survives browsers that block third-party
+cookies. After the callback the session is handed over through a 60-second, single-use token in
+the URL fragment and `POST /auth/google/complete`; the callback itself sets no cookie.
+
 `npm run google:check` prints these values for your `.env`, says whether the three settings are
 present (never their values), and fetches Google's discovery document.
 
