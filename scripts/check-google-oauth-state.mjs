@@ -4,7 +4,11 @@
  * token exchange, account creation or session creation. Logs attributes/results only.
  * Usage: node scripts/check-google-oauth-state.mjs <web-origin> <api-origin> [block-third-party-cookies]
  * The optional third argument makes Chromium refuse third-party cookies, as private windows,
- * Safari and Firefox do: the setting that broke the fetch-started flow (ADR 042).
+ * Safari and Firefox do: the setting that broke the earlier fetch-started flow (ADR 042).
+ *
+ * The sign-in now starts with a top-level navigation to the API (ADR 042). `state` is read from
+ * the Set-Cookie-bearing 302's Location header; the navigation on to Google is aborted, so no
+ * Google page loads and no sign-in is possible here.
  */
 import { createRequire } from 'node:module';
 
@@ -23,10 +27,20 @@ try {
   if (blockThirdPartyCookies) {
     await cdp.send('Network.setCookieControls', { enableThirdPartyCookieRestriction: true, disableThirdPartyCookieMetadata: true, disableThirdPartyCookieHeuristics: true });
   }
-  const requestUrls = new Map();
   const blockedReasons = new Set();
+  const requestUrls = new Map();
   let callbackCookieSent = false;
-  cdp.on('Network.requestWillBeSent', (event) => requestUrls.set(event.requestId, event.request.url));
+  let state;
+  const authorized = { resolve: null };
+  const authorization = new Promise((resolve) => { authorized.resolve = resolve; });
+  cdp.on('Network.requestWillBeSent', (event) => {
+    requestUrls.set(event.requestId, event.request.url);
+    // The onward request to Google carries this attempt's state; CDP sees it before routing aborts it.
+    if (!state && event.request.url.startsWith('https://accounts.google.com/')) {
+      const seen = new URL(event.request.url).searchParams.get('state');
+      if (seen) { state = seen; authorized.resolve(); }
+    }
+  });
   cdp.on('Network.responseReceivedExtraInfo', (event) => {
     for (const entry of event.blockedCookies ?? []) {
       if (entry.cookieLine?.startsWith('hrvo_oauth=')) {
@@ -39,14 +53,8 @@ try {
       callbackCookieSent = /(?:^|;\s*)hrvo_oauth=/.test(event.headers.Cookie ?? event.headers.cookie ?? '');
     }
   });
-  let state;
-  const authorization = new Promise((resolve) => {
-    void page.route('https://accounts.google.com/**', async (route) => {
-      state = new URL(route.request().url()).searchParams.get('state');
-      await route.fulfill({ contentType: 'text/html', body: 'OAuth cookie diagnostic; no Google sign-in performed.' });
-      resolve();
-    });
-  });
+  // Do not load Google: abort the onward navigation once the state is known.
+  void page.route('https://accounts.google.com/**', (route) => route.abort());
   await page.goto(`${web}/login`);
   stage = 'starting authorization';
   await page.getByRole('button', { name: 'Continue with Google', exact: true }).click();
@@ -56,10 +64,9 @@ try {
       timeout = setTimeout(() => reject(new Error('Authorization navigation not observed')), 30_000);
     })]);
   } finally { clearTimeout(timeout); }
-  await page.waitForURL((url) => url.hostname === 'accounts.google.com');
   stage = 'checking the callback';
-  const cookies = (await context.cookies(`${api}/auth/google/callback`)).filter((cookie) => cookie.name === 'hrvo_oauth');
   if (!state) throw new Error('Authorization state not present');
+  const cookies = (await context.cookies(`${api}/auth/google/callback`)).filter((cookie) => cookie.name === 'hrvo_oauth');
   await page.goto(`${api}/auth/google/callback?${new URLSearchParams({ state, error: 'access_denied' })}`);
   const result = new URL(page.url());
   const passed = cookies.length === 1 && callbackCookieSent && blockedReasons.size === 0 && result.searchParams.get('code') === 'denied';
