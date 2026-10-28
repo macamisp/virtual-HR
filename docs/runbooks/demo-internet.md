@@ -47,7 +47,8 @@ The hostnames stay the same every time, so you build the web app once.
 `npm run demo:internet -- tunnels-start quick` starts three tunnels and prints three random `https://….trycloudflare.com` URLs.
 
 - The URLs **change on every start**, so steps 2 and 4 (env values, web rebuild) must be repeated each time.
-- The three URLs may count as different sites, so the `SameSite=Strict` refresh cookie may not be sent: people would be signed out on every page reload and after 15 minutes (access-token lifetime). Fine for a short click-through; use B1 for anything longer.
+- The three URLs are three different sites (`trycloudflare.com` is a public suffix), so the `SameSite=Strict` refresh cookie is never sent. Set `REFRESH_COOKIE_SAMESITE=none` (ADR 040): the cookie is then `Secure` and `Partitioned`, and people stay signed in across reloads in Chrome, Edge and Firefox. Safari and iPhone block third-party cookies, so there a reload still signs the visitor out after the 15-minute access token. Use B1 for anything longer than a click-through.
+- The storage tunnel must point at the port your storage publishes: `S3_PORT=8333 npm run demo:internet -- tunnels-start quick` when `.env` has `S3_ENDPOINT=http://localhost:8333` (the default is 9000, the compose port).
 
 ## 2. Set the demo environment
 
@@ -69,6 +70,7 @@ Fill it in:
 | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | from LiveKit Cloud > Settings > Keys | create a key for this demo only |
 | `TRUST_PROXY` | `loopback` | `cloudflared` on this machine is the only proxy: rate limits and audit logs then use the visitor's address, not 127.0.0.1 |
 | `TRUST_PROXY_HEADERS` | empty | set `cloudflare` only if port 3001 is firewalled so that nothing but the tunnel reaches it; otherwise anyone on your network could forge `CF-Connecting-IP` |
+| `REFRESH_COOKIE_SAMESITE` | empty (B1) / `none` (B2) | quick tunnels put the web app and the API on two sites (ADR 040); leave it empty with your own domain |
 | `JWT_SECRET` | `openssl rand -hex 32` | new for the demo |
 | `AUTH_MFA_ENFORCEMENT`, `BREACHED_PASSWORD_CHECK` | empty | 2FA stays enforced for HR and admins; new passwords are checked against Have I Been Pwned |
 
@@ -164,5 +166,5 @@ This stops the tunnels and deletes the demo organisation with all its users, ses
 
 ## Known limitations
 
-- The API runs in development mode (production mode requires AWS KMS and a real mail provider). The refresh cookie is therefore not marked `Secure`; it is only ever sent to the `https://` API host. Mail is not delivered (`MAIL_TRANSPORT=memory`): password resets and invitations by email do not arrive; use the printed invitation link.
+- The API runs in development mode (production mode requires AWS KMS and a real mail provider). The refresh cookie is still `Secure` because `APP_WEB_URL` is `https://`. Mail is not delivered unless `.env` points `MAIL_TRANSPORT=smtp` at a local mail catcher such as Mailhog, which only you can read: password resets and invitations by email do not reach visitors; use the printed invitation link.
 - Everything runs on your machine: its uptime, bandwidth and security are the demo's.

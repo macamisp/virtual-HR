@@ -606,6 +606,16 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       await withEnv({ APP_WEB_URL: 'http://localhost:3000' }, () => {
         assert.equal(refreshCookieOptions().secure, false);
       });
+      // ADR 040: web app and API on two sites (quick tunnels): SameSite=None, Secure and Partitioned; HTTPS only.
+      await withEnv({ APP_WEB_URL: 'https://app.example.test', REFRESH_COOKIE_SAMESITE: 'none' }, () => {
+        assert.deepEqual(refreshCookieOptions(), { httpOnly: true, secure: true, sameSite: 'none', path: '/auth/refresh', partitioned: true });
+      });
+      await withEnv({ APP_WEB_URL: 'http://localhost:3000', REFRESH_COOKIE_SAMESITE: 'none' }, () => {
+        assert.throws(() => refreshCookieOptions(), /HTTPS/);
+      });
+      await withEnv({ REFRESH_COOKIE_SAMESITE: 'lax' }, () => {
+        assert.throws(() => refreshCookieOptions(), /"strict" \(default\) or "none"/);
+      });
     });
 
     it('cookie-based /auth/refresh requires the CSRF header and an allowed Origin', async () => {
@@ -772,6 +782,13 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
     it('defaults to HIBP; the local stub is refused in production', async () => {
       await withEnv({ BREACHED_PASSWORD_CHECK: undefined }, () => {
         assert.ok(createBreachedPasswordChecker() instanceof HibpRangeChecker);
+      });
+      // Empty (exported as "" by `set -a; . ./.env.demo-internet`) is the default too, not an unknown mode.
+      await withEnv({ BREACHED_PASSWORD_CHECK: '' }, () => {
+        assert.ok(createBreachedPasswordChecker() instanceof HibpRangeChecker);
+      });
+      await withEnv({ BREACHED_PASSWORD_CHECK: 'nope' }, () => {
+        assert.throws(() => createBreachedPasswordChecker(), /Unknown BREACHED_PASSWORD_CHECK mode/);
       });
       await withEnv({ BREACHED_PASSWORD_CHECK: 'local', NODE_ENV: 'production' }, () => {
         assert.throws(() => createBreachedPasswordChecker(), /not allowed in production/);

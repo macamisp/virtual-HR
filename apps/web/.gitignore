@@ -1,6 +1,7 @@
 .next/
 .next-e2e/
 .next-demo/
+.next-demo-internet/
 next-env.d.ts
 test-results/
 playwright-report/
