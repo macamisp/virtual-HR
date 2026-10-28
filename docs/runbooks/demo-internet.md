@@ -167,5 +167,5 @@ This stops the tunnels and deletes the demo organisation with all its users, ses
 
 ## Known limitations
 
-- The API runs in development mode (production mode requires AWS KMS and a real mail provider). The refresh cookie is still `Secure` because `APP_WEB_URL` is `https://`. Mail is not delivered unless `.env` points `MAIL_TRANSPORT=smtp` at a local mail catcher such as Mailhog, which only you can read: password resets and invitations by email do not reach visitors; use the printed invitation link.
+- The API runs in development mode (production mode requires AWS KMS and a real mail provider). The refresh cookie is still `Secure` because `APP_WEB_URL` is `https://`. Mail goes to Mailhog, which only you can read, unless `.env.demo-internet` sets Gmail SMTP with an App Password (mail runbook section 2a, ADR 043); then confirmation, invitation and reset e-mails reach visitors' inboxes.
 - Everything runs on your machine: its uptime, bandwidth and security are the demo's.

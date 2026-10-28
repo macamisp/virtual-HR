@@ -2,9 +2,11 @@
  * Transactional mail transport (FR-AUTH-008 reset links; ADR 039).
  *
  * MAIL_TRANSPORT selects the implementation:
- *  - "smtp" (default outside production): minimal plaintext SMTP client for the local Mailhog
- *    container (docker-compose.yml, web UI on http://localhost:8025). No TLS or auth, so it is
- *    refused in production.
+ *  - "smtp" (default outside production): minimal SMTP client. Without SMTP_USER/SMTP_PASSWORD it
+ *    is the plaintext client for the local Mailhog container (docker-compose.yml, web UI on
+ *    http://localhost:8025). With them it requires STARTTLS with a verified certificate before
+ *    AUTH PLAIN, e.g. Gmail with an App Password for the Internet demo (ADR 043). Refused in
+ *    production either way.
  *  - "resend": the Resend HTTPS API (https://resend.com). RESEND_API_KEY and MAIL_FROM come from
  *    the environment only. The production choice today; see docs/runbooks/mail.md.
  *  - "memory": in-process outbox for the API tests. Nothing is delivered.
@@ -16,6 +18,7 @@
  * Message bodies may contain single-use links; they are never logged.
  */
 import net from 'node:net';
+import tls from 'node:tls';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -104,15 +107,38 @@ function assertNoHeaderInjection(value: string, field: string): void {
   }
 }
 
+export interface SmtpOptions {
+  /**
+   * ADR 043: submission login (e.g. Gmail with an App Password). When set, the connection must be
+   * upgraded with STARTTLS and the server certificate verified before AUTH; there is no plaintext
+   * fallback. Without it the transport stays the plaintext Mailhog client.
+   */
+  auth?: { user: string; password: string };
+  /** Extra trusted CA (PEM). Tests only; the system trust store is always used otherwise. */
+  ca?: string;
+}
+
+interface SmtpReply {
+  code: number;
+  /** Text after the code on every line, e.g. the EHLO capabilities. */
+  lines: string[];
+}
+
 export class SmtpMailTransport implements MailTransport {
   private readonly host: string;
   private readonly port: number;
   private readonly from: string;
+  private readonly options: SmtpOptions;
 
-  constructor(host: string, port: number, from: string) {
+  constructor(host: string, port: number, from: string, options: SmtpOptions = {}) {
     this.host = host;
     this.port = port;
     this.from = from;
+    this.options = options;
+  }
+
+  get authenticated(): boolean {
+    return this.options.auth !== undefined;
   }
 
   async send(message: MailMessage): Promise<void> {
@@ -120,32 +146,41 @@ export class SmtpMailTransport implements MailTransport {
     assertNoHeaderInjection(message.subject, 'subject');
     assertNoHeaderInjection(this.from, 'sender');
 
-    const socket = net.createConnection({ host: this.host, port: this.port });
-    socket.setEncoding('utf8');
-    socket.setTimeout(5000, () => socket.destroy(new Error('SMTP timeout')));
-
+    let socket: net.Socket = net.createConnection({ host: this.host, port: this.port });
     let buffer = '';
-    const waiters: Array<{ resolve: (code: number) => void; reject: (err: Error) => void }> = [];
-    socket.on('data', (chunk: string) => {
-      buffer += chunk;
+    let pendingLines: string[] = [];
+    const waiters: Array<{ resolve: (r: SmtpReply) => void; reject: (err: Error) => void }> = [];
+    const onData = (chunk: Buffer) => {
+      buffer += chunk.toString('utf8');
       let idx: number;
       while ((idx = buffer.indexOf('\r\n')) >= 0) {
         const line = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 2);
+        if (!/^\d{3}/.test(line)) continue;
+        pendingLines.push(line.slice(4));
         // Multi-line replies use "250-"; the final line uses "250 ".
-        if (/^\d{3} /.test(line) || /^\d{3}$/.test(line)) {
-          waiters.shift()?.resolve(Number.parseInt(line.slice(0, 3), 10));
+        if (line.length === 3 || line[3] === ' ') {
+          const lines = pendingLines;
+          pendingLines = [];
+          waiters.shift()?.resolve({ code: Number.parseInt(line.slice(0, 3), 10), lines });
         }
       }
-    });
-    socket.on('error', (err) => {
+    };
+    const onError = (err: Error) => {
       for (const w of waiters.splice(0)) w.reject(err);
-    });
+    };
+    const attach = (s: net.Socket) => {
+      s.on('data', onData);
+      s.on('error', onError);
+      s.setTimeout(15_000, () => s.destroy(new Error('SMTP timeout')));
+    };
+    attach(socket);
 
-    const reply = () => new Promise<number>((resolve, reject) => waiters.push({ resolve, reject }));
-    const expect = async (pending: Promise<number>, ok: number[]) => {
-      const code = await pending;
-      if (!ok.includes(code)) throw new Error(`SMTP unexpected reply ${code}`);
+    const reply = () => new Promise<SmtpReply>((resolve, reject) => waiters.push({ resolve, reject }));
+    const expect = async (pending: Promise<SmtpReply>, ok: number[]) => {
+      const r = await pending;
+      if (!ok.includes(r.code)) throw new Error(`SMTP unexpected reply ${r.code}`);
+      return r;
     };
     const command = (line: string, ok: number[]) => {
       const pending = reply();
@@ -155,7 +190,29 @@ export class SmtpMailTransport implements MailTransport {
 
     try {
       await expect(reply(), [220]);
-      await command('EHLO hrvo.local', [250]);
+      const ehlo = await command('EHLO hrvo.local', [250]);
+      const auth = this.options.auth;
+      if (auth) {
+        if (!ehlo.lines.some((l) => /^STARTTLS\b/i.test(l))) throw new Error('SMTP server does not offer STARTTLS; refusing to send credentials');
+        await command('STARTTLS', [220]);
+        socket.removeListener('data', onData);
+        buffer = '';
+        // Certificate and host name are verified (rejectUnauthorized defaults to true).
+        const secure = tls.connect({ socket, servername: net.isIP(this.host) ? undefined : this.host, host: this.host, ca: this.options.ca ? [...tls.rootCertificates, this.options.ca] : undefined });
+        await new Promise<void>((resolve, reject) => {
+          secure.once('secureConnect', resolve);
+          secure.once('error', reject);
+        });
+        socket = secure;
+        attach(socket);
+        const caps = await command('EHLO hrvo.local', [250]);
+        if (!caps.lines.some((l) => /^AUTH\b.*\bPLAIN\b/i.test(l))) throw new Error('SMTP server does not offer AUTH PLAIN');
+        const pending = reply();
+        socket.write(`AUTH PLAIN ${Buffer.from(`\0${auth.user}\0${auth.password}`, 'utf8').toString('base64')}\r\n`);
+        const login = await pending;
+        // Only the code reaches the error; the reply text could echo the account.
+        if (login.code !== 235) throw new Error(`SMTP login refused (reply ${login.code})`);
+      }
       await command(`MAIL FROM:<${this.from}>`, [250]);
       await command(`RCPT TO:<${message.to}>`, [250, 251]);
       await command('DATA', [354]);
@@ -222,9 +279,15 @@ export function createMailTransport(env: Record<string, string | undefined> = pr
   if (production) {
     throw new Error('MAIL_TRANSPORT=smtp is a plaintext dev transport (Mailhog); use resend in production (docs/runbooks/mail.md)');
   }
+  const user = env.SMTP_USER ?? '';
+  const password = env.SMTP_PASSWORD ?? '';
+  if (Boolean(user) !== Boolean(password)) {
+    throw new Error('MAIL_TRANSPORT=smtp needs both SMTP_USER and SMTP_PASSWORD, or neither (Mailhog)');
+  }
   return new SmtpMailTransport(
     env.SMTP_HOST || 'localhost',
     Number.parseInt(env.SMTP_PORT || '1025', 10),
     env.MAIL_FROM || env.SMTP_FROM || 'no-reply@hrvo.local',
+    user ? { auth: { user, password } } : {},
   );
 }

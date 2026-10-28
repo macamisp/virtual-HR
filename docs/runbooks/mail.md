@@ -40,9 +40,9 @@ nothing arrives", this setting, or a stopped Mailhog, is the reason.
 
 ## 2. Real e-mail: Resend
 
-**Never use a Gmail or other personal mailbox password.** HRVO has no option for one, and
-`SMTP_USER` / `SMTP_PASSWORD` are not read. Use a transactional mail provider with an API key that
-you can revoke.
+**Never use a personal mailbox password.** In production use a transactional mail provider with an
+API key that you can revoke. (The development-mode Internet demo may use a dedicated Gmail account
+with an App Password instead; see section 2a.)
 
 1. Create an account at https://resend.com and add your sending domain under **Domains**. Add the
    DNS records it shows (SPF, DKIM) at your DNS provider, and wait until the domain is
@@ -65,9 +65,39 @@ you can revoke.
 If a key leaks, delete it in Resend (API Keys → the key → Delete), create a new one, and replace
 it in `.env`.
 
-**Amazon SES** is not built in yet. It would need either an SES SDK package or SMTP with TLS and
-login, and both need the owner's approval first (AGENTS.md: no new packages without asking). Until
-then use Resend.
+**Amazon SES** is not built in yet. Its SMTP interface would work with the STARTTLS login of
+section 2a, but `smtp` is refused in production; enabling it there needs the owner's decision.
+Until then use Resend.
+
+## 2a. Internet demo: Gmail with an App Password (ADR 043)
+
+For the development-mode public demo only (`smtp` is refused in production). Use a **dedicated**
+Gmail account, never a personal one.
+
+1. On that account turn on 2-Step Verification, then create an App Password at
+   https://myaccount.google.com/apppasswords (name it e.g. `Virtual-HR`).
+2. Type it yourself into `.env.demo-internet` (git-ignored; keep it `chmod 600`), **without the
+   spaces** Google shows, because the file is sourced by bash. Never paste it into chat, tickets or
+   a tracked file.
+
+   ```
+   MAIL_TRANSPORT=smtp
+   SMTP_HOST=smtp.gmail.com
+   SMTP_PORT=587
+   SMTP_USER=sender@gmail.com
+   SMTP_PASSWORD=<16 letters, no spaces>
+   MAIL_FROM=sender@gmail.com
+   ```
+
+   With `SMTP_USER` and `SMTP_PASSWORD` set the API upgrades with STARTTLS, verifies Google's
+   certificate and only then logs in; a server without STARTTLS is refused. Leave both unset in
+   `.env` so local development keeps using Mailhog.
+3. Restart only the demo API with `.env.demo-internet` sourced (see the Internet demo runbook).
+4. Sign up once with an address you control and check the inbox (and spam folder).
+
+`SMTP login refused (reply 535)` in the API log means Google rejected the App Password: create a
+new one. Gmail allows roughly 500 messages a day. If the App Password leaks, revoke it on the same
+page and create a new one.
 
 ## 3. Links must open on the reader's device: APP_WEB_URL
 

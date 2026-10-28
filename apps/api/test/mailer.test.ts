@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import http from 'node:http';
+import tls from 'node:tls';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -96,6 +98,146 @@ describe('SMTP mail transport (dev / Mailhog)', () => {
       if (saved === undefined) delete process.env.MAIL_TRANSPORT;
       else process.env.MAIL_TRANSPORT = saved;
     }
+  });
+});
+
+/** Throwaway self-signed certificate for 127.0.0.1 (the client trusts it through `ca`). */
+function selfSignedCert(): { key: string; cert: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'hrvo-smtp-tls-'));
+  try {
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '1',
+      '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', join(dir, 'key.pem'), '-out', join(dir, 'cert.pem')], { stdio: 'ignore' });
+    return { key: readFileSync(join(dir, 'key.pem'), 'utf8'), cert: readFileSync(join(dir, 'cert.pem'), 'utf8') };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * SMTP submission server (port 587 style): offers STARTTLS, and AUTH PLAIN only after TLS.
+ * Each command is recorded with whether it arrived over TLS.
+ */
+function fakeSubmissionServer(tlsCert: { key: string; cert: string }, opts: { offerStartTls?: boolean; acceptLogin?: boolean } = {}) {
+  const { offerStartTls = true, acceptLogin = true } = opts;
+  const received: { commands: Array<{ line: string; secure: boolean }>; data: string } = { commands: [], data: '' };
+  const server = net.createServer((raw) => {
+    let sock: net.Socket = raw;
+    let secure = false;
+    let inData = false;
+    let buf = '';
+    const onData = (chunk: Buffer) => {
+      buf += chunk.toString('utf8');
+      let idx: number;
+      while ((idx = buf.indexOf('\r\n')) >= 0) {
+        const line = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        if (inData) {
+          if (line === '.') { inData = false; sock.write('250 queued\r\n'); } else received.data += `${line}\n`;
+          continue;
+        }
+        received.commands.push({ line, secure });
+        if (line.startsWith('EHLO')) {
+          const caps = secure ? ['AUTH LOGIN PLAIN'] : offerStartTls ? ['STARTTLS'] : [];
+          sock.write(['fake.smtp', ...caps, 'OK'].map((c, i, all) => `250${i === all.length - 1 ? ' ' : '-'}${c}\r\n`).join(''));
+        } else if (line === 'STARTTLS' && offerStartTls && !secure) {
+          sock.write('220 go ahead\r\n');
+          sock.removeListener('data', onData);
+          const upgraded = new tls.TLSSocket(sock, { isServer: true, key: tlsCert.key, cert: tlsCert.cert });
+          upgraded.on('error', () => undefined);
+          upgraded.on('data', onData);
+          sock = upgraded;
+          secure = true;
+        } else if (line.startsWith('AUTH ')) {
+          sock.write(secure && acceptLogin ? '235 accepted\r\n' : '535 5.7.8 credentials rejected\r\n');
+        } else if (line === 'DATA') { inData = true; sock.write('354 go ahead\r\n'); }
+        else if (line === 'QUIT') { sock.write('221 bye\r\n'); sock.end(); }
+        else sock.write('250 OK\r\n');
+      }
+    };
+    raw.on('error', () => undefined);
+    raw.on('data', onData);
+    raw.write('220 fake.smtp ready\r\n');
+  });
+  return { server, received };
+}
+
+describe('SMTP submission with STARTTLS and AUTH (Gmail and other providers; ADR 043)', () => {
+  const cert = selfSignedCert();
+  const auth = { user: 'sender@example.test', password: 'app password value' };
+  const listen = async (s: net.Server) => {
+    await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
+    return (s.address() as AddressInfo).port;
+  };
+  const close = (s: net.Server) => new Promise<void>((r) => s.close(() => r()));
+
+  it('upgrades with STARTTLS, says EHLO again, logs in over TLS only, then sends', async () => {
+    const { server, received } = fakeSubmissionServer(cert);
+    const port = await listen(server);
+    try {
+      await new SmtpMailTransport('127.0.0.1', port, 'sender@example.test', { auth, ca: cert.cert }).send({ to: 'user@example.test', subject: 'Verify', text: 'hello' });
+      const plainB64 = Buffer.from(`\0${auth.user}\0${auth.password}`, 'utf8').toString('base64');
+      assert.deepEqual(received.commands, [
+        { line: 'EHLO hrvo.local', secure: false },
+        { line: 'STARTTLS', secure: false },
+        { line: 'EHLO hrvo.local', secure: true },
+        { line: `AUTH PLAIN ${plainB64}`, secure: true },
+        { line: 'MAIL FROM:<sender@example.test>', secure: true },
+        { line: 'RCPT TO:<user@example.test>', secure: true },
+        { line: 'DATA', secure: true },
+        { line: 'QUIT', secure: true },
+      ]);
+      assert.match(received.data, /^Subject: Verify$/m);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('never sends credentials in plaintext: a server without STARTTLS is refused before AUTH', async () => {
+    const { server, received } = fakeSubmissionServer(cert, { offerStartTls: false });
+    const port = await listen(server);
+    try {
+      await assert.rejects(
+        new SmtpMailTransport('127.0.0.1', port, 'sender@example.test', { auth, ca: cert.cert }).send({ to: 'u@example.test', subject: 's', text: 't' }),
+        /STARTTLS/,
+      );
+      assert.ok(!received.commands.some((c) => c.line.startsWith('AUTH') || c.line.startsWith('MAIL')), 'no AUTH or MAIL after a refused upgrade');
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('verifies the server certificate: an untrusted certificate fails and no credentials are sent', async () => {
+    const { server, received } = fakeSubmissionServer(cert);
+    const port = await listen(server);
+    try {
+      await assert.rejects(new SmtpMailTransport('127.0.0.1', port, 'sender@example.test', { auth }).send({ to: 'u@example.test', subject: 's', text: 't' }));
+      assert.ok(!received.commands.some((c) => c.line.startsWith('AUTH')), 'AUTH never reached the server');
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('a refused login reports the reply code only, never the credentials', async () => {
+    const { server } = fakeSubmissionServer(cert, { acceptLogin: false });
+    const port = await listen(server);
+    try {
+      await assert.rejects(
+        new SmtpMailTransport('127.0.0.1', port, 'sender@example.test', { auth, ca: cert.cert }).send({ to: 'u@example.test', subject: 's', text: 't' }),
+        (err: Error) => /SMTP login refused \(reply 535\)/.test(err.message) && !err.message.includes(auth.password) && !err.message.includes(auth.user),
+      );
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('createMailTransport: SMTP_USER and SMTP_PASSWORD go together; with both, smtp logs in', () => {
+    const dev = { NODE_ENV: 'development', MAIL_TRANSPORT: 'smtp', SMTP_HOST: 'smtp.example.test', SMTP_PORT: '587' };
+    assert.throws(() => createMailTransport({ ...dev, SMTP_USER: 'a@b.test' }), /SMTP_USER and SMTP_PASSWORD/);
+    assert.throws(() => createMailTransport({ ...dev, SMTP_PASSWORD: 'x' }), /SMTP_USER and SMTP_PASSWORD/);
+    const t = createMailTransport({ ...dev, SMTP_USER: 'a@b.test', SMTP_PASSWORD: 'x', MAIL_FROM: 'a@b.test' });
+    assert.ok(t instanceof SmtpMailTransport);
+    assert.equal(t.authenticated, true);
+    assert.equal((createMailTransport(dev) as SmtpMailTransport).authenticated, false, 'Mailhog: no login');
   });
 });
 
