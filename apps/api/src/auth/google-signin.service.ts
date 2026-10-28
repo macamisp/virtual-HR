@@ -123,13 +123,15 @@ export class GoogleSignInService {
     } catch { st = null; }
     const fail = (code: GoogleResultCode) => ({ redirect: this.resultUrl(env.webUrl, st?.mode ?? 'login', 'error', { code }) });
     if (!st) return fail('invalid_state');
+    // Bind every callback to the browser's attempt, including Google's error responses.
+    if (!q.state || q.state !== st.state) { await this.auditFailure(st, 'invalid_state', meta); return fail('invalid_state'); }
     if (q.error) {
       // Google's own refusals. access_denied also covers an app in Testing mode whose test users
       // do not include this address; the web app explains both.
       await this.auditFailure(st, q.error === 'access_denied' ? 'denied' : q.error === 'redirect_uri_mismatch' ? 'redirect_uri_mismatch' : 'failed', meta);
       return fail(q.error === 'access_denied' ? 'denied' : q.error === 'redirect_uri_mismatch' ? 'redirect_uri_mismatch' : 'failed');
     }
-    if (!q.code || !q.state || q.state !== st.state) { await this.auditFailure(st, 'invalid_state', meta); return fail('invalid_state'); }
+    if (!q.code) { await this.auditFailure(st, 'invalid_state', meta); return fail('invalid_state'); }
     if (!env.configured) return fail('not_configured');
 
     const claims = await this.exchange(env, q.code, st).catch(() => null);

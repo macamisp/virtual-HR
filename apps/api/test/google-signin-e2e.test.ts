@@ -11,6 +11,8 @@ import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import argon2 from 'argon2';
 import pg from 'pg';
+import jwt from 'jsonwebtoken';
+import { getJwtSecret } from '../src/common/config.ts';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
 import { MAIL_TRANSPORT } from '../src/common/mailer.ts';
@@ -151,6 +153,69 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     const again = await callback(await start({ mode: 'login' }), { email: 'renamed@gsso.test', sub: 'google-sub-emp' });
     assert.equal(again.sso, 'ok');
     assert.equal(await auditCount(ORG, 'GOOGLE_IDENTITY_LINKED'), 1, 'not linked twice');
+  });
+
+  it('sets a host-only, unpartitioned state cookie for cross-site HTTPS starts and keeps HTTP development working', async () => {
+    const previous = process.env.REFRESH_COOKIE_SAMESITE;
+    try {
+      for (const crossSite of [false, true]) {
+        process.env.APP_WEB_URL = crossSite ? 'https://web.oauth.test' : 'http://localhost:3000';
+        process.env.REFRESH_COOKIE_SAMESITE = crossSite ? 'none' : 'strict';
+        const res = await json('/auth/google/start', { mode: 'login' });
+        assert.equal(res.status, 200);
+        const raw = res.headers.getSetCookie().find((c) => c.startsWith('hrvo_oauth='));
+        assert.ok(raw, 'state cookie is set');
+        // Assert booleans so a failure never prints the cookie's signed contents.
+        assert.ok(/; HttpOnly(?:;|$)/i.test(raw), 'HttpOnly');
+        assert.ok(/; Max-Age=600(?:;|$)/i.test(raw), 'ten-minute lifetime');
+        assert.ok(/; Path=\/auth\/google(?:;|$)/i.test(raw), 'start and callback path');
+        assert.equal(/; Secure(?:;|$)/i.test(raw), crossSite, 'HTTPS-only in the public demo');
+        assert.ok(new RegExp(`; SameSite=${crossSite ? 'None' : 'Lax'}(?:;|$)`, 'i').test(raw), 'SameSite matches the flow');
+        assert.equal(/; Domain=/i.test(raw), false, 'host-only');
+        assert.equal(/; Partitioned(?:;|$)/i.test(raw), false, 'callback navigates to the API as a top-level site');
+      }
+    } finally {
+      process.env.APP_WEB_URL = 'http://localhost:3000';
+      if (previous === undefined) delete process.env.REFRESH_COOKIE_SAMESITE;
+      else process.env.REFRESH_COOKIE_SAMESITE = previous;
+    }
+  });
+
+  it('rejects missing, expired and tampered state before token exchange, including error callbacks', async () => {
+    const flow = await start({ mode: 'login' });
+    const value = decodeURIComponent(flow.cookie.slice(flow.cookie.indexOf('=') + 1));
+    const payload = jwt.decode(value) as jwt.JwtPayload;
+    const expired = jwt.sign({ ...payload, exp: Math.floor(Date.now() / 1000) - 60 }, getJwtSecret(), { algorithm: 'HS256' });
+    const parts = value.split('.');
+    // Change signature bytes, not unused base64 padding bits.
+    parts[2] = `${parts[2]!.startsWith('a') ? 'b' : 'a'}${parts[2]!.slice(1)}`;
+    const badSignature = parts.join('.');
+    const edited = value.split('.');
+    edited[1] = Buffer.from(JSON.stringify({ ...payload, state: 'attacker-controlled' })).toString('base64url');
+    const tokenCalls = google.tokenCalls;
+    const cases = [
+      { name: 'missing cookie', cookie: '', query: { code: 'unused', state: flow.state } },
+      { name: 'missing state', cookie: flow.cookie, query: { code: 'unused' } },
+      { name: 'missing code', cookie: flow.cookie, query: { state: flow.state } },
+      { name: 'mismatched state', cookie: flow.cookie, query: { code: 'unused', state: 'forged' } },
+      { name: 'expired cookie', cookie: `hrvo_oauth=${expired}`, query: { code: 'unused', state: flow.state } },
+      { name: 'tampered signature', cookie: `hrvo_oauth=${badSignature}`, query: { code: 'unused', state: flow.state } },
+      { name: 'tampered payload', cookie: `hrvo_oauth=${edited.join('.')}`, query: { code: 'unused', state: 'attacker-controlled' } },
+      { name: 'error without state', cookie: flow.cookie, query: { error: 'access_denied' } },
+      { name: 'error with mismatched state', cookie: flow.cookie, query: { error: 'access_denied', state: 'forged' } },
+    ];
+    for (const entry of cases) {
+      const query = new URLSearchParams(Object.entries(entry.query).filter((pair): pair is [string, string] => typeof pair[1] === 'string'));
+      const res = await fetch(`${base}/auth/google/callback?${query}`, { redirect: 'manual', headers: { Cookie: entry.cookie } });
+      assert.equal(res.status, 302, entry.name);
+      const location = new URL(res.headers.get('location')!);
+      assert.equal(location.searchParams.get('code'), 'invalid_state', entry.name);
+      assert.ok(res.headers.getSetCookie().some((c) => c.startsWith('hrvo_oauth=;')), 'clears rejected state');
+      assert.equal(res.headers.getSetCookie().some((c) => c.startsWith('refreshToken=')), false, 'no session on rejected state');
+    }
+    assert.equal(google.tokenCalls, tokenCalls, 'no exchange on rejected state');
+    const accepted = await callback(flow, { email: U.emp.email, sub: 'google-sub-emp' }, { error: 'access_denied' });
+    assert.equal(accepted.code, 'denied', 'a valid state reaches the provider-error handler');
   });
 
   it('a role that needs 2FA still answers the TOTP challenge after Google; the enrolment path for an unenrolled one', async () => {
