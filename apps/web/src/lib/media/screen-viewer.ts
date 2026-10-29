@@ -44,10 +44,10 @@ export function openScreenWindow(key: string, title: string): { win: Window; roo
   const win = window.open('', `hrvo-screen-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}`, 'popup,width=1280,height=760');
   if (!win) return null;
   const doc = win.document;
-  doc.title = title;
   doc.documentElement.className = document.documentElement.className;
   doc.documentElement.lang = document.documentElement.lang;
   doc.head.replaceChildren(...[...document.querySelectorAll('link[rel="stylesheet"], style')].map((n) => n.cloneNode(true)));
+  doc.title = title;
   const meta = doc.createElement('meta');
   meta.name = 'viewport';
   meta.content = 'width=device-width, initial-scale=1';

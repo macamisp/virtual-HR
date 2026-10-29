@@ -91,6 +91,7 @@ test('office: a shared screen can be expanded, shown full screen and in a new wi
     await share.getByRole('button', { name: 'Open in new window' }).click();
     const popup = await popupP;
     expect(popup.url()).toBe('about:blank'); // nothing in the address bar: no token, no session id
+    await expect(popup).toHaveTitle(`Screen shared by ${USERS.worker.name}`);
     const popVideo = popup.getByTestId('screen-popout').locator('video');
     await expect.poll(() => showsFrames(popVideo), { timeout: 15_000 }).toBe(true);
     await expect(share).toHaveAttribute('data-viewer', 'popout');
