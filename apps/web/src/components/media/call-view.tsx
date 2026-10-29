@@ -7,6 +7,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import type { MediaSession, Tile } from '@/lib/media/media-session';
 import { cn } from '@/lib/utils';
+import { ScreenShareViewer } from './screen-share-viewer';
 
 export function useSession(s: MediaSession | null): void {
   useSyncExternalStore(s?.subscribe ?? noop, s?.getVersion ?? zero, zero);
@@ -65,13 +66,14 @@ function AudioEl({ track }: { track: Track }) {
 }
 
 /**
- * FR-MEET-004/005, FR-VO-009: tiles (a shared screen takes the stage: presentation mode), and
+ * FR-MEET-004/005, FR-VO-009: tiles (a shared screen takes the stage: presentation mode, with
+ * expand, full screen, new window and picture-in-picture; ADR 045), and
  * controls for microphone, camera, screen share, raise hand, audio-only and leave.
  */
 export function CallView({ session, onLeave, compact, extraControls }: { session: MediaSession; onLeave: () => void; compact?: boolean; extraControls?: React.ReactNode }) {
   useSession(session);
   const tiles = session.tiles();
-  const presenter = tiles.find((t) => t.screen);
+  const presenters = tiles.filter((t) => t.screen);
   const handUp = tiles.find((t) => t.isLocal)?.hand ?? false;
   return (
     <section aria-label={`Call: ${session.token?.label ?? ''}`} className="space-y-2" data-testid="call-view" data-status={session.status}>
@@ -80,12 +82,10 @@ export function CallView({ session, onLeave, compact, extraControls }: { session
       {session.error ? <Alert variant="destructive"><AlertDescription>{session.error}</AlertDescription></Alert> : null}
       {session.endedReason ? <Alert><AlertDescription>{session.endedReason}</AlertDescription></Alert> : null}
       {session.audioOnly ? <p className="text-xs text-muted-foreground" role="status">Audio only{tiles.find((t) => t.isLocal)?.quality === 'poor' ? ' (your connection is poor)' : ''}.</p> : null}
-      {presenter?.screen ? (
-        <figure className="overflow-hidden rounded bg-black" data-testid="screen-share">
-          <div className="aspect-video"><TrackVideo track={presenter.screen} label={`Screen shared by ${presenter.name}`} /></div>
-          <figcaption className="px-2 py-1 text-xs text-white">{presenter.name} is presenting</figcaption>
-        </figure>
-      ) : null}
+      {presenters.map((t) => t.screen ? (
+        <ScreenShareViewer key={t.identity} track={t.screen} name={t.name} isLocal={t.isLocal} reconnecting={session.status === 'reconnecting'}
+          onStopSharing={t.isLocal ? () => void session.toggleShare() : undefined} />
+      ) : null)}
       <div className={cn('grid gap-2', compact ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-3 xl:grid-cols-4')}>
         {tiles.map((t) => <TileView key={t.identity} t={t} />)}
       </div>
