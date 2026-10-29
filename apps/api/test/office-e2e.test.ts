@@ -77,7 +77,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
     /** Walks in legal 20 px steps every 100 ms (like the client at 10 Hz). */
     const walk = async (from: { x: number; y: number }, to: { x: number; y: number }) => {
       const steps = Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / 18);
-      let last: MoveAck = { ok: true };
+      let last: MoveAck = { ok: true, roomId: null };
       for (let i = 1; i <= steps; i += 1) {
         await wait(100);
         last = await move(Math.round(from.x + ((to.x - from.x) * i) / steps), Math.round(from.y + ((to.y - from.y) * i) / steps));
@@ -234,7 +234,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
     it('the server refuses speed hacks, walls, blocked tiles and junk, and returns the authoritative position', async () => {
       const here = lastSeen(B.inbox, U.a.id)!;
       const fast = await A.move(here[1] + 400, here[2]);
-      assert.deepEqual(fast, { ok: false, reason: 'TOO_FAST', x: here[1], y: here[2], floorId: 'ground' });
+      assert.deepEqual(fast, { ok: false, reason: 'TOO_FAST', x: here[1], y: here[2], floorId: 'ground', roomId: here[5] });
       const table = await A.move(t(4), t(13));
       assert.equal(table.ok, false);
       const junk = (await A.s.emitWithAck('office:move', { x: 'a', y: null })) as MoveAck;

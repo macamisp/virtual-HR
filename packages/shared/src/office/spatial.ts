@@ -7,6 +7,8 @@
  *    group (transitively). Each closed room is its own group. "Room-only" users are never
  *    joined by proximity. The media slice will connect each group.
  */
+import type { RoomType } from './map.ts';
+
 export const INTEREST_CELL = 512;
 
 export interface SpatialEntity {
@@ -91,4 +93,32 @@ export function proximityGroups(entities: SpatialEntity[], radius: number): Map<
   for (const [root, members] of byRoot) if (members.length > 1) groups.set(root, members.sort());
   for (const [k, members] of [...groups]) if (k.startsWith('room:') && members.length < 2) groups.delete(k);
   return groups;
+}
+
+/**
+ * A room is a closed call when its type is not OPEN, whatever its access mode: access decides who
+ * may walk in, the type decides whether the people inside talk as one room (FR-VO-004, FR-MEET-002).
+ * The server's grouping, its room tokens and the client's media routing all use this one rule.
+ */
+export const isClosedRoom = (room: { type: RoomType }): boolean => room.type !== 'OPEN';
+
+export type MediaRoute = { key: string; kind: 'room' | 'proximity' } | null;
+
+/**
+ * Which call the avatar's position implies (FR-MEET-002, FR-VO-005): the closed room it stands in,
+ * else its proximity group of two or more in the open area (not in room-only mode), else none.
+ * `roomId` must be the server's (move/join/teleport acks, own presence). A `room:` group is never
+ * a proximity call: the server refuses those.
+ */
+export function mediaRoute(s: {
+  roomId: string | null;
+  rooms: ReadonlyArray<{ id: string; type: RoomType }>;
+  roomOnly: boolean;
+  proximity: { groupId: string | null; members: readonly string[] };
+}): MediaRoute {
+  const room = s.roomId ? s.rooms.find((r) => r.id === s.roomId) : undefined;
+  if (room && isClosedRoom(room)) return { key: `room:${room.id}`, kind: 'room' };
+  const g = s.proximity.groupId;
+  if (!s.roomOnly && g && !g.startsWith('room:') && s.proximity.members.length > 1) return { key: `prox:${g}`, kind: 'proximity' };
+  return null;
 }

@@ -99,7 +99,11 @@ export class OfficeClient {
     });
     socket.on('office:positions', (m: PositionsMessage) => this.onPositions(m));
     socket.on('office:presence', (e: RosterEntry | { id: string; gone: true }) => {
-      if ('gone' in e) { this.roster.delete(e.id); this.avatars.delete(e.id); } else this.roster.set(e.id, e);
+      if ('gone' in e) { this.roster.delete(e.id); this.avatars.delete(e.id); } else {
+        this.roster.set(e.id, e);
+        // Our own room changes made by the server (e.g. a teleport from another tab) arrive here too.
+        if (e.id === this.snapshot.me.id && this.self && e.floorId === this.self.floorId) this.self.roomId = e.roomId;
+      }
       this.changed();
     });
     socket.on('office:proximity', (m: ProximityMessage) => { this.proximity = m; this.changed(); });
@@ -207,6 +211,8 @@ export class OfficeClient {
     this.inFlight = true;
     this.socket.emit('office:move', { ...sent, dir: s.dir, ct: Date.now() }, (ack: MoveAck) => {
       this.inFlight = false;
+      // The server decides which room we are in; walking through a door changes the call (FR-MEET-002).
+      if (ack.roomId !== s.roomId) { s.roomId = ack.roomId; this.changed(); }
       if (ack.ok) { this.lastSent = sent; return; }
       if (ack.reason === 'RATE_LIMITED') return;
       // Server correction: snap back to the authoritative position.

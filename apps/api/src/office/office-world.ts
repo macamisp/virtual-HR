@@ -7,7 +7,7 @@
  * only echoed for latency measurement.
  */
 import {
-  buildGrid, centre, displayStatus, inRect, InterestGrid, nearestWalkable, proximityGroups, spawnPoint, TILE_SIZE, validateMove,
+  buildGrid, centre, displayStatus, inRect, InterestGrid, isClosedRoom, nearestWalkable, proximityGroups, spawnPoint, TILE_SIZE, validateMove,
 } from '../../../../packages/shared/src/office/index.ts';
 import type {
   AccessMode, CollisionGrid, ManualStatus, OfficeDefinition, Point, PositionEntry, PositionsMessage, ProximityMessage, Rect, RosterEntry, RoomType, VoStatus,
@@ -240,7 +240,7 @@ export class OfficeWorld {
     // Proximity groups: only changes are sent.
     const groups = proximityGroups(all.map((a) => {
       const room = a.roomId ? this.rooms.find((r) => r.id === a.roomId) : null;
-      return { id: a.userId, floorId: a.floorId, x: a.x, y: a.y, closedRoomId: room && room.type !== 'OPEN' ? room.id : null, roomOnly: a.roomOnly };
+      return { id: a.userId, floorId: a.floorId, x: a.x, y: a.y, closedRoomId: room && isClosedRoom(room) ? room.id : null, roomOnly: a.roomOnly };
     }), this.proximityRadius);
     const groupOf = new Map<string, { id: string; members: string[] }>();
     for (const [id, members] of groups) for (const m of members) groupOf.set(m, { id, members });

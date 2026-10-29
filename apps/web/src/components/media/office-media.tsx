@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Headphones } from 'lucide-react';
-import type { MediaTokenRequest, OfficeSnapshot } from '@hrvo/shared';
+import { mediaRoute, type MediaTokenRequest, type OfficeSnapshot } from '@hrvo/shared';
 import { Button } from '@/components/ui/button';
 import { ApiError } from '@/lib/api';
 import { loadPrefs, type DevicePrefs } from '@/lib/media/devices';
@@ -16,13 +16,10 @@ const ENABLED_KEY = 'hrvo.office.media';
 function readEnabled(): boolean { try { return window.sessionStorage.getItem(ENABLED_KEY) === '1'; } catch { return false; } }
 function writeEnabled(v: boolean): void { try { if (v) window.sessionStorage.setItem(ENABLED_KEY, '1'); else window.sessionStorage.removeItem(ENABLED_KEY); } catch { /* storage unavailable */ } }
 
-/** Which call the avatar's position implies: a closed room, a proximity group, or none. */
+/** Which call the avatar's position implies: a closed room, a proximity group, or none (the same rule the server uses). */
 export function mediaTarget(client: OfficeClient, snapshot: OfficeSnapshot): { key: string; req: MediaTokenRequest } | null {
-  const roomId = client.self?.roomId;
-  const room = roomId ? snapshot.rooms.find((r) => r.id === roomId) : null;
-  if (room && room.accessMode !== 'OPEN') return { key: `room:${room.id}`, req: { kind: 'room' } };
-  if (!client.roomOnly && client.proximity.groupId && client.proximity.members.length > 1) return { key: `prox:${client.proximity.groupId}`, req: { kind: 'proximity' } };
-  return null;
+  const route = mediaRoute({ roomId: client.self?.roomId ?? null, rooms: snapshot.rooms, roomOnly: client.roomOnly, proximity: client.proximity });
+  return route ? { key: route.key, req: { kind: route.kind } } : null;
 }
 
 /**

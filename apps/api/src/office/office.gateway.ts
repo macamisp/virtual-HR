@@ -157,15 +157,17 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     const orgId = client.data?.officeOrg as string | undefined;
     const world = orgId ? this.registry.peek(orgId) : null;
     const a = world ? this.avatarOf(world, client) : null;
-    if (!world || !a) return { ok: false, reason: 'NOT_JOINED', x: 0, y: 0, floorId: '' };
+    if (!world || !a) return { ok: false, reason: 'NOT_JOINED', x: 0, y: 0, floorId: '', roomId: null };
     const now = Date.now();
     const win = this.moveWindow.get(client.id);
+    const refuse = (reason: string): MoveAck => ({ ok: false, reason, x: a.x, y: a.y, floorId: a.floorId, roomId: a.roomId });
     if (!win || now - win.at >= 1000) this.moveWindow.set(client.id, { at: now, n: 1 });
-    else if ((win.n += 1) > MOVE_RATE_PER_S) return { ok: false, reason: 'RATE_LIMITED', x: a.x, y: a.y, floorId: a.floorId };
+    else if ((win.n += 1) > MOVE_RATE_PER_S) return refuse('RATE_LIMITED');
     const dto = parse(MoveDtoSchema, body);
-    if (!dto) return { ok: false, reason: 'BAD_REQUEST', x: a.x, y: a.y, floorId: a.floorId };
+    if (!dto) return refuse('BAD_REQUEST');
     const r = world.move(a, { x: dto.x, y: dto.y }, dto.dir, now, dto.ct ?? null);
-    return r.ok ? { ok: true } : { ok: false, reason: r.reason, x: a.x, y: a.y, floorId: a.floorId };
+    // The room comes from the server's own room check (OfficeWorld.place), never from the client.
+    return r.ok ? { ok: true, roomId: a.roomId } : refuse(r.reason);
   }
 
   /** FR-VO-007: go to my desk, to a colleague, to a room (with its password), or to another floor. */

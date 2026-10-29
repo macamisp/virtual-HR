@@ -18,8 +18,8 @@ import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
 import { MAIL_TRANSPORT, InMemoryMailTransport } from '../src/common/mailer.ts';
 import { liveKitConfig, signWebhook } from '../src/media/livekit.ts';
-import { OfficeSnapshotSchema } from '../../../packages/shared/src/office/index.ts';
-import type { JoinAck, OfficeSnapshot, TeleportAck } from '../../../packages/shared/src/office/index.ts';
+import { buildGrid, findPath, generateDefaultFloor, mediaRoute, OfficeSnapshotSchema, TILE_SIZE } from '../../../packages/shared/src/office/index.ts';
+import type { JoinAck, MoveAck, OfficeSnapshot, Point, ProximityMessage, TeleportAck } from '../../../packages/shared/src/office/index.ts';
 import { JoinResultSchema, LobbySchema, MediaTokenSchema, MeetingListSchema, MeetingSchema } from '../../../packages/shared/src/meetings/types.ts';
 import type { Meeting, MediaToken } from '../../../packages/shared/src/meetings/types.ts';
 
@@ -38,6 +38,8 @@ const U = {
 } as const;
 type Who = keyof typeof U;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const grid = buildGrid(generateDefaultFloor());
+const t = (n: number) => n * TILE_SIZE + TILE_SIZE / 2;
 const claims = (t: MediaToken) => jwt.decode(t.token) as { video: { room: string; roomJoin: boolean; canPublish: boolean }; sub: string; exp: number; iat?: number; nbf?: number };
 
 describe('Media and meetings (FR-VO-005, 009, 010; FR-MEET-001..003, 005, 008, 009)', { concurrency: false }, () => {
@@ -64,8 +66,32 @@ describe('Media and meetings (FR-VO-005, 009, 010; FR-MEET-001..003, 005, 008, 0
     s.onAny((name: string, payload: unknown) => events.push({ name, payload }));
     const join = (await s.emitWithAck('office:join', { positions: true })) as JoinAck;
     assert.ok(join.ok, `${who} joins`);
-    const teleport = (dto: unknown) => s.emitWithAck('office:teleport', dto) as Promise<TeleportAck>;
-    return { s, events, teleport };
+    let at: Point = { x: join.ok ? join.self.x : 0, y: join.ok ? join.self.y : 0 };
+    const teleport = async (dto: unknown) => {
+      const r = (await s.emitWithAck('office:teleport', dto)) as TeleportAck;
+      if (r.ok) at = { x: r.x, y: r.y };
+      return r;
+    };
+    /** Walks along the client's own path in legal steps (~180 px/s at 10 Hz), like a user clicking on the map. */
+    const walk = async (to: Point): Promise<MoveAck> => {
+      const path = findPath(grid, at, to);
+      assert.ok(path, `${who}: a path to (${to.x},${to.y})`);
+      let last: MoveAck = { ok: false, reason: 'NO_MOVE', x: at.x, y: at.y, floorId: '', roomId: null };
+      for (const p of path) {
+        const steps = Math.max(1, Math.ceil(Math.hypot(p.x - at.x, p.y - at.y) / 18));
+        const from = at;
+        for (let i = 1; i <= steps; i += 1) {
+          await wait(100);
+          const next = { x: Math.round(from.x + ((p.x - from.x) * i) / steps), y: Math.round(from.y + ((p.y - from.y) * i) / steps) };
+          last = (await s.emitWithAck('office:move', { ...next, dir: 0, ct: Date.now() })) as MoveAck;
+          if (!last.ok) return last;
+          at = next;
+        }
+      }
+      return last;
+    };
+    const proximity = () => [...events].reverse().find((e) => e.name === 'office:proximity')?.payload as ProximityMessage | undefined;
+    return { s, events, teleport, walk, proximity, join };
   }
   /** LiveKit itself checks the token (signature, expiry, grant). */
   const liveKitAccepts = async (t: string) => (await fetch(`${liveKitConfig().httpUrl}/rtc/validate?access_token=${encodeURIComponent(t)}`)).status === 200;
@@ -167,6 +193,75 @@ describe('Media and meetings (FR-VO-005, 009, 010; FR-MEET-001..003, 005, 008, 0
       assert.equal((await api('a', '/media/token', { method: 'POST', body: { kind: 'proximity' } })).status, 409, 'room-only mode leaves the group');
       await B.s.emitWithAck('office:mode', { roomOnly: false });
       C.s.disconnect();
+    });
+
+    it('walking (not teleporting) through a door moves the audio route with the avatar (regression 2026-10-29)', async () => {
+      // Meeting room A is a MEETING room with OPEN access: anyone may walk in, and it is still a
+      // closed call. Its door is at x = 256 in the bottom wall (y = 320).
+      const mA = room('Meeting room A');
+      assert.equal(mA.accessMode, 'OPEN');
+      const lkRoom = (await adminPool.query(`SELECT livekit_room_name FROM rooms WHERE id = $1`, [mA.id])).rows[0].livekit_room_name as string;
+      const spot = { aIn: { x: 256, y: t(7) }, bIn: { x: 256, y: t(8) }, aOut: { x: 256, y: t(12) }, bOut: { x: 256, y: t(13) } };
+      const token = (who: Who, kind: 'room' | 'proximity') => api(who, '/media/token', { method: 'POST', body: { kind } });
+      const route = (ack: MoveAck, sock: typeof A) => mediaRoute({ roomId: ack.ok ? ack.roomId : null, rooms: snap.rooms, roomOnly: false, proximity: sock.proximity() ?? { groupId: null, members: [] } });
+
+      // Start together inside, walk out into the open area: the move ack says "no room".
+      assert.ok((await A.teleport({ kind: 'room', roomId: mA.id })).ok);
+      assert.ok((await B.teleport({ kind: 'room', roomId: mA.id })).ok);
+      const [outA, outB] = await Promise.all([A.walk(spot.aOut), B.walk(spot.bOut)]);
+      assert.deepEqual([outA, outB], [{ ok: true, roomId: null }, { ok: true, roomId: null }], 'the server tells the walker it left the room');
+      assert.equal((await token('a', 'room')).status, 403, 'no room token outside');
+      await wait(300);
+      assert.equal(route(outA, A)?.kind, 'proximity', 'standing together outside is a proximity call');
+      const pa = await ok(await token('a', 'proximity'), 200, MediaTokenSchema);
+      const pb = await ok(await token('b', 'proximity'), 200, MediaTokenSchema);
+      assert.equal(claims(pa).video.room, claims(pb).video.room);
+
+      // Walk back in at the same time: both are told they are in the room and get the same room call.
+      const [inA, inB] = await Promise.all([A.walk(spot.aIn), B.walk(spot.bIn)]);
+      assert.deepEqual([inA, inB], [{ ok: true, roomId: mA.id }, { ok: true, roomId: mA.id }]);
+      await wait(300);
+      assert.deepEqual([route(inA, A), route(inB, B)], [{ key: `room:${mA.id}`, kind: 'room' }, { key: `room:${mA.id}`, kind: 'room' }], 'the client asks for the room call, not proximity');
+      const ra = await ok(await token('a', 'room'), 200, MediaTokenSchema);
+      const rb = await ok(await token('b', 'room'), 200, MediaTokenSchema);
+      assert.deepEqual([claims(ra).video.room, claims(rb).video.room], [lkRoom, lkRoom], 'same LiveKit room for both');
+      assert.equal((await token('a', 'proximity')).status, 409, 'inside a closed room there is no proximity call');
+
+      // One walks out: the one inside keeps the room call, the one outside cannot get it.
+      const bLeft = await B.walk(spot.bOut);
+      assert.deepEqual(bLeft, { ok: true, roomId: null });
+      assert.equal((await token('b', 'room')).status, 403, 'outside the room: no token for it');
+      await wait(300);
+      assert.equal((await token('b', 'proximity')).status, 409, 'and no proximity call with someone inside the room');
+      assert.equal(claims(await ok(await token('a', 'room'), 200, MediaTokenSchema)).video.room, lkRoom);
+
+      // Another room is another call.
+      assert.ok((await B.teleport({ kind: 'room', roomId: room('Meeting room B').id })).ok);
+      assert.notEqual(claims(await ok(await token('b', 'room'), 200, MediaTokenSchema)).video.room, lkRoom);
+
+      // Repeated transitions keep returning the one stable room name (no new rooms, no stale route).
+      for (let i = 0; i < 3; i += 1) {
+        assert.deepEqual(await A.walk(spot.aOut), { ok: true, roomId: null });
+        assert.deepEqual(await A.walk(spot.aIn), { ok: true, roomId: mA.id });
+      }
+      assert.equal(claims(await ok(await token('a', 'room'), 200, MediaTokenSchema)).video.room, lkRoom);
+
+      // A refused move (into a knock room) also carries the authoritative room.
+      const board = room('Board room');
+      const refused = (await A.s.emitWithAck('office:move', { x: board.bounds.x + 64, y: board.bounds.y + board.bounds.height + 40, dir: 0, ct: Date.now() })) as MoveAck;
+      assert.equal(refused.ok, false);
+      assert.equal('roomId' in refused ? refused.roomId : 'missing', mA.id, 'a correction says where the server has you');
+    });
+
+    it('a reload (last socket closed, new one joined) starts from the server\'s position and its room', async () => {
+      A.s.disconnect();
+      await wait(200);
+      A = await officeSocket('a');
+      assert.ok(A.join.ok);
+      const roomId = A.join.ok ? A.join.self.roomId : 'missing';
+      const res = await api('a', '/media/token', { method: 'POST', body: { kind: 'room' } });
+      const inClosedRoom = !!roomId && snap.rooms.find((r) => r.id === roomId)?.type !== 'OPEN';
+      assert.equal(res.status === 200, inClosedRoom, 'the room token follows the room the join ack reports');
     });
 
     it('another organisation never reaches our rooms', async () => {

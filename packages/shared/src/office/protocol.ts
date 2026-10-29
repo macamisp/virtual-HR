@@ -174,7 +174,8 @@ export interface RosterEntry {
   roomId: string | null;
 }
 
-export type MoveAck = { ok: true } | { ok: false; reason: string; x: number; y: number; floorId: string };
+/** Both variants carry the room the server has the avatar in, so the client never guesses it. */
+export type MoveAck = { ok: true; roomId: string | null } | { ok: false; reason: string; x: number; y: number; floorId: string; roomId: string | null };
 export type JoinAck =
   | { ok: true; self: { x: number; y: number; floorId: string; roomId: string | null }; roster: RosterEntry[] }
   | { ok: false; error: string };
