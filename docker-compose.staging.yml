@@ -11,6 +11,9 @@
 # In public mode only the proxy publishes ports (80/443). PostgreSQL, Redis, SeaweedFS and ClamAV have no host
 # ports; PostgreSQL and Redis sit on an internal network with no route to the Internet. LiveKit is
 # LiveKit Cloud. Document keys are wrapped by AWS KMS through the instance role (no AWS keys here).
+# Every container runs without Linux capabilities beyond the few its entrypoint needs, cannot gain
+# privileges (no-new-privileges), and only the API can reach the EC2 instance metadata service
+# (the instance role's KMS credentials): see the api_egress network and ADR 047.
 # Secrets live on the server only (mode 600, never committed): .env.staging holds what the API needs;
 # .env.staging.db holds the PostgreSQL admin login, which only postgres and migrate receive. Redis
 # and SeaweedFS get just their own secret. `docker compose config` prints the values: do not share it.
@@ -21,7 +24,21 @@ x-logging: &logging
   driver: json-file
   options: { max-size: "10m", max-file: "5" }
 
+# Merged into every service; a service adds back only the capabilities it needs (cap_add).
+x-hardening: &hardening
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+
 networks:
+  # The API's own network and its only way out. It is the one bridge from which the host firewall
+  # (infra/staging-ec2/imds-guard.sh) lets packets reach the instance metadata service, so the
+  # bridge name is fixed and nothing but the API may join it (scripts/staging-compose-check.ts).
+  api_egress:
+    driver_opts:
+      com.docker.network.bridge.name: hrvo-api
+    ipam:
+      config:
+        - subnet: ${API_SUBNET:-172.30.1.0/29}
   # The proxy, the apps and object storage; has Internet egress (LiveKit Cloud, KMS, HIBP, mail,
   # Google, ClamAV signature updates).
   edge:
@@ -59,6 +76,8 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     networks: [edge]
+    <<: *hardening
+    cap_add: [NET_BIND_SERVICE]
     mem_limit: 256m
     logging: *logging
 
@@ -76,6 +95,7 @@ services:
     read_only: true
     tmpfs: [/tmp]
     networks: [edge]
+    <<: *hardening
     mem_limit: 768m
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
@@ -129,10 +149,12 @@ services:
       storage: { condition: service_started }
       clamav: { condition: service_started }
     networks:
-      # A fixed address so the host firewall can let only the API reach the instance metadata
-      # service (the instance role's KMS credentials); see the runbook.
-      edge: { ipv4_address: "${API_EDGE_IP:-172.30.0.10}" }
+      # Default route (Internet egress and the instance metadata service) through api_egress;
+      # edge only for the proxy to reach the API, data for the databases.
+      api_egress: { gw_priority: 100 }
+      edge: {}
       data: {}
+    <<: *hardening
     mem_limit: 1536m
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
@@ -167,6 +189,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     networks: [data]
+    <<: *hardening
     logging: *logging
 
   postgres:
@@ -196,6 +219,9 @@ services:
       - ${DB_TLS_DIR:-./.staging/db-tls}/server.key:/certs/server.key:ro,z
       - ./docker/staging/pg_hba.conf:/etc/hrvo/pg_hba.conf:ro,z
     networks: [data]
+    <<: *hardening
+    # The entrypoint copies the key and data directory ownership as root, then drops to postgres.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     shm_size: 256m
     mem_limit: 1536m
     healthcheck:
@@ -220,6 +246,9 @@ services:
     volumes:
       - redis_data:/data
     networks: [data]
+    # The image's own user; the custom entrypoint above skips the image's switch away from root.
+    user: redis
+    <<: *hardening
     mem_limit: 384m
     healthcheck:
       test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
@@ -247,6 +276,9 @@ services:
     volumes:
       - storage_data:/data
     networks: [edge, data]
+    # The image's own user (owner of /data); the custom entrypoint skips the image's su-exec.
+    user: seaweed
+    <<: *hardening
     mem_limit: 768m
     logging: *logging
 
@@ -257,6 +289,10 @@ services:
       - clamav_db:/var/lib/clamav
     # Signature updates need egress (edge); the API scans over the data network.
     networks: [edge, data]
+    <<: *hardening
+    # /init prepares /run/clamav and the signature directory as root; clamd and freshclam then
+    # switch to the clamav user.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     mem_limit: 2560m
     healthcheck:
       test: ["CMD", "clamdcheck.sh"]

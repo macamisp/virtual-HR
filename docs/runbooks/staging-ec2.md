@@ -1,4 +1,4 @@
-# Staging on one AWS EC2 host (ADR 046)
+# Staging on one AWS EC2 host (ADR 046, ADR 047)
 
 One Ubuntu 24.04 instance (m7i-flex.large: 2 vCPU, 8 GiB, 60 GiB gp3) running
 `docker-compose.staging.yml` in production mode: LiveKit Cloud for media, AWS KMS for document
@@ -12,15 +12,18 @@ Move to public mode (section 6) only when testers without SSH access need it.
 |---|---|---|---|---|
 | proxy (Caddy) | caddy:2.8.4-alpine | edge | not started | 80, 443 |
 | web (Next.js standalone) | docker/web.Dockerfile | edge | 127.0.0.1:3000 | none |
-| api (NestJS) | docker/api.Dockerfile | edge, data | 127.0.0.1:3001 | none |
+| api (NestJS) | docker/api.Dockerfile | api_egress (default route), edge, data | 127.0.0.1:3001 | none |
 | storage (SeaweedFS S3) | chrislusf/seaweedfs:4.48 | edge, data | 127.0.0.1:8333 | none |
 | postgres 16 (TLS only) | postgres:16.10-alpine | data | none | none |
 | redis 7 (password) | redis:7.4.6-alpine | data | none | none |
 | clamav | clamav/clamav:1.4 | edge, data | none | none |
 | migrate (one-off) | docker/api.Dockerfile `migrate` | data | none | none |
 
-`data` is an internal Docker network with no route to the Internet. `127.0.0.1` ports are reachable
-only from the server itself, so only through an SSH tunnel.
+`data` is an internal Docker network with no route to the Internet. `api_egress` (bridge
+`hrvo-api`) is the API's own way out and the only bridge from which the instance metadata service,
+and with it the instance role's KMS credentials, can be reached (ADR 047). `127.0.0.1` ports are
+reachable only from the server itself, so only through an SSH tunnel. Every container drops all
+Linux capabilities except the few its entrypoint needs and runs with no-new-privileges.
 
 ## 0. Costs and the Free plan (checked 2026-10-30; confirm in the Billing console)
 
@@ -62,9 +65,12 @@ Policy templates are in `infra/staging-ec2/`.
 aws iam create-role --role-name hrvo-staging-ec2 --assume-role-policy-document file://infra/staging-ec2/ec2-trust-policy.json
 aws iam create-instance-profile --instance-profile-name hrvo-staging-ec2
 aws iam add-role-to-instance-profile --instance-profile-name hrvo-staging-ec2 --role-name hrvo-staging-ec2
-aws ec2 associate-iam-instance-profile --instance-id i-XXXX --iam-instance-profile Name=hrvo-staging-ec2
-# Optional, to reach the host without opening port 22: attach AmazonSSMManagedInstanceCore (section 3b).
 ```
+
+Do **not** attach the profile to the instance yet: that is section 4b, after the metadata guard
+has been installed and verified on the host. Keep this role KMS-only. Do not add
+AmazonSSMManagedInstanceCore or any other policy to it: the API container receives this role, so
+it would receive those permissions too (see 3b).
 
 ### 1b. KMS: two customer-managed symmetric keys (about $2/month)
 
@@ -90,10 +96,17 @@ wrapped with it. Keys pending deletion are not charged.
 ### 1c. Instance settings (free)
 
 ```bash
-# IMDSv2 only; hop limit 2 so a container on a Docker bridge can reach it (the host firewall in
-# section 2 then lets only the API container through).
-aws ec2 modify-instance-metadata-options --instance-id i-XXXX --http-tokens required --http-put-response-hop-limit 2 --http-endpoint enabled
+# IMDSv2 only (a token from a PUT first, which ordinary SSRF cannot send); hop limit 2 so a
+# container on a Docker bridge gets the reply (the guard of section 2 then lets only the API
+# through); no IPv6 endpoint; no instance tags in the metadata.
+aws ec2 modify-instance-metadata-options --instance-id i-XXXX --http-tokens required \
+  --http-put-response-hop-limit 2 --http-endpoint enabled --http-protocol-ipv6 disabled \
+  --instance-metadata-tags disabled
+aws ec2 describe-instances --instance-ids i-XXXX --query 'Reservations[].Instances[].MetadataOptions'
 ```
+
+Never put secrets in the instance's user data: the API can read the whole metadata service, not
+only the role.
 
 - **Security group (SSH mode), inbound:** 22/tcp from your own IP only. Nothing else. With
   Session Manager (3b), no inbound rule at all.
@@ -121,22 +134,52 @@ cp .env.staging.db.example .env.staging.db && chmod 600 .env.staging.db
 # Fill both in on the server (an editor over SSH; never a chat, ticket or commit). In SSH mode keep
 # WEB_URL=http://localhost:3000, API_URL=http://localhost:3001, FILES_URL=http://localhost:8333.
 
-# Instance-metadata guard, re-applied whenever Docker starts.
+```
+
+### 2a. Instance-metadata guard (ADR 047), before the instance profile is attached
+
+The guard is an nftables table of its own (`inet hrvo_imds`). Docker never touches it, so it
+survives Docker restarts. It is loaded at boot before Docker starts, and Docker refuses to start
+without it. Nothing else on the host changes: SSH, Session Manager, EC2 Instance Connect,
+cloud-init and the AWS CLI as root still reach the metadata service.
+
+```bash
+command -v nft || sudo apt-get install -y nftables
+systemctl is-enabled nftables 2>/dev/null   # must be "disabled" or "not-found": never enable it,
+                                            # /etc/nftables.conf starts with `flush ruleset`, which
+                                            # would wipe Docker's rules and this guard
+sudo groupadd --system hrvo-tunnel          # testers' group (3a); before the guard, which reads it
 sudo install -m 755 infra/staging-ec2/imds-guard.sh /usr/local/sbin/hrvo-imds-guard
-sudo tee /etc/systemd/system/hrvo-imds-guard.service >/dev/null <<'UNIT'
-[Unit]
-Description=Only the HRVO API container may reach the EC2 metadata service
-After=docker.service
-Requires=docker.service
-PartOf=docker.service
-[Service]
-Type=oneshot
-Environment=API_EDGE_IP=172.30.0.10
-ExecStart=/usr/local/sbin/hrvo-imds-guard
-[Install]
-WantedBy=docker.service
-UNIT
-sudo systemctl daemon-reload && sudo systemctl enable --now hrvo-imds-guard
+sudo install -m 644 infra/staging-ec2/hrvo-imds-guard.default /etc/default/hrvo-imds-guard
+sudo install -m 644 infra/staging-ec2/hrvo-imds-guard.service /etc/systemd/system/hrvo-imds-guard.service
+sudo install -d -m 755 /etc/systemd/system/docker.service.d
+sudo install -m 644 infra/staging-ec2/docker-hrvo-imds-guard.conf /etc/systemd/system/docker.service.d/hrvo-imds-guard.conf
+sudo systemctl daemon-reload
+sudo systemctl enable --now hrvo-imds-guard
+sudo hrvo-imds-guard check                  # "ok (only hrvo-api 172.30.1.0/29 may reach ...)"
+sudo systemctl restart docker               # picks up the drop-in (no containers are running yet)
+systemctl show docker -p ExecStartPre | grep -c 'hrvo-imds-guard check'   # 1
+```
+
+`/etc/default/hrvo-imds-guard` must match `docker-compose.staging.yml` (bridge `hrvo-api`,
+subnet `API_SUBNET`, default 172.30.1.0/29). After changing it, or after creating the group:
+`sudo systemctl restart hrvo-imds-guard` (atomic; no gap).
+
+### 2b. Tester accounts (SSH tunnel only)
+
+Testers must not use `ubuntu`: it has sudo, so it could read the role's credentials or switch the
+guard off, and it can forward a port to the metadata service. Each tester gets an account whose
+primary group is `hrvo-tunnel`. That account can only forward the three app ports: no shell, and
+no other forwarding. The guard also blocks this group from the metadata service on the host.
+
+```bash
+sudo install -m 644 infra/staging-ec2/sshd-hrvo-tunnel.conf /etc/ssh/sshd_config.d/50-hrvo-tunnel.conf
+sudo sshd -t && sudo systemctl reload ssh   # keep this session open; test a new login first
+# Per tester (their PUBLIC key only):
+sudo useradd --create-home --gid hrvo-tunnel --shell /usr/sbin/nologin tester1
+sudo install -d -m 700 -o tester1 -g hrvo-tunnel /home/tester1/.ssh
+sudo install -m 600 -o tester1 -g hrvo-tunnel /dev/stdin /home/tester1/.ssh/authorized_keys < tester1.pub
+sudo sshd -T -C user=tester1,host=x,addr=127.0.0.1 | grep -E '^(permitopen|allowtcpforwarding|forcecommand)'
 ```
 
 ## 3. Deploy in SSH mode
@@ -147,6 +190,11 @@ git fetch origin && git checkout --detach <release commit>
 C="docker compose -f docker-compose.staging.yml -f docker-compose.staging.ssh.yml --env-file .env.staging --env-file .env.staging.db"
 $C config -q                      # validates; never print `config` without -q (it shows secrets)
 $C build
+# Security policy of the rendered project (ADR 047); prints names only, never values:
+$C --profile tools config --format json | docker run --rm -i --network none -v "$PWD/scripts:/s:ro" \
+  --entrypoint node hrvo-api:staging --experimental-strip-types --no-warnings=ExperimentalWarning \
+  /s/staging-compose-check.ts --api-subnet "$(. /etc/default/hrvo-imds-guard && echo "$API_SUBNET")"
+# expect "staging compose check: ok (7 services)"
 $C up -d postgres redis storage clamav
 $C run --rm migrate               # prisma migrate deploy + role passwords, over verified TLS
 $C up -d
@@ -157,7 +205,7 @@ curl -fsS http://127.0.0.1:3001/health   # {"status":"ok","db":"ok","redis":"ok"
 ### 3a. Each tester, from their own computer
 
 ```bash
-ssh -N -L 3000:127.0.0.1:3000 -L 3001:127.0.0.1:3001 -L 8333:127.0.0.1:8333 ubuntu@<instance public DNS or IP>
+ssh -N -L 3000:127.0.0.1:3000 -L 3001:127.0.0.1:3001 -L 8333:127.0.0.1:8333 tester1@<instance public DNS or IP>
 # then open http://localhost:3000
 ```
 
@@ -168,8 +216,13 @@ locally in production mode with Chromium. Firefox and Safari were not tested.
 
 ### 3b. Without opening port 22 (Systems Manager, free)
 
-With the AmazonSSMManagedInstanceCore policy on the role and the Session Manager plugin installed
-locally, run one port forward per port:
+Session Manager needs the SSM agent to hold AWS credentials, and every way of giving it them is
+also readable by the API container: the instance role, or the instance identity credentials that
+Default Host Management Configuration uses. Adding AmazonSSMManagedInstanceCore to
+`hrvo-staging-ec2` would give the API those permissions. Prefer SSH with the restricted accounts of
+2b. If you need Session Manager, use Default Host Management Configuration, not a policy on this
+role, and accept that the API could act as the instance's SSM agent. With the Session Manager
+plugin installed locally, run one port forward per port:
 
 ```bash
 aws ssm start-session --target i-XXXX --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["3000"],"localPortNumber":["3000"]}'
@@ -189,8 +242,40 @@ aws ssm start-session --target i-XXXX --document-name AWS-StartPortForwardingSes
 ```bash
 sudo ss -ltnp | grep -E ':(5432|6379|3310)\b' || echo "databases and ClamAV: no host ports"
 sudo ss -ltnp | grep -E ':(3000|3001|8333)\b'   # must show 127.0.0.1 only
-sudo iptables -S DOCKER-USER | grep 169.254.169.254
+sudo bash infra/staging-ec2/verify-imds-isolation.sh
 docker compose -f docker-compose.staging.yml logs --since 10m api | grep -iE 'error|refuse' || true
+```
+
+`verify-imds-isolation.sh` prints statuses only, never a token, role name or credential. It checks:
+
+- the guard and the boot order;
+- that the API reaches the metadata service ("reachable (instance profile not attached)" before
+  4b), and every other container, a new `docker run`, a container on the edge network and a
+  `docker build` step do not;
+- that the API's default route goes through `api_egress`, and that only the API is on that network;
+- each container's user, effective capabilities and no-new-privileges;
+- that no Docker network has IPv6;
+- that root on the host still reaches the metadata service and the tester group does not.
+
+If the API row says "blocked", the hop limit is still 1 (section 1c).
+
+### 4a. Persistence and fail-closed (before 4b)
+
+```bash
+sudo systemctl restart docker && sleep 20 && sudo bash infra/staging-ec2/verify-imds-isolation.sh
+sudo reboot     # then reconnect:
+sudo bash /opt/virtual-hr/app/infra/staging-ec2/verify-imds-isolation.sh
+# Fail closed: without the guard Docker must refuse to start (brief downtime; staging only).
+sudo nft delete table inet hrvo_imds && sudo systemctl restart docker; systemctl is-active docker   # "failed"
+sudo systemctl restart hrvo-imds-guard && sudo systemctl start docker && sleep 20 \
+  && sudo bash infra/staging-ec2/verify-imds-isolation.sh
+```
+
+### 4b. Attach the instance profile (only when 4 and 4a pass)
+
+```bash
+aws ec2 associate-iam-instance-profile --instance-id i-XXXX --iam-instance-profile Name=hrvo-staging-ec2
+sudo bash infra/staging-ec2/verify-imds-isolation.sh   # api: "reachable (instance profile attached)"
 ```
 
 Then, through the tunnel: sign up a workspace (the verification e-mail must arrive from Gmail),
@@ -207,6 +292,24 @@ and open a document (this exercises KMS), and sign in with Google.
   `docker compose -f docker-compose.staging.yml exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -Fc hrvo_staging' > /opt/virtual-hr/backups/hrvo-$(date -u +%F).dump`
   Keep the backups directory mode 700. EBS snapshots cost extra (about $0.05/GB-month).
 - **Documents** need the KMS keys as well as the data.
+
+### 5a. Rolling back the metadata guard
+
+Order matters: the role must be gone before the guard is.
+
+1. Detach the instance profile:
+   `aws ec2 describe-iam-instance-profile-associations --filters Name=instance-id,Values=i-XXXX`,
+   then `aws ec2 disassociate-iam-instance-profile --association-id <iip-assoc-…>`. Credentials
+   already handed out stay valid until they expire. To end them now: IAM console, role
+   `hrvo-staging-ec2`, **Revoke active sessions**.
+2. Let Docker start without the guard: `sudo rm /etc/systemd/system/docker.service.d/hrvo-imds-guard.conf`,
+   `sudo systemctl disable hrvo-imds-guard`, `sudo systemctl daemon-reload`.
+3. `sudo hrvo-imds-guard remove`. It refuses while a profile is still attached.
+4. Restricted tester logins: `sudo rm /etc/ssh/sshd_config.d/50-hrvo-tunnel.conf && sudo sshd -t && sudo systemctl reload ssh`.
+
+**If Docker does not start** because `hrvo-imds-guard check` fails, do not remove the drop-in:
+reload the guard with `sudo systemctl restart hrvo-imds-guard && sudo systemctl start docker`, and
+read `journalctl -u hrvo-imds-guard -u docker -b`.
 
 ## 6. Later: public mode (needs DNS)
 
@@ -225,6 +328,9 @@ and open a document (this exercises KMS), and sign in with Google.
 - Commit `.env.staging`, `.env.staging.db` or anything under `.staging/` or the secrets folder.
 - Publish the database, Redis, storage or ClamAV ports, or open 3000/3001/8333 in the security
   group (SSH mode relies on them staying on 127.0.0.1).
+- Attach another container to `api_egress`, run a container with `network_mode: host`,
+  `--privileged`, NET_ADMIN or NET_RAW, or enable `nftables.service` (it flushes every rule).
+- Give testers the `ubuntu` account, or add policies other than the KMS policy to the instance role.
 - Set `AUTH_MFA_ENFORCEMENT=off`, `BREACHED_PASSWORD_CHECK=local`, `DOCUMENT_KMS_PROVIDER=local`,
   a KMS endpoint, `NODE_TLS_REJECT_UNAUTHORIZED=0` or an unauthenticated SMTP server. The API
   refuses them in production.

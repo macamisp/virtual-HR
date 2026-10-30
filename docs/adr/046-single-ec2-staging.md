@@ -34,7 +34,9 @@ storage and virus scanner off the Internet, use LiveKit Cloud, and wrap document
    `org_id` and `document_id` encryption context (`infra/staging-ec2/`). IMDSv2 uses a hop
    limit of 2 for bridged containers, and `imds-guard.sh` (DOCKER-USER rules) lets only the API's
    fixed address reach the metadata service, so the web, proxy, storage and ClamAV containers
-   cannot obtain the role.
+   cannot obtain the role. *Superseded by ADR 047 (2026-10-30): a source address is not an
+   identity, and the rules loaded after Docker. The guard is now its own nftables table, matched
+   on the API's dedicated bridge and loaded before Docker. All containers drop their capabilities.*
 6. **Mail: authenticated SMTP is allowed in production** (implemented in `mailer.ts`). Before,
    `MAIL_TRANSPORT=smtp` was refused whenever `NODE_ENV=production` ("a plaintext dev transport").
    Since ADR 043 that only describes the form without a login. Production now accepts smtp only

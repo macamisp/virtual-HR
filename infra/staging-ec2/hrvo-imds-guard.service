@@ -1,0 +1,21 @@
+# Loads the instance-metadata guard (imds-guard.sh, ADR 047) at boot, before Docker starts any
+# container. The rules are an nftables table of their own, so restarting Docker leaves them alone.
+# Install: docs/runbooks/staging-ec2.md, section 2.
+[Unit]
+Description=HRVO: only the API container may reach the EC2 instance metadata service
+Documentation=file:///opt/virtual-hr/app/docs/adr/047-imds-isolation.md
+DefaultDependencies=no
+After=local-fs.target
+Wants=network-pre.target
+Before=network-pre.target docker.service containerd.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/default/hrvo-imds-guard
+ExecStart=/usr/local/sbin/hrvo-imds-guard apply
+# Stopping this unit does not remove the rules; rolling back is `hrvo-imds-guard remove`.
+
+[Install]
+WantedBy=multi-user.target
