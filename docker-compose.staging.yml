@@ -3,7 +3,12 @@
 #   C="docker compose -f docker-compose.staging.yml --env-file .env.staging --env-file .env.staging.db"
 #   $C build && $C up -d postgres redis storage clamav && $C run --rm migrate && $C up -d
 #
-# Only the proxy publishes ports (80/443). PostgreSQL, Redis, SeaweedFS and ClamAV have no host
+# Two ways in (docs/runbooks/staging-ec2.md):
+#   public  this file alone: Caddy with Let's Encrypt for WEB_URL, API_URL and FILES_URL (DNS needed).
+#   ssh     add -f docker-compose.staging.ssh.yml: no proxy; web, API and storage listen on the
+#           server's loopback only and are reached through an SSH tunnel (no DNS, no open web ports).
+#
+# In public mode only the proxy publishes ports (80/443). PostgreSQL, Redis, SeaweedFS and ClamAV have no host
 # ports; PostgreSQL and Redis sit on an internal network with no route to the Internet. LiveKit is
 # LiveKit Cloud. Document keys are wrapped by AWS KMS through the instance role (no AWS keys here).
 # Secrets live on the server only (mode 600, never committed): .env.staging holds what the API needs;
@@ -44,10 +49,11 @@ services:
       - "${HTTP_PUBLISH:-80}:80"
       - "${HTTPS_PUBLISH:-443}:443"
     environment:
-      WEB_HOST: ${WEB_HOST:?set WEB_HOST in .env.staging}
-      API_HOST: ${API_HOST:?set API_HOST in .env.staging}
-      FILES_HOST: ${FILES_HOST:?set FILES_HOST in .env.staging}
-      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env.staging}
+      WEB_URL: ${WEB_URL}
+      API_URL: ${API_URL}
+      FILES_URL: ${FILES_URL}
+      # Required in public mode (Let's Encrypt account); unused in ssh mode.
+      ACME_EMAIL: ${ACME_EMAIL:-}
     volumes:
       - ./docker/staging/Caddyfile:/etc/caddy/Caddyfile:ro,z
       - caddy_data:/data
@@ -62,8 +68,8 @@ services:
       dockerfile: docker/web.Dockerfile
       target: web
       args:
-        NEXT_PUBLIC_API_URL: https://${API_HOST}
-        NEXT_PUBLIC_STORAGE_URL: https://${FILES_HOST}
+        NEXT_PUBLIC_API_URL: ${API_URL:?set API_URL in .env.staging}
+        NEXT_PUBLIC_STORAGE_URL: ${FILES_URL:?set FILES_URL in .env.staging}
         NEXT_PUBLIC_LIVEKIT_URL: ${LIVEKIT_URL:?set LIVEKIT_URL in .env.staging}
     image: hrvo-web:staging
     restart: unless-stopped
@@ -93,11 +99,11 @@ services:
       NODE_ENV: production
       PORT: "3001"
       HOST: 0.0.0.0
-      APP_WEB_URL: https://${WEB_HOST}
-      API_PUBLIC_URL: https://${API_HOST}
-      CORS_ORIGINS: https://${WEB_HOST}
-      GOOGLE_REDIRECT_URI: https://${API_HOST}/auth/google/callback
-      # Only the proxy reaches the API, over the private bridge network.
+      APP_WEB_URL: ${WEB_URL:?set WEB_URL in .env.staging}
+      API_PUBLIC_URL: ${API_URL}
+      CORS_ORIGINS: ${WEB_URL}
+      GOOGLE_REDIRECT_URI: ${API_URL}/auth/google/callback
+      # Only the proxy reaches the API, over the private bridge network (ssh mode turns this off).
       TRUST_PROXY: uniquelocal
       COORDINATION: redis
       # PostgreSQL over TLS, verified against the staging database CA (docker/staging/db-tls.sh).
@@ -110,7 +116,7 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       S3_ENDPOINT: http://storage:8333
-      S3_PUBLIC_ENDPOINT: https://${FILES_HOST}
+      S3_PUBLIC_ENDPOINT: ${FILES_URL}
       S3_FORCE_PATH_STYLE: "true"
       CLAMAV_HOST: clamav
       CLAMAV_PORT: "3310"
@@ -222,8 +228,8 @@ services:
       retries: 10
     logging: *logging
 
-  # S3-compatible document storage. Browsers reach it only through the proxy (presigned URLs on
-  # FILES_HOST); the API uses the internal address.
+  # S3-compatible document storage. Browsers reach it only at FILES_URL (proxy or SSH tunnel) with
+  # presigned URLs; the API uses the internal address.
   storage:
     image: chrislusf/seaweedfs:4.48
     restart: unless-stopped

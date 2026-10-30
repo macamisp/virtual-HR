@@ -1,0 +1,29 @@
+# SSH-tunnel mode for staging (ADR 046; docs/runbooks/staging-ec2.md, section "SSH mode").
+#
+#   docker compose -f docker-compose.staging.yml -f docker-compose.staging.ssh.yml \
+#     --env-file .env.staging --env-file .env.staging.db up -d
+#
+# No proxy, no DNS, no web ports in the security group: web, API and storage listen on the
+# server's loopback interface only, and each tester forwards them with
+#   ssh -N -L 3000:127.0.0.1:3000 -L 3001:127.0.0.1:3001 -L 8333:127.0.0.1:8333 ubuntu@<server>
+# then opens http://localhost:3000. Browsers treat http://localhost as a secure context, so the
+# camera, microphone, screen sharing and the Secure refresh cookie work without a certificate.
+# .env.staging must then say WEB_URL=http://localhost:3000, API_URL=http://localhost:3001 and
+# FILES_URL=http://localhost:8333 (the local ports of the tunnel must be the same numbers).
+
+services:
+  proxy:
+    # Not started in this mode (it would need DNS names and ports 80/443).
+    profiles: [public]
+
+  web:
+    ports: ["127.0.0.1:3000:3000"]
+
+  api:
+    ports: ["127.0.0.1:3001:3001"]
+    environment:
+      # Requests come straight from the tunnel; there is no proxy whose X-Forwarded-For to trust.
+      TRUST_PROXY: ""
+
+  storage:
+    ports: ["127.0.0.1:8333:8333"]

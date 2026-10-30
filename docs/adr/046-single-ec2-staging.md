@@ -1,6 +1,6 @@
 # ADR 046: Staging on one EC2 host with Docker Compose
 
-Date: 2026-10-30. Status: accepted (compose, images, TLS, KMS plan); proposed (SMTP in production).
+Date: 2026-10-30. Status: accepted.
 Requirements: NFR-SEC-001, SRS 10.1, 12. Related: ADR 020 (AWS production design), ADR 021 (KMS),
 ADR 043 (SMTP STARTTLS), ADR 016 (LiveKit).
 
@@ -35,37 +35,53 @@ storage and virus scanner off the Internet, use LiveKit Cloud, and wrap document
    limit of 2 for bridged containers, and `imds-guard.sh` (DOCKER-USER rules) lets only the API's
    fixed address reach the metadata service, so the web, proxy, storage and ClamAV containers
    cannot obtain the role.
-6. **Mail:** staging uses `resend` today, which works with the current code. Gmail SMTP stays in
-   development and on the Internet demo.
+6. **Mail: authenticated SMTP is allowed in production** (implemented in `mailer.ts`). Before,
+   `MAIL_TRANSPORT=smtp` was refused whenever `NODE_ENV=production` ("a plaintext dev transport").
+   Since ADR 043 that only describes the form without a login. Production now accepts smtp only
+   when all of these hold; otherwise the API does not start, and the error names the setting,
+   never its value:
+   - `SMTP_USER` and `SMTP_PASSWORD` are set. With a login, `SmtpMailTransport` requires STARTTLS
+     and a certificate valid for `SMTP_HOST` in the system trust store before AUTH. There is no
+     plaintext fallback.
+   - `SMTP_HOST` is a public host name: not an IP address, `localhost`, `*.local` or a single label.
+   - The port is 587, or unset (which means 587). Port 25 (relay, optional TLS) and 465 (implicit
+     TLS, not implemented) are refused.
+   - `MAIL_FROM` (or `SMTP_FROM`) is a plain address. The SMTP client writes `MAIL FROM:<…>`, so a
+     display name would break delivery, and line breaks are rejected.
+   - `NODE_TLS_REJECT_UNAUTHORIZED` is not `0`.
 
-## Proposed: authenticated SMTP in production (not implemented; needs approval)
-
-`createMailTransport` refuses `MAIL_TRANSPORT=smtp` whenever `NODE_ENV=production`. The reason was
-true before ADR 043 ("a plaintext dev transport"). It no longer holds when `SMTP_USER` and
-`SMTP_PASSWORD` are set: `SmtpMailTransport` then requires STARTTLS, verifies the certificate and
-host name (`rejectUnauthorized` default, SNI), and sends AUTH only over TLS. The extra CA is a
-constructor option that only tests use; no environment variable can set it.
-
-Proposed change in `apps/api/src/common/mailer.ts`, smtp branch, production only:
-- refuse when `SMTP_USER`/`SMTP_PASSWORD` are missing (no unauthenticated, plaintext relay);
-- refuse when `SMTP_HOST` is unset (no `localhost` default) or `MAIL_FROM` is unset;
-- refuse port 25 (servers there commonly allow opportunistic or no TLS); allow 587 (STARTTLS);
-- otherwise build the same `SmtpMailTransport` as today. TLS checks and certificate
-  verification are unchanged.
-
-Tests to add (`mailer.test.ts`): production + smtp without credentials refused; with credentials
-accepted; missing host or sender refused; port 25 refused; the existing "server without STARTTLS
-is refused before AUTH" and "untrusted certificate is refused" tests stay. Update
-`docs/runbooks/mail.md` and ADR 043.
-
-Trade-off: Gmail with an App Password is tied to one personal account, has daily sending limits
-and no domain-level SPF/DKIM for a custom sender. Resend, or another provider with a verified
-domain, remains the recommendation for anything past staging.
+   Found while testing: `tls.connect` used Node's default for `rejectUnauthorized`, so
+   `NODE_TLS_REJECT_UNAUTHORIZED=0` in the environment would have switched certificate checks off
+   even in development. It is now explicit (`rejectUnauthorized: true`, TLS 1.2 minimum), with a
+   regression test. The test-only extra CA cannot be set from the environment, and production
+   transports report `trustsExtraCa === false`. Gmail with an App Password is fine for staging. It
+   is tied to one account, has daily limits and no domain SPF/DKIM for a custom sender, so a
+   provider with a verified domain (Resend is still supported) is the choice past staging.
+7. **SSH mode first** (`docker-compose.staging.ssh.yml`). The proxy is not started; web, API and
+   storage publish on `127.0.0.1` only; testers forward 3000/3001/8333 over SSH (or Systems
+   Manager) and open `http://localhost:3000`. The compose file now takes full URLs (`WEB_URL`,
+   `API_URL`, `FILES_URL`) instead of host names, so one file serves both modes. Browsers treat
+   http://localhost as a secure context: verified in production mode with Chromium (sign-in,
+   Secure + HttpOnly + SameSite=Strict refresh cookie surviving a reload, `isSecureContext`, office
+   sockets). `TRUST_PROXY` is off in this mode, so a tester cannot spoof `X-Forwarded-For`. Not
+   available without a public URL: LiveKit webhooks (call attendance); e-mail links work only for
+   testers with the tunnel open.
+8. **Database TLS everywhere** (bug fix). `PostgresAttendanceRepository` built its own three pools
+   from `PG*` without the CA. `pg` honours `PGSSLMODE` by itself, so with `verify-full` it tried TLS
+   against Node's default trust store and every attendance query failed with "unable to verify the
+   first certificate". The same would have happened on RDS (ADR 020). The pools now start from the
+   shared `poolConfig()`, with only the login differing per role. `/health` had passed because it
+   uses the Prisma service's pool; the browser test found it.
 
 ## Consequences
 
-- No application code changed for staging. The compose file, Caddyfile, `pg_hba.conf`, certificate
-  script, IMDS guard, policy templates and runbook are new.
+- Application code changed in two places: `mailer.ts` (production SMTP rules, explicit
+  certificate checks) and `attendance-repository.ts` (TLS on its pools). Regression tests:
+  `mailer.test.ts` (9 new), `db-connection-config.test.ts` (1 new).
+- `vault-e2e` no longer fails on plaintext `_staging/` objects left in the shared test bucket by
+  earlier, interrupted runs. It skips staging objects whose document no longer exists, reports how
+  many, and deletes nothing. Every other object, including this run's staging objects, is still
+  checked.
 - Validated locally with the real Docker Compose v2.33 (`config -q`, missing-variable errors) and a
   production-mode run under podman: migrate over TLS, all 32 migrations applied, API `/health`
   db+redis ok, web served through the proxy, CORS limited to the web origin, internal ports

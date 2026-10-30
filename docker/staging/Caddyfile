@@ -1,5 +1,6 @@
-# Staging TLS proxy (ADR 046). Certificates from Let's Encrypt for the three DNS names, which must
-# point at the EC2 Elastic IP before the first start (ports 80 and 443 open).
+# Staging TLS proxy, public mode (ADR 046). WEB_URL, API_URL and FILES_URL are https:// addresses;
+# Let's Encrypt certificates for their names, which must point at the instance before the first
+# start (ports 80 and 443 open). Not used in ssh mode.
 {
 	email {$ACME_EMAIL}
 	servers {
@@ -20,20 +21,20 @@
 	}
 }
 
-{$WEB_HOST} {
+{$WEB_URL} {
 	import common
 	reverse_proxy web:3000
 }
 
 # REST and Socket.IO (WebSocket upgrades pass through reverse_proxy).
-{$API_HOST} {
+{$API_URL} {
 	import common
 	reverse_proxy api:3001
 }
 
 # Presigned document uploads and downloads. The Host header is passed through unchanged, so the
-# SigV4 signature the API made for FILES_HOST still matches.
-{$FILES_HOST} {
+# SigV4 signature the API made for FILES_URL still matches.
+{$FILES_URL} {
 	import common
 	reverse_proxy storage:8333
 }
