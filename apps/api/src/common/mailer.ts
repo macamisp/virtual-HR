@@ -5,8 +5,9 @@
  *  - "smtp" (default outside production): minimal SMTP client. Without SMTP_USER/SMTP_PASSWORD it
  *    is the plaintext client for the local Mailhog container (docker-compose.yml, web UI on
  *    http://localhost:8025). With them it requires STARTTLS with a verified certificate before
- *    AUTH PLAIN, e.g. Gmail with an App Password for the Internet demo (ADR 043). Refused in
- *    production either way.
+ *    AUTH PLAIN, e.g. Gmail with an App Password for the Internet demo (ADR 043). In production
+ *    only the authenticated form is allowed, on port 587 to a public host name with a plain
+ *    sender address (ADR 046).
  *  - "resend": the Resend HTTPS API (https://resend.com). RESEND_API_KEY and MAIL_FROM come from
  *    the environment only. The production choice today; see docs/runbooks/mail.md.
  *  - "memory": in-process outbox for the API tests. Nothing is delivered.
@@ -126,7 +127,7 @@ interface SmtpReply {
 
 export class SmtpMailTransport implements MailTransport {
   private readonly host: string;
-  private readonly port: number;
+  readonly port: number;
   private readonly from: string;
   private readonly options: SmtpOptions;
 
@@ -139,6 +140,11 @@ export class SmtpMailTransport implements MailTransport {
 
   get authenticated(): boolean {
     return this.options.auth !== undefined;
+  }
+
+  /** True only when a test added its own CA; production never does. */
+  get trustsExtraCa(): boolean {
+    return this.options.ca !== undefined;
   }
 
   async send(message: MailMessage): Promise<void> {
@@ -197,8 +203,13 @@ export class SmtpMailTransport implements MailTransport {
         await command('STARTTLS', [220]);
         socket.removeListener('data', onData);
         buffer = '';
-        // Certificate and host name are verified (rejectUnauthorized defaults to true).
-        const secure = tls.connect({ socket, servername: net.isIP(this.host) ? undefined : this.host, host: this.host, ca: this.options.ca ? [...tls.rootCertificates, this.options.ca] : undefined });
+        // Certificate and host name are verified. rejectUnauthorized is explicit so that
+        // NODE_TLS_REJECT_UNAUTHORIZED=0 in the environment cannot turn the check off.
+        const secure = tls.connect({
+          socket, servername: net.isIP(this.host) ? undefined : this.host, host: this.host,
+          rejectUnauthorized: true, minVersion: 'TLSv1.2',
+          ca: this.options.ca ? [...tls.rootCertificates, this.options.ca] : undefined,
+        });
         await new Promise<void>((resolve, reject) => {
           secure.once('secureConnect', resolve);
           secure.once('error', reject);
@@ -276,9 +287,7 @@ export function createMailTransport(env: Record<string, string | undefined> = pr
   if (mode !== 'smtp') {
     throw new Error(`Unknown MAIL_TRANSPORT: ${mode}`);
   }
-  if (production) {
-    throw new Error('MAIL_TRANSPORT=smtp is a plaintext dev transport (Mailhog); use resend in production (docs/runbooks/mail.md)');
-  }
+  if (production) return productionSmtp(env);
   const user = env.SMTP_USER ?? '';
   const password = env.SMTP_PASSWORD ?? '';
   if (Boolean(user) !== Boolean(password)) {
@@ -290,4 +299,32 @@ export function createMailTransport(env: Record<string, string | undefined> = pr
     env.MAIL_FROM || env.SMTP_FROM || 'no-reply@hrvo.local',
     user ? { auth: { user, password } } : {},
   );
+}
+
+/** A plain address: what MAIL FROM and the From header need (no display name, no spaces or breaks). */
+const PLAIN_ADDRESS = /^[^\s<>@"]+@[^\s<>@"]+\.[A-Za-z]{2,}$/;
+
+/**
+ * ADR 046: production SMTP is authenticated submission only (e.g. Gmail with an App Password).
+ * With a login, SmtpMailTransport requires STARTTLS and a certificate that the system trust store
+ * accepts for SMTP_HOST before AUTH is sent; nothing here can add a CA or skip the check.
+ * Errors name the setting, never its value.
+ */
+function productionSmtp(env: Record<string, string | undefined>): SmtpMailTransport {
+  const refuse = (why: string) => new Error(`MAIL_TRANSPORT=smtp in production ${why} (ADR 046, docs/runbooks/mail.md)`);
+  const user = env.SMTP_USER ?? '';
+  const password = env.SMTP_PASSWORD ?? '';
+  if (!user || !password) throw refuse('needs SMTP_USER and SMTP_PASSWORD: only authenticated submission over STARTTLS is allowed');
+  const host = (env.SMTP_HOST ?? '').trim().toLowerCase();
+  if (!host) throw refuse('needs SMTP_HOST');
+  if (net.isIP(host) || !host.includes('.') || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) {
+    throw refuse('needs SMTP_HOST to be the public host name on the server certificate (not an IP address or a local name)');
+  }
+  const port = env.SMTP_PORT ? Number(env.SMTP_PORT) : 587;
+  if (port !== 587) throw refuse('needs SMTP_PORT=587 (submission with STARTTLS); 25 and 465 are not supported');
+  const from = env.MAIL_FROM || env.SMTP_FROM || '';
+  if (!from) throw refuse('needs MAIL_FROM (the sender address, usually the SMTP account)');
+  if (!PLAIN_ADDRESS.test(from)) throw refuse('needs MAIL_FROM to be a plain address such as sender@example.com (no display name)');
+  if (env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw refuse('is not allowed while NODE_TLS_REJECT_UNAUTHORIZED=0 disables certificate checks');
+  return new SmtpMailTransport(host, port, from, { auth: { user, password } });
 }

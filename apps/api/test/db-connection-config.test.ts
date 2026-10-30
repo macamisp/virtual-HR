@@ -7,7 +7,9 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type pg from 'pg';
 import { databaseUrl, poolConfig } from '../src/common/db-config.ts';
+import { PostgresAttendanceRepository } from '../src/attendance/attendance-repository.ts';
 
 const base = { PGHOST: 'db.internal', PGPORT: '5432', PGDATABASE: 'hrvo', PGUSER: 'hrvo_app', PGPASSWORD: 'p@ss:w/rd#1' };
 
@@ -44,5 +46,28 @@ describe('database connection config', () => {
   it('without PG* settings the local defaults apply', () => {
     assert.equal(poolConfig({}).host, 'localhost');
     assert.equal(poolConfig({}).ssl, undefined);
+  });
+
+  // Regression (ADR 046): the attendance repository built its own pools from PG* without the CA,
+  // so with PGSSLMODE=verify-full every attendance query failed "unable to verify the first certificate".
+  it('the attendance pools (app, admin, retention) verify the server against the same CA', async () => {
+    const ca = join(tmpdir(), `db-ca-${process.pid}.pem`);
+    writeFileSync(ca, '-----BEGIN CERTIFICATE-----\nMIIBtest\n-----END CERTIFICATE-----\n');
+    const env = { ...base, PGSSLMODE: 'verify-full', PGSSLROOTCERT: ca, PGRETENTION_PASSWORD: 'r', PGADMIN_USER: 'admin', PGADMIN_PASSWORD: 'a' };
+    const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, env);
+    const repo = new PostgresAttendanceRepository();
+    try {
+      const pools: Array<[string, pg.Pool, string]> = [['app', repo.getPool(), 'hrvo_app'], ['admin', repo.getAdminPool(), 'admin'], ['retention', repo.getRetentionPool(), 'hrvo_retention']];
+      for (const [name, pool, user] of pools) {
+        const o = (pool as unknown as { options: pg.PoolConfig }).options;
+        assert.equal(o.host, 'db.internal', name);
+        assert.equal(o.user, user, name);
+        assert.ok(o.ssl && typeof o.ssl === 'object' && o.ssl.rejectUnauthorized === true && String(o.ssl.ca).includes('BEGIN CERTIFICATE'), `${name} pool verifies TLS with the CA`);
+      }
+    } finally {
+      await repo.close();
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
   });
 });
