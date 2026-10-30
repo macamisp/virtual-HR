@@ -1,0 +1,261 @@
+# HRVO staging on one AWS EC2 host (ADR 046; docs/runbooks/staging-ec2.md).
+#
+#   C="docker compose -f docker-compose.staging.yml --env-file .env.staging --env-file .env.staging.db"
+#   $C build && $C up -d postgres redis storage clamav && $C run --rm migrate && $C up -d
+#
+# Only the proxy publishes ports (80/443). PostgreSQL, Redis, SeaweedFS and ClamAV have no host
+# ports; PostgreSQL and Redis sit on an internal network with no route to the Internet. LiveKit is
+# LiveKit Cloud. Document keys are wrapped by AWS KMS through the instance role (no AWS keys here).
+# Secrets live on the server only (mode 600, never committed): .env.staging holds what the API needs;
+# .env.staging.db holds the PostgreSQL admin login, which only postgres and migrate receive. Redis
+# and SeaweedFS get just their own secret. `docker compose config` prints the values: do not share it.
+
+name: hrvo-staging
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }
+
+networks:
+  # The proxy, the apps and object storage; has Internet egress (LiveKit Cloud, KMS, HIBP, mail,
+  # Google, ClamAV signature updates).
+  edge:
+    ipam:
+      config:
+        - subnet: ${EDGE_SUBNET:-172.30.0.0/24}
+  # Databases only: no gateway to the outside.
+  data:
+    internal: true
+
+volumes:
+  postgres_data:
+  redis_data:
+  storage_data:
+  clamav_db:
+  caddy_data:
+  caddy_config:
+
+services:
+  proxy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    depends_on: [web, api, storage]
+    ports:
+      - "${HTTP_PUBLISH:-80}:80"
+      - "${HTTPS_PUBLISH:-443}:443"
+    environment:
+      WEB_HOST: ${WEB_HOST:?set WEB_HOST in .env.staging}
+      API_HOST: ${API_HOST:?set API_HOST in .env.staging}
+      FILES_HOST: ${FILES_HOST:?set FILES_HOST in .env.staging}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env.staging}
+    volumes:
+      - ./docker/staging/Caddyfile:/etc/caddy/Caddyfile:ro,z
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge]
+    mem_limit: 256m
+    logging: *logging
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+      target: web
+      args:
+        NEXT_PUBLIC_API_URL: https://${API_HOST}
+        NEXT_PUBLIC_STORAGE_URL: https://${FILES_HOST}
+        NEXT_PUBLIC_LIVEKIT_URL: ${LIVEKIT_URL:?set LIVEKIT_URL in .env.staging}
+    image: hrvo-web:staging
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    networks: [edge]
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *logging
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+      target: api
+    image: hrvo-api:staging
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    env_file: [.env.staging]
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      HOST: 0.0.0.0
+      APP_WEB_URL: https://${WEB_HOST}
+      API_PUBLIC_URL: https://${API_HOST}
+      CORS_ORIGINS: https://${WEB_HOST}
+      GOOGLE_REDIRECT_URI: https://${API_HOST}/auth/google/callback
+      # Only the proxy reaches the API, over the private bridge network.
+      TRUST_PROXY: uniquelocal
+      COORDINATION: redis
+      # PostgreSQL over TLS, verified against the staging database CA (docker/staging/db-tls.sh).
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: hrvo_staging
+      PGUSER: hrvo_app
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /run/db-tls/ca.crt
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      S3_ENDPOINT: http://storage:8333
+      S3_PUBLIC_ENDPOINT: https://${FILES_HOST}
+      S3_FORCE_PATH_STYLE: "true"
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+      DOCUMENT_KMS_PROVIDER: aws
+    volumes:
+      - ${DB_TLS_DIR:-./.staging/db-tls}/ca.crt:/run/db-tls/ca.crt:ro,z
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      storage: { condition: service_started }
+      clamav: { condition: service_started }
+    networks:
+      # A fixed address so the host firewall can let only the API reach the instance metadata
+      # service (the instance role's KMS credentials); see the runbook.
+      edge: { ipv4_address: "${API_EDGE_IP:-172.30.0.10}" }
+      data: {}
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging: *logging
+
+  # One-off before each release: prisma migrate deploy + role passwords (docker/migrate-entrypoint.mjs).
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+      target: migrate
+    image: hrvo-api-migrate:staging
+    profiles: [tools]
+    restart: "no"
+    # Only what migrating and setting the role passwords needs (no app secrets).
+    environment:
+      NODE_ENV: production
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: hrvo_staging
+      PGADMIN_USER: ${PGADMIN_USER:?set PGADMIN_USER in .env.staging.db}
+      PGADMIN_PASSWORD: ${PGADMIN_PASSWORD:?set PGADMIN_PASSWORD in .env.staging.db}
+      PGPASSWORD: ${PGPASSWORD:?set PGPASSWORD in .env.staging}
+      PGRETENTION_PASSWORD: ${PGRETENTION_PASSWORD:?set PGRETENTION_PASSWORD in .env.staging}
+      PGSSLROOTCERT: /run/db-tls/ca.crt
+    volumes:
+      - ${DB_TLS_DIR:-./.staging/db-tls}/ca.crt:/run/db-tls/ca.crt:ro,z
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [data]
+    logging: *logging
+
+  postgres:
+    image: postgres:16.10-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PGADMIN_USER:?set PGADMIN_USER in .env.staging.db}
+      POSTGRES_PASSWORD: ${PGADMIN_PASSWORD:?set PGADMIN_PASSWORD in .env.staging.db}
+      POSTGRES_DB: hrvo_staging
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    # TLS only for network clients: the key is copied in with the ownership PostgreSQL requires,
+    # and pg_hba.conf rejects every non-TLS TCP connection.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        install -d -o postgres -g postgres -m 0700 /run/pgtls &&
+        install -o postgres -g postgres -m 0600 /certs/server.key /run/pgtls/server.key &&
+        install -o postgres -g postgres -m 0644 /certs/server.crt /run/pgtls/server.crt &&
+        install -o postgres -g postgres -m 0644 /etc/hrvo/pg_hba.conf /run/pgtls/pg_hba.conf &&
+        exec docker-entrypoint.sh postgres
+        -c ssl=on -c ssl_min_protocol_version=TLSv1.2
+        -c ssl_cert_file=/run/pgtls/server.crt -c ssl_key_file=/run/pgtls/server.key
+        -c hba_file=/run/pgtls/pg_hba.conf -c password_encryption=scram-sha-256
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ${DB_TLS_DIR:-./.staging/db-tls}/server.crt:/certs/server.crt:ro,z
+      - ${DB_TLS_DIR:-./.staging/db-tls}/server.key:/certs/server.key:ro,z
+      - ./docker/staging/pg_hba.conf:/etc/hrvo/pg_hba.conf:ro,z
+    networks: [data]
+    shm_size: 256m
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  redis:
+    image: redis:7.4.6-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env.staging}
+    # The password goes into a config file, not the command line (ps, docker inspect).
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        test -n "$$REDIS_PASSWORD" &&
+        umask 077 && printf 'requirepass %s\nappendonly yes\nprotected-mode yes\n' "$$REDIS_PASSWORD" > /tmp/redis.conf &&
+        exec redis-server /tmp/redis.conf
+    volumes:
+      - redis_data:/data
+    networks: [data]
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  # S3-compatible document storage. Browsers reach it only through the proxy (presigned URLs on
+  # FILES_HOST); the API uses the internal address.
+  storage:
+    image: chrislusf/seaweedfs:4.48
+    restart: unless-stopped
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env.staging}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env.staging}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        test -n "$$S3_ACCESS_KEY" && test -n "$$S3_SECRET_KEY" &&
+        umask 077 &&
+        printf '{"identities":[{"name":"hrvo","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}'
+        "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" > /tmp/s3.json &&
+        exec weed server -ip=127.0.0.1 -ip.bind=0.0.0.0 -dir=/data -s3 -s3.port=8333 -s3.config=/tmp/s3.json
+    volumes:
+      - storage_data:/data
+    networks: [edge, data]
+    mem_limit: 768m
+    logging: *logging
+
+  clamav:
+    image: clamav/clamav:1.4
+    restart: unless-stopped
+    volumes:
+      - clamav_db:/var/lib/clamav
+    # Signature updates need egress (edge); the API scans over the data network.
+    networks: [edge, data]
+    mem_limit: 2560m
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    logging: *logging
