@@ -145,10 +145,10 @@ cloud-init and the AWS CLI as root still reach the metadata service.
 
 ```bash
 command -v nft || sudo apt-get install -y nftables
-systemctl is-enabled nftables 2>/dev/null   # must be "disabled" or "not-found": never enable it,
+sudo systemctl is-enabled nftables 2>/dev/null   # "disabled" or nothing (not installed): never enable it,
                                             # /etc/nftables.conf starts with `flush ruleset`, which
                                             # would wipe Docker's rules and this guard
-sudo groupadd --system hrvo-tunnel          # testers' group (3a); before the guard, which reads it
+getent group hrvo-tunnel || sudo groupadd --system hrvo-tunnel   # testers (2b); before the guard reads it
 sudo install -m 755 infra/staging-ec2/imds-guard.sh /usr/local/sbin/hrvo-imds-guard
 sudo install -m 644 infra/staging-ec2/hrvo-imds-guard.default /etc/default/hrvo-imds-guard
 sudo install -m 644 infra/staging-ec2/hrvo-imds-guard.service /etc/systemd/system/hrvo-imds-guard.service
@@ -158,7 +158,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now hrvo-imds-guard
 sudo hrvo-imds-guard check                  # "ok (only hrvo-api 172.30.1.0/29 may reach ...)"
 sudo systemctl restart docker               # picks up the drop-in (no containers are running yet)
-systemctl show docker -p ExecStartPre | grep -c 'hrvo-imds-guard check'   # 1
+sudo systemctl show docker -p ExecStartPre | grep -c 'hrvo-imds-guard check'   # 1
 ```
 
 `/etc/default/hrvo-imds-guard` must match `docker-compose.staging.yml` (bridge `hrvo-api`,
@@ -173,8 +173,10 @@ primary group is `hrvo-tunnel`. That account can only forward the three app port
 no other forwarding. The guard also blocks this group from the metadata service on the host.
 
 ```bash
+# Run while logged in over SSH: Ubuntu 24.04 starts sshd on the first connection (ssh.socket), and
+# before that `sshd -t` reports a missing /run/sshd. Keep this session open; test a new login first.
 sudo install -m 644 infra/staging-ec2/sshd-hrvo-tunnel.conf /etc/ssh/sshd_config.d/50-hrvo-tunnel.conf
-sudo sshd -t && sudo systemctl reload ssh   # keep this session open; test a new login first
+sudo sshd -t && sudo systemctl try-reload-or-restart ssh
 # Per tester (their PUBLIC key only):
 sudo useradd --create-home --gid hrvo-tunnel --shell /usr/sbin/nologin tester1
 sudo install -d -m 700 -o tester1 -g hrvo-tunnel /home/tester1/.ssh
@@ -266,9 +268,11 @@ sudo systemctl restart docker && sleep 20 && sudo bash infra/staging-ec2/verify-
 sudo reboot     # then reconnect:
 sudo bash /opt/virtual-hr/app/infra/staging-ec2/verify-imds-isolation.sh
 # Fail closed: without the guard Docker must refuse to start (brief downtime; staging only).
-sudo nft delete table inet hrvo_imds && sudo systemctl restart docker; systemctl is-active docker   # "failed"
-sudo systemctl restart hrvo-imds-guard && sudo systemctl start docker && sleep 20 \
-  && sudo bash infra/staging-ec2/verify-imds-isolation.sh
+# Docker stops every container here, retries, and gives up after 3 starts a minute; reset-failed
+# clears that, or the start below is refused ("Start request repeated too quickly").
+sudo nft delete table inet hrvo_imds && sudo systemctl restart docker; sleep 8; sudo systemctl is-active docker   # "failed"
+sudo systemctl restart hrvo-imds-guard && sudo systemctl reset-failed docker && sudo systemctl start docker \
+  && sleep 20 && sudo bash infra/staging-ec2/verify-imds-isolation.sh
 ```
 
 ### 4b. Attach the instance profile (only when 4 and 4a pass)
@@ -305,11 +309,12 @@ Order matters: the role must be gone before the guard is.
 2. Let Docker start without the guard: `sudo rm /etc/systemd/system/docker.service.d/hrvo-imds-guard.conf`,
    `sudo systemctl disable hrvo-imds-guard`, `sudo systemctl daemon-reload`.
 3. `sudo hrvo-imds-guard remove`. It refuses while a profile is still attached.
-4. Restricted tester logins: `sudo rm /etc/ssh/sshd_config.d/50-hrvo-tunnel.conf && sudo sshd -t && sudo systemctl reload ssh`.
+4. Restricted tester logins: `sudo rm /etc/ssh/sshd_config.d/50-hrvo-tunnel.conf && sudo sshd -t && sudo systemctl try-reload-or-restart ssh`.
 
 **If Docker does not start** because `hrvo-imds-guard check` fails, do not remove the drop-in:
-reload the guard with `sudo systemctl restart hrvo-imds-guard && sudo systemctl start docker`, and
-read `journalctl -u hrvo-imds-guard -u docker -b`.
+reload the guard, then clear Docker's start limit:
+`sudo systemctl restart hrvo-imds-guard && sudo systemctl reset-failed docker && sudo systemctl start docker`.
+Logs: `journalctl -u hrvo-imds-guard -u docker -b`.
 
 ## 6. Later: public mode (needs DNS)
 
