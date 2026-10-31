@@ -10,7 +10,7 @@ You need **Node.js 22**, **Docker or Podman with Compose**, and a phone with an 
 
 ```bash
 git clone https://github.com/macamisp/virtual-HR.git hrvo && cd hrvo
-docker compose up -d                # database, Redis, document storage, virus scanner, KMS emulator, LiveKit, mail catcher
+LAN_HOST=localhost docker compose up -d  # database, Redis, storage, scanner, KMS emulator, LiveKit, mail catcher
 npm install
 npm run setup                       # creates .env, generates the encryption keys and the database client
 npm run db:migrate && npm run db:provision-roles
@@ -19,7 +19,7 @@ npm run api                         # terminal 1: http://localhost:3001
 npm run web                         # terminal 2: http://localhost:3000
 ```
 
-Open http://localhost:3000 and sign in as `worker@acme.demo`. With Podman use `podman compose up -d`. The step-by-step guide, with what to click and what you should see, is [docs/runbooks/web-local.md](docs/runbooks/web-local.md). If a step fails, section 7 of that guide lists the usual causes.
+Open http://localhost:3000 and sign in as `worker@acme.demo`. These commands use Bash (WSL 2 on Windows). With Podman use `LAN_HOST=localhost podman compose up -d`. Compose currently requires `LAN_HOST` even when the optional LAN proxy profile is disabled; this value is only for the Compose command. The step-by-step guide, with what to click and what you should see, is [docs/runbooks/web-local.md](docs/runbooks/web-local.md). If a step fails, section 7 of that guide lists the usual causes.
 
 ## Check that everything works
 
@@ -51,61 +51,16 @@ apps/api       NestJS API (PostgreSQL with row-level security, Redis, BullMQ, So
 apps/web       Next.js web app (React, Tailwind) and the Playwright browser tests
 apps/agent     optional desktop agent (Electron) for more accurate attendance
 packages/shared  types and validation shared by the API and the web app
-infra          Terraform (AWS), LiveKit and demo configuration
+infra          retained AWS Terraform, local LiveKit and optional demo configuration
 docs           requirements, decisions, runbooks, security and verification notes
 ```
 
+## Planned hosting
+
+The planned targets are **Vercel for `apps/web`** and **Railway for `apps/api`, PostgreSQL and Redis**, with the existing Socket.IO, LiveKit Cloud and S3-compatible storage integrations. Deployment has not been implemented for these targets.
+
+Hosted transactional email uses Resend through the API's existing mail transport. See [transactional email setup and preview checks](docs/runbooks/transactional-email.md) for the required settings and manual provider setup. Local Mailhog and test outboxes remain available outside production.
+
+The [AWS Terraform instructions](infra/terraform/README.md), Docker image builds and [AWS restore drill](docs/runbooks/restore-drill.md) are retained for reference and review, including storage, KMS and backup requirements. CI still validates Terraform and builds the images. The [Cloudflare Tunnel demo](docs/runbooks/demo-internet.md) is an optional temporary demo workflow. These are not the Vercel + Railway deployment instructions. Keep Docker Compose and the local LiveKit configuration for development and tests.
+
 Working rules for contributors and AI agents are in [AGENTS.md](AGENTS.md). Secrets never go in the repository: use `.env` (ignored by git); `.env.example` lists every setting.
-.
-.
-virtual-HR/
-├── apps/
-│   ├── api/                         ← BACKEND (NestJS, TypeScript)
-│   │   ├── prisma/
-│   │   │   ├── schema.prisma        ← database tables (Prisma)
-│   │   │   └── migrations/          ← versioned SQL (RLS, roles, grants)
-│   │   ├── src/
-│   │   │   ├── main.ts              ← server start
-│   │   │   ├── auth/                ← login, 2FA, refresh, invitations, password reset
-│   │   │   ├── users/ org/ ...      ← people, teams, contracts, schedules
-│   │   │   ├── attendance/          ← heartbeat engine, state machine, reconciler,
-│   │   │   │                          corrections, live board, exports, gateway (Socket.IO)
-│   │   │   ├── tasks/ timesheets/   ← daily plan, planner, timers, approvals
-│   │   │   ├── documents/           ← uploads, versions, ACL, vault, access log
-│   │   │   ├── meetings/ office/    ← LiveKit tokens, webhooks, rooms, avatars
-│   │   │   ├── notifications/ audit/
-│   │   │   └── prisma.service.ts    ← DB connection + RLS org context
-│   │   └── test/                    ← API tests, demo scripts (demo.ts, demo-shell.ts, seeds)
-│   │
-│   └── web/                         ← FRONTEND (Next.js 15, React 19)
-│       ├── src/
-│       │   ├── app/
-│       │   │   ├── (auth)/          ← login, 2fa/setup, accept-invitation, forgot/reset password
-│       │   │   └── (app)/           ← attendance, live, corrections, documents, meetings,
-│       │   │                          office, tasks, timesheets, contracts ...
-│       │   ├── components/          ← ui/ (shadcn), media/ (prejoin.tsx, call-view.tsx), app-shell
-│       │   ├── lib/                 ← api.ts, auth-store.ts, session.ts, queries.ts,
-│       │   │                          media/media-session.ts, office/office-renderer.ts (PixiJS)
-│       │   └── heartbeat/           ← Web Worker (heartbeat.worker.ts), presence-store
-│       ├── e2e/                     ← Playwright browser tests (login, clock-in, call, office ...)
-│       ├── next.config.mjs          ← security headers (CSP)
-│       └── playwright.config.ts
-│
-├── packages/
-│   └── shared/src/                  ← code shared by web + api
-│       ├── attendance/api.ts        ← Zod schemas (request/response shapes)
-│       ├── auth/api.ts
-│       └── attendance/heartbeat-signer.ts   ← WebCrypto HMAC signer
-│
-├── docker/ + docker-compose.yml     ← local Postgres, Redis, MinIO, ClamAV, Mailhog, LiveKit
-├── infra/                           ← LiveKit config (infra/livekit/), Terraform (AWS, not applied)
-├── load/                            ← load tests (k6/Artillery style)
-├── scripts/                         ← helper scripts
-├── docs/
-│   ├── SRS.md  STATUS.md  AGENTS.md
-│   ├── adr/                         ← decision records (001 … 035+)
-│   └── runbooks/                    ← web-local.md, uat.md, demo-internet.md
-├── .github/workflows/ci.yml         ← GitHub Actions (lint, typecheck, tests, Playwright)
-├── AGENTS.md                        ← rules for the AI agent
-├── .env.example                     ← all settings (no secrets)
-└── package.json                     ← npm workspaces + scripts (api, web, e2e, seed:demo ...)
