@@ -49,6 +49,6 @@ Browsers connect with WebSocket only, so sticky sessions are not needed.
 ## Configuration guards worth adding
 
 - **Inline reconciler:** refuse `ATTENDANCE_RECONCILE_INLINE_MS` when `COORDINATION=redis`. Today every instance would run it: correct because of the lock, but duplicated work.
-- **Memory mail transport:** refuse `MAIL_TRANSPORT=memory` in production. Today it returns before the production check.
+- **Memory mail transport (resolved by ADR 039):** production now refuses `MAIL_TRANSPORT=memory` as well as development SMTP. Use the configured Resend transport.
 - **Missing coordination:** fail at start when more than one instance is expected and `COORDINATION` is not `redis`.
 - **In-memory fallbacks:** stop writing `AttendanceService.sessions` and `closedSessions` when a repository is present. Today they grow without limit and are never read.
