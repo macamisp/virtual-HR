@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { OfficeSnapshotSchema, PeopleListSchema, RoomInvitesSchema } from '@hrvo/shared';
-import type { RoomUpdateDto, StatusDto } from '@hrvo/shared';
+import type { OfficePreferencesDto, RoomUpdateDto, StatusDto } from '@hrvo/shared';
 import { z } from 'zod';
 import { apiFetch } from './api';
 import { useAuthStore } from './auth-store';
@@ -28,6 +28,15 @@ export function useOfficePeople(q: string) {
 function useSnapshotUpdate() {
   const qc = useQueryClient();
   return (s: z.infer<typeof OfficeSnapshotSchema>) => qc.setQueryData(officeKeys.snapshot, s);
+}
+
+/** ADR 046: "Mute my microphone when I leave the office page". */
+export function useSetOfficePreferences() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (dto: OfficePreferencesDto) => apiFetch('/office/me/preferences', { method: 'PUT', body: dto, schema: z.object({ muteOnLeave: z.boolean() }) }),
+    onSuccess: (p) => qc.setQueryData<z.infer<typeof OfficeSnapshotSchema>>(officeKeys.snapshot, (s) => (s ? { ...s, me: { ...s.me, muteOnLeave: p.muteOnLeave } } : s)),
+  });
 }
 
 export function useSetStatus() {

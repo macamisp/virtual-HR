@@ -15,7 +15,8 @@ import { NativeSelect } from '@/components/ui/select';
 import { OfficeMedia } from '@/components/media/office-media';
 import { AvatarActions } from '@/components/office/avatar-actions';
 import { CallPerson } from '@/components/call-person';
-import { OfficeClient } from '@/lib/office/office-client';
+import type { OfficeClient } from '@/lib/office/office-client';
+import { useCallController } from '@/components/media/use-call-controller';
 import { STATUS_COLOUR } from '@/lib/office/office-renderer';
 import type { OfficeRenderer } from '@/lib/office/office-renderer';
 import { useBroadcast, useClaimDesk, useOfficePeople, useOfficeSnapshot, useReleaseDesk, useSetStatus, useUpdateRoom } from '@/lib/office-queries';
@@ -31,23 +32,18 @@ function StatusDot({ status }: { status: VoStatus }) {
   return <span aria-hidden="true" className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: hex(STATUS_COLOUR[status]) }} />;
 }
 
+/**
+ * ADR 046: the office connection belongs to the call controller and outlives this page; the page
+ * only says that the office view is on screen (and whether the map wants the position stream).
+ */
 function useClient(snapshot: OfficeSnapshot | undefined, view: View) {
-  const [client, setClient] = useState<OfficeClient | null>(null);
+  const c = useCallController();
+  useEffect(() => { if (snapshot) c.enterOffice(snapshot); }, [c, snapshot]);
   useEffect(() => {
-    if (!snapshot) return;
-    const c = new OfficeClient(snapshot, view === 'map');
-    c.connect();
-    setClient(c);
-    return () => c.disconnect();
-    // Reconnect only when the view (position stream) changes, not on every snapshot refresh.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, !!snapshot]);
-  useEffect(() => {
-    if (client && snapshot) {
-      client.snapshot = snapshot;
-      client.changed();
-    }
-  }, [client, snapshot]);
+    c.setOfficeView(true, view === 'map');
+    return () => c.setOfficeView(false, false);
+  }, [c, view]);
+  const client = c.office;
   useSyncExternalStore(client?.subscribe ?? noopSubscribe, client?.getVersion ?? zero, zero);
   return client;
 }
@@ -210,7 +206,7 @@ function People({ client }: { client: OfficeClient }) {
           const live = client.roster.get(p.id);
           const status = live?.status ?? p.status;
           const roomName = live?.roomId ? client.snapshot.rooms.find((r) => r.id === live.roomId)?.name : live ? null : p.roomName;
-          const where = live ? (roomName ? `in ${roomName}` : 'in the open area') : 'not in the office';
+          const where = live ? `${roomName ? `in ${roomName}` : 'in the open area'}${live.away ? ' · away from the office view' : ''}` : 'not in the office';
           return (
             <li key={p.id} className="flex items-center justify-between gap-2 rounded px-1 py-1 hover:bg-accent/50">
               <div className="min-w-0">

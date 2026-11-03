@@ -404,3 +404,74 @@ describe('Requirements FR-ATT-001..005 Specific Verification', () => {
     assert.ok(session.netSeconds < (session.activeSeconds + session.idleSeconds));
   });
 });
+
+/**
+ * ADR 046 (SRS 6.2 rows 6 and 7 from the heartbeat; FR-ATT-006, FR-MEET-009): the browser reports
+ * `inCall` every heartbeat. A call is a meeting segment: no input is needed, time is credited as
+ * meeting time, and a session closed mid-call keeps what was accrued.
+ */
+describe('ADR 046: a call reported by the heartbeat', () => {
+  const sm = new AttendanceStateMachine({
+    heartbeatIntervalSeconds: 30, missedHeartbeatTimeoutSeconds: 90, disconnectGraceWindowSeconds: 120,
+    idleThresholdSeconds: 300, pauseThresholdSeconds: 900, maxSessionLengthSeconds: 14 * 3600, orgTimezone: 'Asia/Colombo',
+  });
+  const t0 = new Date('2026-10-13T08:00:00.000Z');
+  const at = (s: number) => new Date(t0.getTime() + s * 1000);
+  const ip = '192.168.1.100';
+  const inCall = (over: Partial<HeartbeatPayload> = {}) => makeHeartbeat({ activeSeconds: 0, idleSeconds: 30, inCall: true, ...over });
+
+  it('ACTIVE + inCall -> IN_MEETING; in-call heartbeats without any input stay IN_MEETING past the pause threshold', () => {
+    let r = sm.handleHeartbeat(null, makeHeartbeat(), t0, ip);
+    r = sm.handleHeartbeat(r.session, inCall(), at(30), ip);
+    assert.equal(r.previousState, AttendanceState.ACTIVE);
+    assert.equal(r.currentState, AttendanceState.IN_MEETING);
+    const seg = r.session.segments[r.session.segments.length - 1]!;
+    assert.equal(seg.state, AttendanceState.IN_MEETING);
+    assert.equal(seg.meetingId, null, 'a call, not a scheduled meeting');
+    for (let i = 2; i <= 40; i += 1) r = sm.handleHeartbeat(r.session, inCall(), at(i * 30), ip); // 20 minutes
+    assert.equal(r.currentState, AttendanceState.IN_MEETING);
+    assert.equal(r.session.segments.length, 2, 'one meeting segment, not one per heartbeat');
+  });
+
+  it('IDLE + inCall -> IN_MEETING (the idle segment closes)', () => {
+    let r = sm.handleHeartbeat(null, makeHeartbeat(), t0, ip);
+    for (let i = 1; i <= 11; i += 1) r = sm.handleHeartbeat(r.session, makeHeartbeat({ activeSeconds: 0, idleSeconds: 30 }), at(i * 30), ip);
+    assert.equal(r.currentState, AttendanceState.IDLE);
+    r = sm.handleHeartbeat(r.session, inCall(), at(12 * 30), ip);
+    assert.equal(r.previousState, AttendanceState.IDLE);
+    assert.equal(r.currentState, AttendanceState.IN_MEETING);
+    assert.equal(r.session.segments[1]!.endedAt?.toISOString(), at(12 * 30).toISOString());
+  });
+
+  it('IN_MEETING + heartbeat without inCall -> ACTIVE; meeting_seconds credited and in net_seconds', () => {
+    let r = sm.handleHeartbeat(null, makeHeartbeat(), t0, ip);
+    r = sm.handleHeartbeat(r.session, inCall(), at(30), ip);
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ activeSeconds: 30, idleSeconds: 0, inCall: false }), at(630), ip);
+    assert.equal(r.previousState, AttendanceState.IN_MEETING);
+    assert.equal(r.currentState, AttendanceState.ACTIVE);
+    assert.equal(r.session.meetingSeconds, 600);
+    assert.equal(r.session.netSeconds, r.session.activeSeconds + 600);
+  });
+
+  it('a meeting opened by the meetings hook is not ended by a browser heartbeat without inCall', () => {
+    const r = sm.handleHeartbeat(null, makeHeartbeat(), t0, ip);
+    const j = sm.handleJoinMeeting(r.session, 'meeting-1', at(30));
+    const next = sm.handleHeartbeat(j.session, makeHeartbeat({ inCall: false }), at(60), ip);
+    assert.equal(next.currentState, AttendanceState.IN_MEETING);
+    assert.equal(next.session.meetingSeconds, 0);
+  });
+
+  it('a session closed during a call keeps the meeting time (logout, timeout, midnight)', () => {
+    let r = sm.handleHeartbeat(null, makeHeartbeat(), t0, ip);
+    r = sm.handleHeartbeat(r.session, inCall(), at(30), ip);
+    r = sm.handleHeartbeat(r.session, inCall(), at(930), ip); // still in the call at the last heartbeat
+    assert.equal(sm.handleExplicitLogout(structuredClone(r.session), at(930)).session.meetingSeconds, 900);
+    assert.equal(sm.handleMissingHeartbeatTimeout(structuredClone(r.session), at(1020)).session.meetingSeconds, 900, 'closed at the last heartbeat');
+    const night = new Date('2026-10-13T18:29:30.000Z'); // 23:59:30 in Colombo
+    let n = sm.handleHeartbeat(null, makeHeartbeat(), night, ip);
+    n = sm.handleHeartbeat(n.session, inCall(), new Date(night.getTime() + 10_000), ip);
+    const split = sm.handleMidnightCheck(n.session, new Date('2026-10-13T18:30:05.000Z'));
+    assert.equal(split.session.meetingSeconds, 20, '23:59:40 to 23:59:59.999, rounded');
+    assert.equal(split.splitSession?.currentState, AttendanceState.IN_MEETING, 'the call continues into the new day');
+  });
+});

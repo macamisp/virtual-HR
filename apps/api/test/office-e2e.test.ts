@@ -61,8 +61,8 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
   }
 
   /** An office socket with an inbox of everything it received. */
-  async function officeSocket(who: Who, positions = true) {
-    const s = io(base, { transports: ['websocket'], reconnection: false, auth: { token: sessions[who].accessToken, purpose: 'office' } });
+  async function officeSocket(who: Who, positions = true, token = sessions[who].accessToken) {
+    const s = io(base, { transports: ['websocket'], reconnection: false, auth: { token, purpose: 'office' } });
     sockets.push(s);
     await new Promise<void>((res, rej) => { s.once('connect', () => res()); s.once('connect_error', rej); });
     const inbox = { positions: [] as PositionsMessage[], presence: [] as Array<RosterEntry | { id: string; gone: true }>, proximity: [] as ProximityMessage[], knocks: [] as unknown[], answered: [] as Array<{ admit: boolean }> };
@@ -101,6 +101,8 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
     process.env.MAIL_TRANSPORT = 'memory';
     process.env.RATE_LIMIT_LOGIN = '1000';
     process.env.JOBS_ENABLED = 'false';
+    // ADR 046: short so the dropped-connection test runs fast (the default is 8 s).
+    process.env.OFFICE_LEAVE_GRACE_MS = '1500';
     adminPool = new pg.Pool({ host: process.env.PGHOST || 'localhost', port: Number(process.env.PGPORT || 5433), database: process.env.PGDATABASE || 'hrvo_dev', user: process.env.PGADMIN_USER || 'postgres', password: process.env.PGADMIN_PASSWORD || 'postgres' });
     await resetOrgs(adminPool, [ORG, OTHER]);
     await adminPool.query(`INSERT INTO organizations (id, name, slug) VALUES ($1, 'VO Ltd', 'vo-e2e'), ($2, 'Other Ltd', 'vo-other-e2e')`, [ORG, OTHER]);
@@ -368,8 +370,74 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
       assert.equal(((await A.teleport({ kind: 'user', userId: U.other.id })) as { code?: string }).code, 'NOT_FOUND', 'other organisations do not exist here');
     });
 
+    it('away from the office view (ADR 046): the view flag reaches the roster and the positions; the stream follows the map', async () => {
+      assert.ok((await A.teleport({ kind: 'user', userId: U.b.id })).ok, 'next to Ben, so Ben receives Anna\'s positions');
+      await wait(300);
+      const startB = B.inbox.presence.length;
+      assert.equal(((await A.s.emitWithAck('office:view', { visible: false, positions: false })) as { ok: boolean }).ok, true);
+      await wait(300);
+      assert.ok(B.inbox.presence.slice(startB).some((p) => 'away' in p && p.id === U.a.id && p.away === true), 'the roster says Anna is away from the office view');
+      assert.equal(lastSeen(B.inbox, U.a.id)?.[7], 1, 'the position tuple carries the away flag');
+      // While A's position stream is off, B's moves do not reach A; switching it back on sends B again.
+      const bPos = B.join.ok ? B.join.self : { x: 0, y: 0 };
+      const startA = A.inbox.positions.length;
+      await B.move(bPos.x + 5, bPos.y);
+      await wait(300);
+      assert.equal(A.inbox.positions.slice(startA).filter((m) => m.u.some((e) => e[0] === U.b.id)).length, 0, 'no positions while the map is not shown');
+      await A.s.emitWithAck('office:view', { visible: true, positions: true });
+      await wait(300);
+      assert.ok(A.inbox.positions.slice(startA).some((m) => m.u.some((e) => e[0] === U.b.id)), 'the neighbourhood is sent again');
+      assert.ok(B.inbox.presence.slice(startB).some((p) => 'away' in p && p.id === U.a.id && p.away === false));
+      assert.equal(((await A.s.emitWithAck('office:view', { visible: 'yes' })) as { ok: boolean }).ok, false, 'junk is refused');
+    });
+
+    it('call preferences (ADR 046): mute-on-leave is saved per user and validated', async () => {
+      assert.equal((await ok<OfficeSnapshot>(await api('a', '/office'), 200, OfficeSnapshotSchema)).me.muteOnLeave, false, 'off by default');
+      assert.deepEqual(await ok(await api('a', '/office/me/preferences', { method: 'PUT', body: { muteOnLeave: true } }), 200), { muteOnLeave: true });
+      assert.equal((await ok<OfficeSnapshot>(await api('a', '/office'), 200, OfficeSnapshotSchema)).me.muteOnLeave, true);
+      assert.equal((await ok<OfficeSnapshot>(await api('b', '/office'), 200, OfficeSnapshotSchema)).me.muteOnLeave, false, 'someone else\'s setting');
+      assert.equal((await api('a', '/office/me/preferences', { method: 'PUT', body: { muteOnLeave: 'yes' } })).status, 400);
+      assert.equal((await api('a', '/office/me/preferences', { method: 'PUT', body: { muteOnLeave: false, extra: 1 } })).status, 400);
+    });
+
+    it('a dropped connection keeps the avatar for the grace (a reload comes back to the same spot), then it is gone (ADR 046)', async () => {
+      const cPos = C.join.ok ? C.join.self : { x: 0, y: 0 };
+      assert.ok((await C.teleport({ kind: 'room', roomId: room('Meeting room A').id })).ok);
+      const startB = B.inbox.presence.length;
+      C.s.disconnect();
+      await wait(400);
+      assert.ok(!B.inbox.presence.slice(startB).some((p) => 'gone' in p && p.id === U.c.id), 'still in the office during the grace');
+      assert.ok(B.inbox.presence.slice(startB).some((p) => 'away' in p && p.id === U.c.id && p.away === true), 'but away from the office view');
+      const again = await officeSocket('c', false);
+      assert.ok(again.join.ok && again.join.self.roomId === room('Meeting room A').id, 'rejoined inside the same room');
+      assert.ok(again.join.ok && (again.join.self.x !== cPos.x || again.join.self.y !== cPos.y), 'not sent back to the start');
+      await wait(1700);
+      assert.ok(!B.inbox.presence.slice(startB).some((p) => 'gone' in p && p.id === U.c.id), 'a rejoin cancels the removal');
+      C = again;
+      const start2 = B.inbox.presence.length;
+      C.s.disconnect();
+      await wait(2200);
+      assert.ok(B.inbox.presence.slice(start2).some((p) => 'gone' in p && p.id === U.c.id), 'gone after the grace');
+      // A new sign-in during the grace is not a reload: it starts fresh (and the old avatar is gone for everyone).
+      C = await officeSocket('c', false);
+      assert.ok((await C.teleport({ kind: 'room', roomId: room('Meeting room A').id })).ok);
+      const start3 = B.inbox.presence.length;
+      C.s.disconnect();
+      await wait(300);
+      const login = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: U.c.email, password: PASSWORD }) });
+      const fresh = (await login.json()) as Session;
+      const again2 = await officeSocket('c', false, fresh.accessToken);
+      assert.ok(again2.join.ok && again2.join.self.roomId !== room('Meeting room A').id, 'a new login session starts at the reception, not in the meeting room');
+      assert.ok(B.inbox.presence.slice(start3).some((p) => 'gone' in p && p.id === U.c.id), 'the dropped avatar was removed');
+      again2.s.emit('office:leave');
+      again2.s.disconnect();
+      await wait(300);
+      C = await officeSocket('c', false);
+    });
+
     it('leaving the office removes the avatar for everyone', async () => {
       const startB = B.inbox.presence.length;
+      await C.s.emitWithAck('office:leave');
       C.s.disconnect();
       await wait(300);
       assert.ok(B.inbox.presence.slice(startB).some((p) => 'gone' in p && p.id === U.c.id));

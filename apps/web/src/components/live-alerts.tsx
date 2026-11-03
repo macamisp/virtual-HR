@@ -8,6 +8,7 @@ import { Megaphone, PhoneIncoming, X } from 'lucide-react';
 import type { BroadcastMessage } from '@hrvo/shared';
 import { Button } from '@/components/ui/button';
 import { closeUiSocket, onUiEvent } from '@/lib/ui-socket';
+import { useDockStore } from '@/lib/media/dock-store';
 import type { CallState } from '@hrvo/shared';
 
 interface Ring { meetingId: string; title: string }
@@ -43,6 +44,8 @@ function RingAlert({ ring }: { ring: CallState }) {
  * broadcasts (FR-VO-010). Rings disappear after 45 s.
  */
 export function LiveAlerts() {
+  // ADR 046: sit above the floating call dock, so a ring is never hidden behind it.
+  const dock = useDockStore();
   const incoming = useIncomingCalls();
   const qc = useQueryClient();
   const rings = incoming.data?.items ?? [];
@@ -56,7 +59,7 @@ export function LiveAlerts() {
   }, [qc]);
   if (!rings.length && !broadcasts.length) return null;
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-80 space-y-2" aria-live="assertive">
+    <div className="fixed right-4 z-50 w-80 space-y-2" style={{ bottom: dock.visible ? dock.height + 32 : 16 }} aria-live="assertive">
       {broadcasts.map((b) => (
         <div key={b.key} role="alert" data-testid="broadcast" className="rounded border bg-background p-3 shadow-lg">
           <div className="flex items-start gap-2">

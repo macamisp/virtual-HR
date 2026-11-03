@@ -24,3 +24,9 @@ The attendance engine, corrections, live board, exports and safeguards are cover
 | FR-ORG-010 leave requests (annual, sick, unpaid, other), manager approval, attendance expectations updated | `leave/leave.service.ts`, `leave.controller.ts`, `leave_requests`; screens `/attendance/leave`, `/attendance/leave/review` | leave-e2e: "an employee requests leave…", "only the manager (or HR) decides…", "approved leave: expected hours are zero…", "a rejected request…"; Playwright 24 |
 | FR-ORG-011 public holiday calendar, Sri Lanka default, HR-editable, excluded from expected time | `public_holidays`, `sri-lanka-holidays.ts`, `/holidays` routes; screen `/admin/holidays` | leave-e2e: "HR keeps the public holiday calendar…", "a holiday is excluded from expected time…"; Playwright 24 |
 | FR-ATT-022 leave and holidays suppress absence alerts; FR-ATT-016 "on leave" on the live board | `attendance/leave-providers.ts` wired in `attendance.module.ts` | leave-e2e: "leave today shows as \"On leave\" on the live board…", reminder assertions; Playwright 24 |
+
+## A call is a meeting segment (ADR 046)
+
+| Requirement | Implementation | Tests |
+| --- | --- | --- |
+| FR-ATT-006 / SRS 6.2 rows 6–7 from the heartbeat: `inCall` while ACTIVE, IDLE or PAUSED opens an `IN_MEETING` segment (no input needed, never idle); a heartbeat without `inCall` closes it, credits `meeting_seconds` and returns to ACTIVE; a hook-opened meeting (with a meeting id) is untouched; a session closed mid-call (logout, timeout, midnight, maximum length) keeps the meeting time | `attendance-state-machine.ts` `handleHeartbeat` (before the activity rows), `closeLastSegment` (credit) | attendance-state-machine "ADR 046: a call reported by the heartbeat" (5 cases), agent-companion "a call in the browser keeps the session in the call…", attendance-replay; Playwright 36 |

@@ -23,6 +23,8 @@ export interface RemoteAvatar {
   dir: number;
   status: VoStatus;
   roomId: string | null;
+  /** ADR 046: in the office but not looking at it (another page of the app). */
+  away: boolean;
 }
 
 export interface Knock { roomId: string; roomName: string; userId: string; name: string }
@@ -64,7 +66,10 @@ export class OfficeClient {
   private sendTimer: ReturnType<typeof setInterval> | null = null;
   private inFlight = false;
 
-  constructor(snapshot: OfficeSnapshot, private readonly positions: boolean) {
+  /** Whether the office view is on screen, and whether the map wants the position stream (ADR 046). */
+  private visible = true;
+
+  constructor(snapshot: OfficeSnapshot, private positions: boolean) {
     this.snapshot = snapshot;
     for (const f of snapshot.floors) this.grids.set(f.id, buildGrid(f.map as OfficeMap));
   }
@@ -117,7 +122,16 @@ export class OfficeClient {
       } else this.notice = { kind: 'error', text: `${a.by} did not let you into ${room?.name ?? 'the room'}.` };
       this.changed();
     });
-    if (this.positions) this.sendTimer = setInterval(() => this.flush(), SEND_MS);
+    this.sendTimer = setInterval(() => this.flush(), SEND_MS);
+  }
+
+  /** ADR 046: the office page came on or off screen; the socket and the avatar stay. */
+  setView(visible: boolean, positions: boolean): void {
+    if (this.visible === visible && this.positions === positions) return;
+    this.visible = visible;
+    this.positions = positions;
+    if (this.connected) this.socket?.emit('office:view', { visible, positions });
+    this.changed();
   }
 
   disconnect(): void {
@@ -128,9 +142,12 @@ export class OfficeClient {
   }
 
   private async join(): Promise<void> {
-    const ack = await this.socket!.emitWithAck('office:join', { positions: this.positions, floorId: this.self?.floorId }) as JoinAck;
+    const sent = { positions: this.positions, visible: this.visible };
+    const ack = await this.socket!.emitWithAck('office:join', { ...sent, floorId: this.self?.floorId }) as JoinAck;
     if (!ack.ok) { this.notice = { kind: 'error', text: `Could not enter the office: ${ack.error}` }; this.changed(); return; }
     this.connected = true;
+    // The view may have changed while the join was in flight (ADR 046).
+    if (sent.positions !== this.positions || sent.visible !== this.visible) this.socket!.emit('office:view', { visible: this.visible, positions: this.positions });
     this.self = { ...ack.self, dir: 0 };
     this.lastSent = { x: ack.self.x, y: ack.self.y };
     this.roster = new Map(ack.roster.map((r) => [r.id, r]));
@@ -141,10 +158,10 @@ export class OfficeClient {
 
   private onPositions(m: PositionsMessage): void {
     const now = Date.now();
-    for (const [id, x, y, d, s, r, t] of m.u) {
+    for (const [id, x, y, d, s, r, t, away] of m.u) {
       const a = this.avatars.get(id);
-      if (a) { a.x = x; a.y = y; a.dir = d; a.status = s; a.roomId = r; if (Math.hypot(a.rx - x, a.ry - y) > 300) { a.rx = x; a.ry = y; } }
-      else this.avatars.set(id, { id, x, y, rx: x, ry: y, dir: d, status: s, roomId: r });
+      if (a) { a.x = x; a.y = y; a.dir = d; a.status = s; a.roomId = r; a.away = away === 1; if (Math.hypot(a.rx - x, a.ry - y) > 300) { a.rx = x; a.ry = y; } }
+      else this.avatars.set(id, { id, x, y, rx: x, ry: y, dir: d, status: s, roomId: r, away: away === 1 });
       if (t) { this.latencies.push(now - t); if (this.latencies.length > 2000) this.latencies.splice(0, 1000); }
     }
     for (const id of m.gone) this.avatars.delete(id);

@@ -95,7 +95,8 @@ test('office: a shared screen can be expanded, shown full screen and in a new wi
     const popVideo = popup.getByTestId('screen-popout').locator('video');
     await expect.poll(() => showsFrames(popVideo), { timeout: 15_000 }).toBe(true);
     await expect(share).toHaveAttribute('data-viewer', 'popout');
-    await popup.getByRole('button', { name: 'Close window' }).click();
+    // The button closes its own window, so the click's post-click check can find the page gone.
+    await Promise.all([popup.waitForEvent('close'), popup.getByRole('button', { name: 'Close window' }).click().catch(() => undefined)]);
     await expect.poll(() => popup.isClosed()).toBe(true);
     await expect(share).toHaveAttribute('data-viewer', 'inline');
     expect(tokens).toBe(0);

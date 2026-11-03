@@ -6,7 +6,7 @@ import { Permission, userCan } from '../../../../packages/shared/src/auth/types.
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import { displayStatus } from '../../../../packages/shared/src/office/index.ts';
 import type {
-  DeskAssignDto, ManualStatus, OfficeDefinition, OfficeSnapshot, PeopleQuery, Person, RoomInvitesDto, RoomUpdateDto, StatusDto,
+  DeskAssignDto, ManualStatus, OfficeDefinition, OfficePreferencesDto, OfficeSnapshot, PeopleQuery, Person, RoomInvitesDto, RoomUpdateDto, StatusDto,
 } from '../../../../packages/shared/src/office/index.ts';
 import { ensureOffice, syncLayout } from './office-store.ts';
 import { OfficeRegistry } from './office-registry.ts';
@@ -34,7 +34,7 @@ export class OfficeService {
     const world = await this.registry.world(user.orgId);
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const office = await ensureOffice(db, user.orgId);
-      const me = (await db.query<{ vo_status: ManualStatus; vo_status_message: string }>(`SELECT vo_status, vo_status_message FROM users WHERE id = $1`, [user.id])).rows[0];
+      const me = (await db.query<{ vo_status: ManualStatus; vo_status_message: string; vo_mute_on_leave: boolean }>(`SELECT vo_status, vo_status_message, vo_mute_on_leave FROM users WHERE id = $1`, [user.id])).rows[0];
       const names = await db.query<{ id: string; display_name: string | null }>(`SELECT id, display_name FROM users WHERE id = ANY($1::uuid[])`, [world.desks.map((d) => d.assignedUserId).filter(Boolean)]);
       const nameOf = new Map(names.rows.map((r) => [r.id, r.display_name]));
       const admin = this.canManage(user);
@@ -46,7 +46,7 @@ export class OfficeService {
           canEnter: world.mayEnter(user.id, r, admin, true) === null, occupants: world.occupants(r.id).length,
         })),
         desks: world.desks.map((d) => ({ id: d.id, floorId: d.floorId, label: d.label, bounds: d.bounds, assignee: d.assignedUserId ? { id: d.assignedUserId, displayName: nameOf.get(d.assignedUserId) ?? null } : null })),
-        me: { id: user.id, deskId: world.desks.find((d) => d.assignedUserId === user.id)?.id ?? null, manualStatus: me?.vo_status ?? 'AUTO', statusMessage: me?.vo_status_message ?? '' },
+        me: { id: user.id, deskId: world.desks.find((d) => d.assignedUserId === user.id)?.id ?? null, manualStatus: me?.vo_status ?? 'AUTO', statusMessage: me?.vo_status_message ?? '', muteOnLeave: me?.vo_mute_on_leave ?? false },
         canManage: admin,
       };
     });
@@ -82,6 +82,12 @@ export class OfficeService {
       });
     }
     return { items };
+  }
+
+  /** ADR 046: per-user call preferences. */
+  async setPreferences(user: AuthenticatedUser, dto: OfficePreferencesDto): Promise<OfficePreferencesDto> {
+    await this.prisma.runWithTenantContext(user.orgId, (db) => db.query(`UPDATE users SET vo_mute_on_leave = $2 WHERE id = $1`, [user.id, dto.muteOnLeave]));
+    return { muteOnLeave: dto.muteOnLeave };
   }
 
   async setStatus(user: AuthenticatedUser, dto: StatusDto): Promise<{ status: ManualStatus; message: string }> {

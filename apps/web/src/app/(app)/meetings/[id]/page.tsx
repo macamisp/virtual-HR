@@ -7,6 +7,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { CalendarPlus, ListTodo, MessagesSquare, MicOff, PhoneOff, UserMinus, Users } from 'lucide-react';
 import type { CallState, Meeting } from '@hrvo/shared';
 import { MeetingChat } from '@/components/meeting-chat';
+import { useCallController } from '@/components/media/use-call-controller';
 import { CallView, useSession } from '@/components/media/call-view';
 import { PreJoin } from '@/components/media/prejoin';
 import { ConsentNotice, InCallConsent, RecordControls, RecordingBanner, RecordingsCard } from '@/components/media/recording-ui';
@@ -22,8 +23,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Markdown } from '@/components/markdown';
 import { ApiError } from '@/lib/api';
 import { formatDateTime, formatDuration } from '@/lib/format';
-import type { DevicePrefs } from '@/lib/media/devices';
-import { MediaSession } from '@/lib/media/media-session';
+import { loadPrefs, type DevicePrefs } from '@/lib/media/devices';
+import type { MediaSession } from '@/lib/media/media-session';
 import {
   downloadIcs, joinMeeting, meetingKeys, useAddActionItem, useCancelMeeting, useConvertToTask, useLobby, useLobbyDecision,
   useCallResponses, useCancelCalls, useMeeting, useMuteAll, useRemoveParticipant, useRespond, useUpdateMeeting,
@@ -32,7 +33,7 @@ import { Permission, useCan } from '@/lib/permissions';
 import { onUiEvent } from '@/lib/ui-socket';
 import { answerRecording, recordingKeys } from '@/lib/recording-queries';
 
-type Phase = 'idle' | 'prejoin' | 'joining' | 'waiting' | 'denied' | 'consent' | 'call';
+type Phase = 'idle' | 'prejoin' | 'joining' | 'waiting' | 'denied' | 'consent' | 'call' | 'elsewhere';
 const name = (p: { displayName: string | null; email: string }) => p.displayName ?? p.email;
 
 /** FR-MEET-005: hosts and co-hosts admit or decline people waiting in the lobby. */
@@ -117,10 +118,15 @@ function CallResponses({ meetingId }: { meetingId: string }) {
 }
 
 function MeetingCall({ meeting, autoStart, onChange, chat }: { meeting: CallMeeting; autoStart: boolean; onChange?: () => void; chat?: { open: boolean; toggle: () => void } }) {
-  const [phase, setPhase] = useState<Phase>(autoStart ? 'prejoin' : 'idle');
+  // ADR 046: the call belongs to the call controller; coming back to this page shows it running.
+  const c = useCallController();
+  const session = c.session;
+  const mine = c.current?.kind === 'meeting' && c.current.meetingId === meeting.id;
+  const [phase, setPhase] = useState<Phase>(mine ? 'call' : autoStart ? 'prejoin' : 'idle');
   const [message, setMessage] = useState<string | null>(null);
-  const [session] = useState(() => new MediaSession());
   const prefs = useRef<DevicePrefs | null>(null);
+  // Ended elsewhere (removed by the host, taken over by another tab, left from the dock).
+  useEffect(() => { if (!mine && phase === 'call') setPhase('idle'); }, [mine, phase]);
   const moderator = meeting.myRole === 'HOST' || meeting.myRole === 'COHOST';
   const qc = useQueryClient();
   const [consentFor, setConsentFor] = useState<string | null>(null);
@@ -132,9 +138,9 @@ function MeetingCall({ meeting, autoStart, onChange, chat }: { meeting: CallMeet
     try {
       const r = await joinMeeting(meeting.id);
       if (r.status === 'READY') {
-        setPhase('call');
+        const joined = await c.joinMeeting({ id: meeting.id, title: meeting.title }, r.token, prefs.current ?? loadPrefs());
+        setPhase(joined === 'joined' ? 'call' : 'elsewhere');
         onChange?.();
-        await session.connect(r.token, prefs.current!);
       } else if (r.status === 'CONSENT_REQUIRED') {
         // FR-MEET-007: the call is being recorded; nobody joins without agreeing first.
         setConsentFor(r.recordingId);
@@ -157,7 +163,7 @@ function MeetingCall({ meeting, autoStart, onChange, chat }: { meeting: CallMeet
     });
     const offRemoved = onUiEvent<{ meetingId: string; reason?: string }>('meeting:removed', (e) => {
       if (e.meetingId !== meeting.id) return;
-      void session.disconnect();
+      void c.leaveMeeting();
       setMessage(e.reason === 'RECORDING_CONSENT' ? 'This meeting is being recorded and you had not agreed. Join again to answer.' : 'You were removed by the host.');
       setPhase('denied');
     });
@@ -172,7 +178,6 @@ function MeetingCall({ meeting, autoStart, onChange, chat }: { meeting: CallMeet
     return () => { offDecision(); offRemoved(); offRec(); offAsk(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meeting.id]);
-  useEffect(() => () => { void session.disconnect(); }, [session]);
 
   if (meeting.status === 'CANCELLED') return <Alert><AlertDescription>This meeting was cancelled.</AlertDescription></Alert>;
   if (meeting.type === 'ROOM') return <Alert><AlertDescription>This is a room meeting. <Link className="underline" href="/office">Walk into the room in the office</Link> to join.</AlertDescription></Alert>;
@@ -199,8 +204,11 @@ function MeetingCall({ meeting, autoStart, onChange, chat }: { meeting: CallMeet
         <Alert data-testid="lobby-waiting"><AlertDescription className="flex flex-wrap items-center gap-2">{message} <Button size="sm" variant="ghost" onClick={() => setPhase('idle')}>Leave the lobby</Button></AlertDescription></Alert>
       ) : null}
       {phase === 'denied' ? <Alert variant="destructive" data-testid="join-denied"><AlertDescription>{message}</AlertDescription></Alert> : null}
+      {phase === 'elsewhere' ? (
+        <Alert data-testid="call-elsewhere"><AlertDescription className="flex flex-wrap items-center gap-2">This call is open in another tab. <Button size="sm" onClick={() => void c.takeOver(attempt)}>Take over</Button></AlertDescription></Alert>
+      ) : null}
       {phase === 'call' ? (
-        <CallView session={session} onLeave={() => { void session.disconnect(); setPhase('idle'); }}
+        <CallView session={session} onLeave={() => { void c.leaveMeeting(); setPhase('idle'); }}
           extraControls={<>{moderator ? <HostControls meetingId={meeting.id} session={session} meeting={meeting} /> : null}{chat ? <ChatToggle chat={chat} /> : null}</>} />
       ) : null}
     </div>

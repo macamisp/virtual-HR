@@ -189,6 +189,30 @@ export class AttendanceStateMachine {
       }
     }
 
+    // ADR 046 (rows 6 and 7 from the heartbeat; FR-ATT-006, FR-MEET-009): a call the browser
+    // reports is a meeting segment: no input is needed and the time is credited as meeting time.
+    // A segment opened by the meetings hook (it carries a meeting id) is only closed by that hook.
+    const openSeg = updatedSession.segments[updatedSession.segments.length - 1];
+    if (heartbeat.inCall && (prev === AttendanceState.ACTIVE || prev === AttendanceState.IDLE || prev === AttendanceState.PAUSED)) {
+      updatedSession.consecutiveIdleSeconds = 0;
+      this.closeLastSegment(updatedSession, serverTime, prev === AttendanceState.PAUSED ? ['LONG_IDLE'] : []);
+      if (prev === AttendanceState.PAUSED && !updatedSession.flags.includes('LONG_IDLE')) updatedSession.flags.push('LONG_IDLE');
+      this.openSegment(updatedSession, AttendanceState.IN_MEETING, serverTime);
+      updatedSession.currentState = AttendanceState.IN_MEETING;
+      updatedSession.previousState = prev;
+      this.recomputeNetSeconds(updatedSession, serverTime);
+      return { session: updatedSession, previousState: prev, currentState: AttendanceState.IN_MEETING, actionTaken: 'Join call: open meeting segment; count as active' };
+    }
+    if (!heartbeat.inCall && prev === AttendanceState.IN_MEETING && openSeg && !openSeg.endedAt && !openSeg.meetingId) {
+      this.closeLastSegment(updatedSession, serverTime);
+      this.openSegment(updatedSession, AttendanceState.ACTIVE, serverTime);
+      updatedSession.currentState = AttendanceState.ACTIVE;
+      updatedSession.previousState = AttendanceState.IN_MEETING;
+      updatedSession.consecutiveIdleSeconds = heartbeat.idleSeconds;
+      this.recomputeNetSeconds(updatedSession, serverTime);
+      return { session: updatedSession, previousState: AttendanceState.IN_MEETING, currentState: AttendanceState.ACTIVE, actionTaken: 'Leave call: credit meeting_seconds' };
+    }
+
     if (isActivity) {
       // Activity detected
       updatedSession.consecutiveIdleSeconds = 0;
@@ -320,10 +344,7 @@ export class AttendanceStateMachine {
     serverTime: Date,
   ): StateMachineTransitionResult {
     const updated = { ...session };
-    const lastSeg = this.closeLastSegment(updated, serverTime);
-    if (lastSeg) {
-      updated.meetingSeconds += lastSeg.durationSeconds;
-    }
+    this.closeLastSegment(updated, serverTime); // credits meeting_seconds
     this.openSegment(updated, AttendanceState.ACTIVE, serverTime);
     updated.previousState = AttendanceState.IN_MEETING;
     updated.currentState = AttendanceState.ACTIVE;
@@ -709,6 +730,12 @@ export class AttendanceStateMachine {
       last.durationSeconds = Math.max(0, Math.round((endedAt.getTime() - last.startedAt.getTime()) / 1000));
       if (extraFlags.length > 0) {
         last.flags.push(...extraFlags);
+      }
+      // ADR 046: meeting time is credited whenever its segment ends, also when the session is
+      // closed mid-call (logout, timeout, midnight, maximum length).
+      if (last.state === AttendanceState.IN_MEETING) {
+        session.meetingSeconds += last.durationSeconds;
+        this.recomputeNetSeconds(session, endedAt);
       }
       return last;
     }

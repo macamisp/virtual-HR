@@ -28,7 +28,7 @@ function TrackVideo({ track, mirror, label }: { track: Track; mirror?: boolean; 
 
 const QUALITY_LABEL: Record<Tile['quality'], string> = { excellent: 'Excellent connection', good: 'Good connection', poor: 'Poor connection', lost: 'Connection lost', unknown: 'Connection unknown' };
 
-function TileView({ t, large }: { t: Tile; large?: boolean }) {
+export function TileView({ t, large }: { t: Tile; large?: boolean }) {
   return (
     <figure data-testid={t.isLocal ? 'tile-local' : 'tile-remote'} data-identity={t.identity}
       className={cn('relative overflow-hidden rounded bg-slate-800 text-white', large ? 'aspect-video' : 'aspect-video', t.speaking && 'ring-2 ring-green-500')}>
@@ -43,8 +43,11 @@ function TileView({ t, large }: { t: Tile; large?: boolean }) {
   );
 }
 
-/** Audio elements for every remote microphone and screen-share sound (video tiles are muted). */
-function RemoteAudio({ session }: { session: MediaSession }) {
+/**
+ * Audio elements for every remote microphone and screen-share sound (video tiles are muted).
+ * Rendered once by the call provider (ADR 046), so sound plays on every page and never twice.
+ */
+export function RemoteAudio({ session }: { session: MediaSession }) {
   const room = session.room;
   if (!room) return null;
   const tracks: Array<{ key: string; track: Track }> = [];
@@ -89,7 +92,6 @@ export function CallView({ session, onLeave, compact, extraControls }: { session
       <div className={cn('grid gap-2', compact ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-3 xl:grid-cols-4')}>
         {tiles.map((t) => <TileView key={t.identity} t={t} />)}
       </div>
-      <RemoteAudio session={session} />
       <div role="toolbar" aria-label="Call controls" className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant={session.micOn ? 'default' : 'outline'} aria-pressed={session.micOn} onClick={() => void session.toggleMic()}>{session.micOn ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />} {session.micOn ? 'Mute' : 'Unmute'}</Button>
         <Button size="sm" variant={session.camOn ? 'default' : 'outline'} aria-pressed={session.camOn} onClick={() => void session.toggleCam()}>{session.camOn ? <Video aria-hidden="true" /> : <VideoOff aria-hidden="true" />} Camera</Button>

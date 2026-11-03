@@ -35,6 +35,9 @@ interface Sprite {
   root: Container;
   ring: Graphics;
   status: VoStatus | null;
+  /** ADR 046: drawn faded with a dashed ring and an "away" badge. */
+  away: boolean | null;
+  badge: BitmapText;
   name: BitmapText;
 }
 
@@ -185,17 +188,28 @@ export class OfficeRenderer {
     const label = new BitmapText({ text: name, style: { fontFamily: 'Arial', fontSize: 11, fill: 0x0f172a } });
     label.anchor.set(0.5, 0);
     label.position.set(0, 17);
-    root.addChild(ring, body, text, label);
-    s = { root, ring, status: null, name: label };
+    const badge = new BitmapText({ text: 'away', style: { fontFamily: 'Arial', fontSize: 9, fill: 0x64748b } });
+    badge.anchor.set(0.5, 1);
+    badge.position.set(0, -18);
+    badge.visible = false;
+    root.addChild(ring, body, text, label, badge);
+    s = { root, ring, status: null, away: null, name: label, badge };
     this.sprites.set(id, s);
     this.avatarLayer.addChild(root);
     return s;
   }
 
-  private setStatus(s: Sprite, status: VoStatus): void {
-    if (s.status === status) return;
+  private setStatus(s: Sprite, status: VoStatus, away = false): void {
+    if (s.status === status && s.away === away) return;
     s.status = status;
-    s.ring.clear().circle(0, 0, 16).stroke({ width: 3, color: STATUS_COLOUR[status] });
+    s.away = away;
+    s.ring.clear();
+    if (away) {
+      // Dashed ring: eight arcs with gaps.
+      for (let i = 0; i < 8; i += 1) s.ring.arc(0, 0, 16, (i * Math.PI) / 4, (i * Math.PI) / 4 + Math.PI / 6).stroke({ width: 3, color: STATUS_COLOUR[status] });
+    } else s.ring.circle(0, 0, 16).stroke({ width: 3, color: STATUS_COLOUR[status] });
+    s.root.alpha = away ? 0.55 : 1;
+    s.badge.visible = away;
   }
 
   private frame(dtMs: number): void {
@@ -219,7 +233,7 @@ export class OfficeRenderer {
       const name = c.roster.get(a.id)?.name ?? '…';
       const s = this.sprite(a.id, name, false);
       if (s.name.text !== name) s.name.text = name;
-      this.setStatus(s, a.status);
+      this.setStatus(s, a.status, a.away);
       s.root.position.set(a.rx, a.ry);
       s.root.zIndex = a.ry;
       seen.add(a.id);
@@ -254,10 +268,10 @@ export class OfficeRenderer {
     for (let i = 0; i < n; i += 1) {
       const x = 64 + Math.random() * (w - 128);
       const y = 64 + Math.random() * (h - 128);
-      const a: RemoteAvatar = { id: `bench-${i}`, x, y, rx: x, ry: y, dir: 0, status: statuses[i % statuses.length]!, roomId: null };
+      const a: RemoteAvatar = { id: `bench-${i}`, x, y, rx: x, ry: y, dir: 0, status: statuses[i % statuses.length]!, roomId: null, away: false };
       bots.push(a);
       this.client.avatars.set(a.id, a);
-      this.client.roster.set(a.id, { id: a.id, name: `Bench ${i + 1}`, status: a.status, statusMessage: '', floorId: this.client.self?.floorId ?? null, roomId: null });
+      this.client.roster.set(a.id, { id: a.id, name: `Bench ${i + 1}`, status: a.status, statusMessage: '', floorId: this.client.self?.floorId ?? null, roomId: null, away: false });
     }
     // 10 Hz targets, like the server.
     setInterval(() => {
