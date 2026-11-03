@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * ADR 046: the one call of this tab, above the pages. Owns the LiveKit session and the office
+ * ADR 048: the one call of this tab, above the pages. Owns the LiveKit session and the office
  * realtime connection so both survive client-side navigation; pages render from it. Framework-
  * free; React subscribes with subscribe/getVersion (like MediaSession and OfficeClient).
  *
@@ -52,7 +52,7 @@ export class CallController {
   /** The office page is on screen (its map or list), and whether the map wants the position stream. */
   officeVisible = false;
   officePositions = false;
-  /** ADR 046 §7: mute when leaving the office page during an office call. */
+  /** ADR 048 §7: mute when leaving the office page during an office call. */
   muteOnLeave = false;
 
   private version = 0;
@@ -82,7 +82,7 @@ export class CallController {
 
   get inCall(): boolean { return !!this.current && this.session.room !== null; }
 
-  // ---------------------------------------------------------------- office presence (ADR 046 §2)
+  // ---------------------------------------------------------------- office presence (ADR 048 §2)
 
   /** The office page hands over its snapshot; the client is created once and kept across pages. */
   enterOffice(snapshot: OfficeSnapshot): OfficeClient {
@@ -228,7 +228,7 @@ export class CallController {
     this.release();
   }
 
-  /** Sign-out, session revoke: everything down, devices released (ADR 046 §5). */
+  /** Sign-out, session revoke: everything down, devices released (ADR 048 §5). */
   async shutdown(): Promise<void> {
     if (this.routeTimer) clearTimeout(this.routeTimer);
     this.routeTimer = null;
@@ -238,7 +238,7 @@ export class CallController {
     this.leaveOffice();
   }
 
-  // ---------------------------------------------------------------- one tab owns the call (ADR 046 §4)
+  // ---------------------------------------------------------------- one tab owns the call (ADR 048 §4)
 
   private async acquire(): Promise<boolean> {
     if (this.lock === 'owner') return true;

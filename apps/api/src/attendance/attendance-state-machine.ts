@@ -189,7 +189,7 @@ export class AttendanceStateMachine {
       }
     }
 
-    // ADR 046 (rows 6 and 7 from the heartbeat; FR-ATT-006, FR-MEET-009): a call the browser
+    // ADR 048 (rows 6 and 7 from the heartbeat; FR-ATT-006, FR-MEET-009): a call the browser
     // reports is a meeting segment: no input is needed and the time is credited as meeting time.
     // A segment opened by the meetings hook (it carries a meeting id) is only closed by that hook.
     const openSeg = updatedSession.segments[updatedSession.segments.length - 1];
@@ -731,7 +731,7 @@ export class AttendanceStateMachine {
       if (extraFlags.length > 0) {
         last.flags.push(...extraFlags);
       }
-      // ADR 046: meeting time is credited whenever its segment ends, also when the session is
+      // ADR 048: meeting time is credited whenever its segment ends, also when the session is
       // closed mid-call (logout, timeout, midnight, maximum length).
       if (last.state === AttendanceState.IN_MEETING) {
         session.meetingSeconds += last.durationSeconds;

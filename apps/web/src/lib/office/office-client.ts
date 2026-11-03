@@ -23,7 +23,7 @@ export interface RemoteAvatar {
   dir: number;
   status: VoStatus;
   roomId: string | null;
-  /** ADR 046: in the office but not looking at it (another page of the app). */
+  /** ADR 048: in the office but not looking at it (another page of the app). */
   away: boolean;
 }
 
@@ -66,7 +66,7 @@ export class OfficeClient {
   private sendTimer: ReturnType<typeof setInterval> | null = null;
   private inFlight = false;
 
-  /** Whether the office view is on screen, and whether the map wants the position stream (ADR 046). */
+  /** Whether the office view is on screen, and whether the map wants the position stream (ADR 048). */
   private visible = true;
 
   constructor(snapshot: OfficeSnapshot, private positions: boolean) {
@@ -125,7 +125,7 @@ export class OfficeClient {
     this.sendTimer = setInterval(() => this.flush(), SEND_MS);
   }
 
-  /** ADR 046: the office page came on or off screen; the socket and the avatar stay. */
+  /** ADR 048: the office page came on or off screen; the socket and the avatar stay. */
   setView(visible: boolean, positions: boolean): void {
     if (this.visible === visible && this.positions === positions) return;
     this.visible = visible;
@@ -146,7 +146,7 @@ export class OfficeClient {
     const ack = await this.socket!.emitWithAck('office:join', { ...sent, floorId: this.self?.floorId }) as JoinAck;
     if (!ack.ok) { this.notice = { kind: 'error', text: `Could not enter the office: ${ack.error}` }; this.changed(); return; }
     this.connected = true;
-    // The view may have changed while the join was in flight (ADR 046).
+    // The view may have changed while the join was in flight (ADR 048).
     if (sent.positions !== this.positions || sent.visible !== this.visible) this.socket!.emit('office:view', { visible: this.visible, positions: this.positions });
     this.self = { ...ack.self, dir: 0 };
     this.lastSent = { x: ack.self.x, y: ack.self.y };

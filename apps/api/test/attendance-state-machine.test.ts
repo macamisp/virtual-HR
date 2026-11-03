@@ -406,11 +406,11 @@ describe('Requirements FR-ATT-001..005 Specific Verification', () => {
 });
 
 /**
- * ADR 046 (SRS 6.2 rows 6 and 7 from the heartbeat; FR-ATT-006, FR-MEET-009): the browser reports
+ * ADR 048 (SRS 6.2 rows 6 and 7 from the heartbeat; FR-ATT-006, FR-MEET-009): the browser reports
  * `inCall` every heartbeat. A call is a meeting segment: no input is needed, time is credited as
  * meeting time, and a session closed mid-call keeps what was accrued.
  */
-describe('ADR 046: a call reported by the heartbeat', () => {
+describe('ADR 048: a call reported by the heartbeat', () => {
   const sm = new AttendanceStateMachine({
     heartbeatIntervalSeconds: 30, missedHeartbeatTimeoutSeconds: 90, disconnectGraceWindowSeconds: 120,
     idleThresholdSeconds: 300, pauseThresholdSeconds: 900, maxSessionLengthSeconds: 14 * 3600, orgTimezone: 'Asia/Colombo',

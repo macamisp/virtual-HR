@@ -2,7 +2,7 @@
 
 import { create } from 'zustand';
 
-/** ADR 046: where the floating call dock is, so other floating UI (incoming-call alerts) keeps clear of it. */
+/** ADR 048: where the floating call dock is, so other floating UI (incoming-call alerts) keeps clear of it. */
 interface DockState {
   visible: boolean;
   height: number;

@@ -148,7 +148,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   const signOut = async () => {
-    // ADR 046: the call ends and the devices are released before the session is revoked.
+    // ADR 048: the call ends and the devices are released before the session is revoked.
     await callController().shutdown();
     await logout();
     queryClient.clear();

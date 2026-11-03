@@ -96,7 +96,7 @@ export class MediaSession {
         refresh();
       })
       .on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
-        // Our own disconnect() (leaving, or switching rooms) has already let go of this room (ADR 046).
+        // Our own disconnect() (leaving, or switching rooms) has already let go of this room (ADR 048).
         if (this.room !== room) return;
         this.uncount();
         this.status = 'ended';

@@ -70,7 +70,7 @@ describe('Desktop agent as the authoritative activity source', () => {
     assert.ok(s.flags.includes('MULTI_DEVICE'));
   });
 
-  it('a call in the browser keeps the session in the call (IN_MEETING, counted as active) while the agent sees no input (FR-ATT-006; ADR 046)', () => {
+  it('a call in the browser keeps the session in the call (IN_MEETING, counted as active) while the agent sees no input (FR-ATT-006; ADR 048)', () => {
     let s = sm.handleHeartbeat(null, hb('agent-A'), t0, '10.0.0.1', 'AGENT').session;
     for (let i = 1; i <= 20; i += 1) { // 10 minutes, twice the idle threshold
       s = sm.handleHeartbeat(s, hb('web-1', { activeSeconds: 0, idleSeconds: 30, inCall: true }), at(i * 30 - 15), '10.0.0.1', 'WEB').session;

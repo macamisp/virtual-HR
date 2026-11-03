@@ -49,10 +49,10 @@ export interface Avatar {
   message: string;
   roomOnly: boolean;
   isAdmin: boolean;
-  /** Socket ids in the office; those with positions=true get the position stream, viewing=true show the office view (ADR 046). */
+  /** Socket ids in the office; those with positions=true get the position stream, viewing=true show the office view (ADR 048). */
   sockets: Map<string, { positions: boolean; viewing: boolean }>;
   ct: number | null;
-  /** ADR 046: server ms when the last socket dropped without leaving; removed by the tick after the grace. */
+  /** ADR 048: server ms when the last socket dropped without leaving; removed by the tick after the grace. */
   goneAt: number | null;
   /** The login session family that dropped: only it gets its place back (a reload); a new sign-in starts fresh. */
   goneSid: string | null;
@@ -128,7 +128,7 @@ export class OfficeWorld {
     return displayStatus(a.attendance, a.manual, true);
   }
 
-  /** ADR 046: in the office but not looking at it (every socket on another page, or none left). */
+  /** ADR 048: in the office but not looking at it (every socket on another page, or none left). */
   away(a: Avatar): boolean {
     for (const s of a.sockets.values()) if (s.viewing) return false;
     return true;
@@ -228,7 +228,7 @@ export class OfficeWorld {
 
   /** The 10 Hz tick: per-observer deltas of the neighbourhood, proximity changes, roster changes. */
   tick(emit: WorldEmitter, now: number, leaveGraceMs = 0): { messages: number; entries: number } {
-    // ADR 046: a dropped connection (reload) keeps its place for the grace, then is gone for everyone.
+    // ADR 048: a dropped connection (reload) keeps its place for the grace, then is gone for everyone.
     for (const a of this.avatars.values()) {
       if (a.goneAt !== null && now - a.goneAt >= leaveGraceMs) { this.remove(a.userId); emit.roster(this.orgId, { id: a.userId, gone: true }); }
     }

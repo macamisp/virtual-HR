@@ -34,7 +34,7 @@ export class OfficeController {
     return this.office.setStatus(user, dto);
   }
 
-  /** ADR 046: "Mute my microphone when I leave the office page". */
+  /** ADR 048: "Mute my microphone when I leave the office page". */
   @Put('me/preferences')
   preferences(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(OfficePreferencesDtoSchema)) dto: OfficePreferencesDto) {
     return this.office.setPreferences(user, dto);

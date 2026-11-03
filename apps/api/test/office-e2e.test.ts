@@ -101,7 +101,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
     process.env.MAIL_TRANSPORT = 'memory';
     process.env.RATE_LIMIT_LOGIN = '1000';
     process.env.JOBS_ENABLED = 'false';
-    // ADR 046: short so the dropped-connection test runs fast (the default is 8 s).
+    // ADR 048: short so the dropped-connection test runs fast (the default is 8 s).
     process.env.OFFICE_LEAVE_GRACE_MS = '1500';
     adminPool = new pg.Pool({ host: process.env.PGHOST || 'localhost', port: Number(process.env.PGPORT || 5433), database: process.env.PGDATABASE || 'hrvo_dev', user: process.env.PGADMIN_USER || 'postgres', password: process.env.PGADMIN_PASSWORD || 'postgres' });
     await resetOrgs(adminPool, [ORG, OTHER]);
@@ -370,7 +370,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
       assert.equal(((await A.teleport({ kind: 'user', userId: U.other.id })) as { code?: string }).code, 'NOT_FOUND', 'other organisations do not exist here');
     });
 
-    it('away from the office view (ADR 046): the view flag reaches the roster and the positions; the stream follows the map', async () => {
+    it('away from the office view (ADR 048): the view flag reaches the roster and the positions; the stream follows the map', async () => {
       assert.ok((await A.teleport({ kind: 'user', userId: U.b.id })).ok, 'next to Ben, so Ben receives Anna\'s positions');
       await wait(300);
       const startB = B.inbox.presence.length;
@@ -391,7 +391,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
       assert.equal(((await A.s.emitWithAck('office:view', { visible: 'yes' })) as { ok: boolean }).ok, false, 'junk is refused');
     });
 
-    it('call preferences (ADR 046): mute-on-leave is saved per user and validated', async () => {
+    it('call preferences (ADR 048): mute-on-leave is saved per user and validated', async () => {
       assert.equal((await ok<OfficeSnapshot>(await api('a', '/office'), 200, OfficeSnapshotSchema)).me.muteOnLeave, false, 'off by default');
       assert.deepEqual(await ok(await api('a', '/office/me/preferences', { method: 'PUT', body: { muteOnLeave: true } }), 200), { muteOnLeave: true });
       assert.equal((await ok<OfficeSnapshot>(await api('a', '/office'), 200, OfficeSnapshotSchema)).me.muteOnLeave, true);
@@ -400,7 +400,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
       assert.equal((await api('a', '/office/me/preferences', { method: 'PUT', body: { muteOnLeave: false, extra: 1 } })).status, 400);
     });
 
-    it('a dropped connection keeps the avatar for the grace (a reload comes back to the same spot), then it is gone (ADR 046)', async () => {
+    it('a dropped connection keeps the avatar for the grace (a reload comes back to the same spot), then it is gone (ADR 048)', async () => {
       const cPos = C.join.ok ? C.join.self : { x: 0, y: 0 };
       assert.ok((await C.teleport({ kind: 'room', roomId: room('Meeting room A').id })).ok);
       const startB = B.inbox.presence.length;

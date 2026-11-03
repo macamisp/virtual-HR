@@ -30,7 +30,7 @@ function useSnapshotUpdate() {
   return (s: z.infer<typeof OfficeSnapshotSchema>) => qc.setQueryData(officeKeys.snapshot, s);
 }
 
-/** ADR 046: "Mute my microphone when I leave the office page". */
+/** ADR 048: "Mute my microphone when I leave the office page". */
 export function useSetOfficePreferences() {
   const qc = useQueryClient();
   return useMutation({

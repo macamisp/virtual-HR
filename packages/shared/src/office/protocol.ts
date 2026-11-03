@@ -66,7 +66,7 @@ export const OfficeSnapshotSchema = z.object({
   desks: z.array(DeskSchema),
   me: z.object({
     id: z.string(), deskId: z.string().nullable(), manualStatus: z.enum(MANUAL_STATUSES), statusMessage: z.string(),
-    /** ADR 046: mute the microphone when leaving the office page during an office call. */
+    /** ADR 048: mute the microphone when leaving the office page during an office call. */
     muteOnLeave: z.boolean().default(false),
   }),
   canManage: z.boolean(),
@@ -96,7 +96,7 @@ export type PeopleQuery = z.infer<typeof PeopleQuerySchema>;
 export const StatusDtoSchema = z.object({ status: z.enum(MANUAL_STATUSES), message: z.string().trim().max(100).default('') }).strict();
 export type StatusDto = z.input<typeof StatusDtoSchema>;
 
-/** ADR 046: per-user call preferences. */
+/** ADR 048: per-user call preferences. */
 export const OfficePreferencesDtoSchema = z.object({ muteOnLeave: z.boolean() }).strict();
 export type OfficePreferencesDto = z.infer<typeof OfficePreferencesDtoSchema>;
 
@@ -131,10 +131,10 @@ export const JoinDtoSchema = z.object({
   /** false = list view: presence and rooms only, no position stream (FR-VO-012). */
   positions: z.boolean().default(true),
   floorId: z.string().max(32).optional(),
-  /** ADR 046: false when the office view is not on screen (another page of the app). */
+  /** ADR 048: false when the office view is not on screen (another page of the app). */
   visible: z.boolean().default(true),
 });
-/** ADR 046: the office view came on or off screen; the socket keeps its place in the office. */
+/** ADR 048: the office view came on or off screen; the socket keeps its place in the office. */
 export const ViewDtoSchema = z.object({ visible: z.boolean(), positions: z.boolean() });
 export type ViewDto = z.infer<typeof ViewDtoSchema>;
 export const MoveDtoSchema = z.object({
@@ -159,7 +159,7 @@ export const ModeDtoSchema = z.object({ roomOnly: z.boolean() });
 /**
  * One avatar in office:positions, as a tuple to keep the 10 Hz stream small:
  * [userId, x, y, direction 0..7, status, roomId | null, echo of the mover's client clock | null,
- *  1 when away from the office view (ADR 046)].
+ *  1 when away from the office view (ADR 048)].
  */
 export type PositionEntry = [string, number, number, number, VoStatus, string | null, number | null, 0 | 1];
 
@@ -186,7 +186,7 @@ export interface RosterEntry {
   statusMessage: string;
   floorId: string | null;
   roomId: string | null;
-  /** ADR 046: in the office but not looking at it (another page, or a dropped tab within the grace). */
+  /** ADR 048: in the office but not looking at it (another page, or a dropped tab within the grace). */
   away: boolean;
 }
 

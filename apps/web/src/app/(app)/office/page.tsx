@@ -33,7 +33,7 @@ function StatusDot({ status }: { status: VoStatus }) {
 }
 
 /**
- * ADR 046: the office connection belongs to the call controller and outlives this page; the page
+ * ADR 048: the office connection belongs to the call controller and outlives this page; the page
  * only says that the office view is on screen (and whether the map wants the position stream).
  */
 function useClient(snapshot: OfficeSnapshot | undefined, view: View) {

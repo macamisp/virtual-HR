@@ -103,7 +103,7 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     const userId = auth.user.sub;
     const world = await this.registry.world(orgId);
     let a = world.avatars.get(userId);
-    // ADR 046: the place is kept for the login session that dropped (a reload, whose refresh rotates the
+    // ADR 048: the place is kept for the login session that dropped (a reload, whose refresh rotates the
     // token but not the session family); a new sign-in starts fresh.
     if (a && a.goneAt !== null && a.goneSid !== (auth.familyId ?? null)) {
       world.remove(userId);
@@ -127,7 +127,7 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
       world.rosterChanged = true;
       world.changedRoster.add(userId);
     }
-    // ADR 046: a rejoin within the leave grace (a reload) keeps the avatar where it was.
+    // ADR 048: a rejoin within the leave grace (a reload) keeps the avatar where it was.
     a.goneAt = null;
     a.goneSid = null;
     const wasAway = world.away(a);
@@ -139,7 +139,7 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     return { ok: true, self: { x: a.x, y: a.y, floorId: a.floorId, roomId: a.roomId }, roster: world.roster() };
   }
 
-  /** ADR 046: the office view came on or off screen; the position stream follows the map. */
+  /** ADR 048: the office view came on or off screen; the position stream follows the map. */
   @SubscribeMessage('office:view')
   async view(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): Promise<{ ok: boolean }> {
     const orgId = client.data?.officeOrg as string | undefined;
@@ -166,7 +166,7 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     await this.detach(client, false);
   }
 
-  /** `explicit`: the user left (remove now); otherwise the connection dropped (kept for the grace, ADR 046). */
+  /** `explicit`: the user left (remove now); otherwise the connection dropped (kept for the grace, ADR 048). */
   private async detach(client: Socket, explicit: boolean): Promise<void> {
     const auth = this.auth(client);
     const orgId = client.data?.officeOrg as string | undefined;

@@ -44,7 +44,7 @@ function RingAlert({ ring }: { ring: CallState }) {
  * broadcasts (FR-VO-010). Rings disappear after 45 s.
  */
 export function LiveAlerts() {
-  // ADR 046: sit above the floating call dock, so a ring is never hidden behind it.
+  // ADR 048: sit above the floating call dock, so a ring is never hidden behind it.
   const dock = useDockStore();
   const incoming = useIncomingCalls();
   const qc = useQueryClient();

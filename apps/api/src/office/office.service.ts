@@ -84,7 +84,7 @@ export class OfficeService {
     return { items };
   }
 
-  /** ADR 046: per-user call preferences. */
+  /** ADR 048: per-user call preferences. */
   async setPreferences(user: AuthenticatedUser, dto: OfficePreferencesDto): Promise<OfficePreferencesDto> {
     await this.prisma.runWithTenantContext(user.orgId, (db) => db.query(`UPDATE users SET vo_mute_on_leave = $2 WHERE id = $1`, [user.id, dto.muteOnLeave]));
     return { muteOnLeave: dto.muteOnLeave };

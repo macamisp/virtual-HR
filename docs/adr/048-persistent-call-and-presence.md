@@ -1,6 +1,6 @@
-# ADR 046: The call and the office presence survive navigation; floating call dock
+# ADR 048: The call and the office presence survive navigation; floating call dock
 
-Date: 2026-11-03. Status: accepted. Requirements: FR-VO-002, FR-VO-003, FR-VO-005, FR-MEET-002,
+Date: 2026-11-03. Status: accepted. (Numbered 046 in the first commit of this work; renumbered because the staging release branch had already taken 046 and 047.) Requirements: FR-VO-002, FR-VO-003, FR-VO-005, FR-MEET-002,
 FR-MEET-005, FR-MEET-009, FR-ATT-006. Related: ADR 015 (office), ADR 016 (media), ADR 044 (room
 audio route), ADR 045 (screen viewer).
 
@@ -138,7 +138,7 @@ office call mutes the microphone; the dock shows the microphone and camera state
   sign-out ends the call; `meeting_seconds` increases while on `/tasks`.
 - API tests (`office-e2e`): explicit leave removes at once, a dropped socket is kept for the grace
   and a rejoin keeps the position, the away flag, and the preference endpoint.
-  `attendance-state-machine` "ADR 046: a call reported by the heartbeat" (five cases: ACTIVE and
+  `attendance-state-machine` "ADR 048: a call reported by the heartbeat" (five cases: ACTIVE and
   IDLE into the call, past the pause threshold, credit on leaving, hook-opened meetings untouched,
   credit on logout, timeout and midnight); `agent-companion` updated (a browser call next to an
   agent is `IN_MEETING`).

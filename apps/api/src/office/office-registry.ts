@@ -18,7 +18,7 @@ export class OfficeRegistry implements OnModuleDestroy {
   private emitter: WorldEmitter | null = null;
   /** Last tick statistics, for tests and the load report. */
   stats = { ticks: 0, messages: 0, entries: 0, maxTickMs: 0 };
-  /** ADR 046: how long a dropped socket keeps its avatar (a reload rejoins the same spot); 0 removes at once. */
+  /** ADR 048: how long a dropped socket keeps its avatar (a reload rejoins the same spot); 0 removes at once. */
   readonly leaveGraceMs = Math.max(0, Number(process.env.OFFICE_LEAVE_GRACE_MS ?? 8000) || 0);
 
   constructor(private readonly prisma: PrismaService) {}

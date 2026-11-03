@@ -37,7 +37,7 @@ export function canDocumentPip(): boolean {
 }
 
 /**
- * ADR 046 §3: the floating call window shown on every page where the full call view is not: the
+ * ADR 048 §3: the floating call window shown on every page where the full call view is not: the
  * people in the call (speaking ring, hand), the microphone and camera state, and the controls.
  * Draggable with the pointer or the arrow keys on its handle; stays inside the viewport; its
  * position is remembered. Where the browser has Document Picture-in-Picture, "Float over other

@@ -4,7 +4,7 @@ import { passNoticeGate, signIn, signOut } from './helpers';
 import { hearsAudio, localTracks, paintedFrames, PC_HOOK, TRACK_HOOK } from './media';
 
 /**
- * ADR 046 (FR-VO-002, 003, 005, FR-MEET-002, 005, 009, FR-ATT-006): a call and the office presence
+ * ADR 048 (FR-VO-002, 003, 005, FR-MEET-002, 005, 009, FR-ATT-006): a call and the office presence
  * survive navigation, like Google Meet. Two people with fake devices: A and B talk in a room; A
  * browses other pages while B keeps receiving A's audio and video and sees A "away from the office
  * view"; the floating dock has the controls; Return to office shows the same call (no new token);

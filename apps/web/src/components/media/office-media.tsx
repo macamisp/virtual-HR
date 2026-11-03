@@ -16,7 +16,7 @@ import { PreJoin } from './prejoin';
  * FR-VO-005 / FR-VO-010 (ADR 016, 046): walking into a closed room joins its call; standing near
  * people in the open area joins the proximity group's call, with volume falling off with distance.
  * Media starts only after the user has turned it on and passed the device check. The call itself
- * belongs to the call controller, so it keeps going on other pages (ADR 046).
+ * belongs to the call controller, so it keeps going on other pages (ADR 048).
  */
 export function OfficeMedia({ client, snapshot }: { client: OfficeClient; snapshot: OfficeSnapshot }) {
   const c = useCallController();

@@ -118,7 +118,7 @@ function CallResponses({ meetingId }: { meetingId: string }) {
 }
 
 function MeetingCall({ meeting, autoStart, onChange, chat }: { meeting: CallMeeting; autoStart: boolean; onChange?: () => void; chat?: { open: boolean; toggle: () => void } }) {
-  // ADR 046: the call belongs to the call controller; coming back to this page shows it running.
+  // ADR 048: the call belongs to the call controller; coming back to this page shows it running.
   const c = useCallController();
   const session = c.session;
   const mine = c.current?.kind === 'meeting' && c.current.meetingId === meeting.id;

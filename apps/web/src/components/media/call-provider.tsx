@@ -36,7 +36,7 @@ export function OfficePresenceBadge() {
 }
 
 /**
- * ADR 046: mounted once by the app shell for the signed-in user. The call and the office presence
+ * ADR 048: mounted once by the app shell for the signed-in user. The call and the office presence
  * live here, so client-side navigation never touches them; a sign-out or a revoked session shuts
  * everything down and releases the devices.
  */

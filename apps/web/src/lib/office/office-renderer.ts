@@ -35,7 +35,7 @@ interface Sprite {
   root: Container;
   ring: Graphics;
   status: VoStatus | null;
-  /** ADR 046: drawn faded with a dashed ring and an "away" badge. */
+  /** ADR 048: drawn faded with a dashed ring and an "away" badge. */
   away: boolean | null;
   badge: BitmapText;
   name: BitmapText;

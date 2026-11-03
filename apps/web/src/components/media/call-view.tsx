@@ -45,7 +45,7 @@ export function TileView({ t, large }: { t: Tile; large?: boolean }) {
 
 /**
  * Audio elements for every remote microphone and screen-share sound (video tiles are muted).
- * Rendered once by the call provider (ADR 046), so sound plays on every page and never twice.
+ * Rendered once by the call provider (ADR 048), so sound plays on every page and never twice.
  */
 export function RemoteAudio({ session }: { session: MediaSession }) {
   const room = session.room;
