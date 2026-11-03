@@ -24,6 +24,8 @@ and `SMTP_USER` / `SMTP_PASSWORD` were ignored, so Gmail refused it before `MAIL
    The password is never logged and never appears in an error.
 4. Node's built-in `tls` module does the upgrade, so no new package.
 5. `smtp` is still refused when `NODE_ENV=production`. Production mail stays on Resend (ADR 039).
+   *Superseded in part by ADR 046 (2026-10-30): production now accepts authenticated submission
+   on port 587 with a plain sender; the unauthenticated form is still refused.*
    Gmail is for the development-mode Internet demo only: its daily sending limit (about 500 per
    day for a consumer account), Google's anti-abuse checks and the `@gmail.com` sender do not
    suit a product.

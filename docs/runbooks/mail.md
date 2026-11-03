@@ -65,20 +65,23 @@ with an App Password instead; see section 2a.)
 If a key leaks, delete it in Resend (API Keys → the key → Delete), create a new one, and replace
 it in `.env`.
 
-**Amazon SES** is not built in yet. Its SMTP interface would work with the STARTTLS login of
-section 2a, but `smtp` is refused in production; enabling it there needs the owner's decision.
-Until then use Resend.
+**Amazon SES** has no API integration, but its SMTP interface (`email-smtp.<region>.amazonaws.com`,
+port 587, SMTP credentials) works with the authenticated SMTP of section 2a, in production too.
 
-## 2a. Internet demo: Gmail with an App Password (ADR 043)
+## 2a. Gmail with an App Password, or any provider's SMTP submission (ADR 043, ADR 046)
 
-For the development-mode public demo only (`smtp` is refused in production). Use a **dedicated**
-Gmail account, never a personal one.
+Used by the Internet demo and by AWS staging (docs/runbooks/staging-ec2.md). With
+`NODE_ENV=production` the API accepts `smtp` only as authenticated submission: `SMTP_USER` and
+`SMTP_PASSWORD` set, port 587 with STARTTLS and a certificate the system trust store accepts for
+`SMTP_HOST` (a public host name), and a plain `MAIL_FROM` address (no display name). It refuses
+anything else at start, including `NODE_TLS_REJECT_UNAUTHORIZED=0`. Use a **dedicated** Gmail
+account, never a personal one.
 
 1. On that account turn on 2-Step Verification, then create an App Password at
    https://myaccount.google.com/apppasswords (name it e.g. `Virtual-HR`).
-2. Type it yourself into `.env.demo-internet` (git-ignored; keep it `chmod 600`), **without the
-   spaces** Google shows, because the file is sourced by bash. Never paste it into chat, tickets or
-   a tracked file.
+2. Type it yourself into `.env.demo-internet` or, on staging, `.env.staging` (both git-ignored;
+   keep them `chmod 600`), **without the spaces** Google shows. Never paste it into chat, tickets
+   or a tracked file.
 
    ```
    MAIL_TRANSPORT=smtp

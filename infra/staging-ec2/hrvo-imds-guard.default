@@ -1,0 +1,6 @@
+# /etc/default/hrvo-imds-guard: settings for imds-guard.sh (ADR 047). Must match
+# docker-compose.staging.yml (network api_egress).
+API_BRIDGE=hrvo-api
+API_SUBNET=172.30.1.0/29
+# Primary group of the SSH tunnel accounts (sshd-hrvo-tunnel.conf); empty disables the host rule.
+TUNNEL_GROUP=hrvo-tunnel

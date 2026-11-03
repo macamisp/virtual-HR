@@ -1,0 +1,40 @@
+# Staging TLS proxy, public mode (ADR 046). WEB_URL, API_URL and FILES_URL are https:// addresses;
+# Let's Encrypt certificates for their names, which must point at the instance before the first
+# start (ports 80 and 443 open). Not used in ssh mode.
+{
+	email {$ACME_EMAIL}
+	servers {
+		# Only the proxy's own peers are trusted for X-Forwarded-*; clients cannot spoof them.
+		trusted_proxies static private_ranges
+	}
+}
+
+(common) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	log {
+		output stdout
+		format json
+	}
+}
+
+{$WEB_URL} {
+	import common
+	reverse_proxy web:3000
+}
+
+# REST and Socket.IO (WebSocket upgrades pass through reverse_proxy).
+{$API_URL} {
+	import common
+	reverse_proxy api:3001
+}
+
+# Presigned document uploads and downloads. The Host header is passed through unchanged, so the
+# SigV4 signature the API made for FILES_URL still matches.
+{$FILES_URL} {
+	import common
+	reverse_proxy storage:8333
+}

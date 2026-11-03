@@ -13,6 +13,7 @@ import type { AttendanceInputRecord } from './attendance-replay.ts';
 
 import crypto from 'node:crypto';
 import pg from 'pg';
+import { poolConfig } from '../common/db-config.ts';
 const { Pool } = pg;
 import {
   AttendanceState,
@@ -134,6 +135,20 @@ export interface PostgresRepositoryOptions {
   retentionPoolConfig?: pg.PoolConfig;
 }
 
+/**
+ * The three role pools from PG* (ADR 020, ADR 046): host, database and TLS come from the shared
+ * poolConfig(), so PGSSLMODE=verify-full verifies the server against PGSSLROOTCERT here too;
+ * only the login differs per role.
+ */
+function envPoolConfigs(env: Record<string, string | undefined> = process.env): { app: pg.PoolConfig; admin: pg.PoolConfig; retention: pg.PoolConfig } {
+  const base = poolConfig(env);
+  return {
+    app: base,
+    admin: { ...base, user: env.PGADMIN_USER || env.PGUSER || 'postgres', password: env.PGADMIN_PASSWORD || env.PGPASSWORD || 'postgres' },
+    retention: { ...base, user: env.PGRETENTION_USER || 'hrvo_retention', password: env.PGRETENTION_PASSWORD || 'hrvo_retention_dev' },
+  };
+}
+
 export class PostgresAttendanceRepository implements IAttendanceRepository {
   private pool: pg.Pool;          // Application pool (runs as non-superuser 'hrvo_app' with NOBYPASSRLS)
   private adminPool: pg.Pool;     // Admin pool (runs as owner 'postgres' for migrations & test wipe ONLY)
@@ -147,33 +162,10 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       this.retentionPool = new Pool({ connectionString: options });
     } else if (options && ('appPoolConfig' in options || 'adminPoolConfig' in options || 'retentionPoolConfig' in options)) {
       const opts = options as PostgresRepositoryOptions;
-      this.pool = new Pool(
-        opts.appPoolConfig || {
-          host: process.env.PGHOST || 'localhost',
-          port: parseInt(process.env.PGPORT || '5433', 10),
-          user: process.env.PGUSER || 'hrvo_app',
-          password: process.env.PGPASSWORD || 'hrvo_app_pass',
-          database: process.env.PGDATABASE || 'hrvo_dev',
-        },
-      );
-      this.adminPool = new Pool(
-        opts.adminPoolConfig || {
-          host: process.env.PGHOST || 'localhost',
-          port: parseInt(process.env.PGPORT || '5433', 10),
-          user: process.env.PGADMIN_USER || process.env.PGUSER || 'postgres',
-          password: process.env.PGADMIN_PASSWORD || process.env.PGPASSWORD || 'postgres',
-          database: process.env.PGDATABASE || 'hrvo_dev',
-        },
-      );
-      this.retentionPool = new Pool(
-        opts.retentionPoolConfig || {
-          host: process.env.PGHOST || 'localhost',
-          port: parseInt(process.env.PGPORT || '5433', 10),
-          user: process.env.PGRETENTION_USER || 'hrvo_retention',
-          password: process.env.PGRETENTION_PASSWORD || 'hrvo_retention_dev',
-          database: process.env.PGDATABASE || 'hrvo_dev',
-        },
-      );
+      const env = envPoolConfigs();
+      this.pool = new Pool(opts.appPoolConfig || env.app);
+      this.adminPool = new Pool(opts.adminPoolConfig || env.admin);
+      this.retentionPool = new Pool(opts.retentionPoolConfig || env.retention);
     } else if (options) {
       // Direct PoolConfig passed
       this.pool = new Pool(options as pg.PoolConfig);
@@ -189,27 +181,10 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       });
     } else {
       // Default: Connect as non-superuser hrvo_app
-      this.pool = new Pool({
-        host: process.env.PGHOST || 'localhost',
-        port: parseInt(process.env.PGPORT || '5433', 10),
-        user: process.env.PGUSER || 'hrvo_app',
-        password: process.env.PGPASSWORD || 'hrvo_app_pass',
-        database: process.env.PGDATABASE || 'hrvo_dev',
-      });
-      this.adminPool = new Pool({
-        host: process.env.PGHOST || 'localhost',
-        port: parseInt(process.env.PGPORT || '5433', 10),
-        user: process.env.PGADMIN_USER || process.env.PGUSER || 'postgres',
-        password: process.env.PGADMIN_PASSWORD || process.env.PGPASSWORD || 'postgres',
-        database: process.env.PGDATABASE || 'hrvo_dev',
-      });
-      this.retentionPool = new Pool({
-        host: process.env.PGHOST || 'localhost',
-        port: parseInt(process.env.PGPORT || '5433', 10),
-        user: process.env.PGRETENTION_USER || 'hrvo_retention',
-        password: process.env.PGRETENTION_PASSWORD || 'hrvo_retention_dev',
-        database: process.env.PGDATABASE || 'hrvo_dev',
-      });
+      const env = envPoolConfigs();
+      this.pool = new Pool(env.app);
+      this.adminPool = new Pool(env.admin);
+      this.retentionPool = new Pool(env.retention);
     }
   }
 
