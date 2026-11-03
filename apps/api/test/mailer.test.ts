@@ -325,6 +325,7 @@ describe('Account e-mails: layout and transports (ADR 039)', () => {
     assert.throws(() => createMailTransport({ ...prod, MAIL_TRANSPORT: 'resend', MAIL_FROM: 'a@b.test' }), /RESEND_API_KEY/);
     assert.throws(() => createMailTransport({ ...prod, MAIL_TRANSPORT: 'resend', RESEND_API_KEY: 'k' }), /MAIL_FROM/);
     assert.ok(createMailTransport({ ...prod, MAIL_TRANSPORT: 'resend', RESEND_API_KEY: 'k', MAIL_FROM: 'a@b.test' }) instanceof ResendMailTransport);
+    assert.ok(createMailTransport({ ...prod, MAIL_TRANSPORT: 'resend', RESEND_API_KEY: 'k', RESEND_FROM: 'a@b.test' }) instanceof ResendMailTransport, 'RESEND_FROM is accepted as the sender too');
   });
 
   it('outside tests, a transport that delivers nothing says so at start', () => {

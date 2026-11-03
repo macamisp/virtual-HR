@@ -14,11 +14,15 @@ Windows: use WSL 2. The commands are for a Linux or macOS shell.
 ## 1. Start the infrastructure (once per session)
 
 ```bash
-docker compose up -d          # starts the services listed below
+LAN_HOST=localhost docker compose up -d  # starts the services listed below
 npm install                   # first time only
 npm run setup                 # first time only
 npm run verify -- --preflight # shows which services answer
 ```
+
+Compose currently requires `LAN_HOST` even when the optional LAN proxy profile is disabled. Use
+the `LAN_HOST=localhost` prefix for the Compose commands below too. This only supplies Compose's
+required value; for access from other devices, follow [lan-https.md](lan-https.md).
 
 | Service | Port | What it is for |
 | --- | --- | --- |

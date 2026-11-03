@@ -7,8 +7,9 @@
  *    http://localhost:8025). With them it requires STARTTLS with a verified certificate before
  *    AUTH PLAIN, e.g. Gmail with an App Password for the Internet demo (ADR 043). Refused in
  *    production either way.
- *  - "resend": the Resend HTTPS API (https://resend.com). RESEND_API_KEY and MAIL_FROM come from
- *    the environment only. The production choice today; see docs/runbooks/mail.md.
+ *  - "resend": the Resend HTTPS API (https://resend.com). RESEND_API_KEY and MAIL_FROM (or its
+ *    alias RESEND_FROM) come from the environment only. The production choice today; see
+ *    docs/runbooks/mail.md.
  *  - "memory": in-process outbox for the API tests. Nothing is delivered.
  *  - "file": one JSON file per message in MAIL_FILE_DIR, for the browser tests (they read the
  *    e-mail and click its link). Nothing is delivered.
@@ -268,9 +269,10 @@ export function createMailTransport(env: Record<string, string | undefined> = pr
   }
   if (mode === 'resend') {
     const key = env.RESEND_API_KEY ?? '';
-    const from = env.MAIL_FROM ?? '';
+    // RESEND_FROM: the name used by deployments configured from main's earlier Resend set-up.
+    const from = env.MAIL_FROM ?? env.RESEND_FROM ?? '';
     if (!key) throw new Error('MAIL_TRANSPORT=resend needs RESEND_API_KEY');
-    if (!from) throw new Error('MAIL_TRANSPORT=resend needs MAIL_FROM (an address on a domain verified in Resend)');
+    if (!from) throw new Error('MAIL_TRANSPORT=resend needs MAIL_FROM (an address on a domain verified in Resend; RESEND_FROM is accepted too)');
     return new ResendMailTransport(key, from);
   }
   if (mode !== 'smtp') {
@@ -287,7 +289,7 @@ export function createMailTransport(env: Record<string, string | undefined> = pr
   return new SmtpMailTransport(
     env.SMTP_HOST || 'localhost',
     Number.parseInt(env.SMTP_PORT || '1025', 10),
-    env.MAIL_FROM || env.SMTP_FROM || 'no-reply@hrvo.local',
+    env.MAIL_FROM || env.RESEND_FROM || env.SMTP_FROM || 'no-reply@hrvo.local',
     user ? { auth: { user, password } } : {},
   );
 }

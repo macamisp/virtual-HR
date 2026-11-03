@@ -1,6 +1,8 @@
 # HRVO infrastructure (Terraform) — ADR 020
 
-**Nothing here has been applied.** `plan` and `apply` are run only by an operator, with the owner's explicit approval (AGENTS.md).
+**Retained AWS reference; not the planned hosting target.** The planned frontend and API hosts are Vercel and Railway (see [the root README](../../README.md#planned-hosting)). This Terraform also covers storage, KMS and backups whose replacement has not been established, so it is retained along with its CI validation. The operator instructions below apply only to this AWS topology.
+
+**Nothing here has been applied according to ADR 020.** `plan` and `apply` are run only by an operator, with the owner's explicit approval (AGENTS.md).
 
 ```
 bootstrap/          once per account: encrypted, versioned S3 state bucket (S3-native locking)
