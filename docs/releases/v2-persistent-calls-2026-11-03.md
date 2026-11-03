@@ -3,7 +3,7 @@
 Status: **local verification in progress; not deployed.** Version 1 (release/staging-2026-10-30)
 stays on the AWS host until the owner approves this release.
 
-Candidate: branch `feat/screen-share-viewer` (PR #4), head listed in the release-readiness report.
+Candidate: branch `feat/screen-share-viewer` (PR #4), head `d98f482` (see the release-readiness report).
 Design: ADR 048 (persistent call), ADR 046/047 (staging host, unchanged).
 
 ## What changes for people
