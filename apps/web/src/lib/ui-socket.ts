@@ -33,7 +33,9 @@ function ensure(): Socket {
     const token = useAuthStore.getState().accessToken;
     if (!s || !token) return;
     if (!s.connected) { s.connect(); return; }
+    const connection = s.id;
     const r = await s.timeout(10_000).emitWithAck('auth:refresh', { token }).catch(() => null) as { success: boolean } | null;
+    if (socket !== s || s.id !== connection) return; // a reply about an earlier connection
     if (!r?.success) { s.disconnect(); void reconnect(); }
   };
   const reconnect = async (afterMs = 0) => {
@@ -49,7 +51,7 @@ function ensure(): Socket {
   socket.on('connect', () => { denied = 0; });
   socket.on('disconnect', (reason) => { if (reason === 'io server disconnect') void reconnect(); });
   socket.on('connect_error', (err) => { if (err.message === 'Unauthorized') { denied += 1; void reconnect(Math.min(30_000, 2_000 * denied)); } });
-  socket.on('auth:expired', () => void extend());
+  socket.on('auth:expired', () => undefined); // the server disconnects next; the disconnect handler reconnects
   unsubAuth?.();
   unsubAuth = useAuthStore.subscribe((state, prev) => { if (state.accessToken && state.accessToken !== prev.accessToken) void extend(); });
   socket.onAny((event: string, payload: unknown) => { for (const h of handlers.get(event) ?? []) h(payload); });

@@ -115,7 +115,9 @@ export class OfficeClient {
       // Refused in the handshake (stale token): also never retried by Socket.IO itself.
       if (err.message === 'Unauthorized') { this.deniedCount += 1; void this.reconnectWithFreshToken(Math.min(30_000, 2_000 * this.deniedCount)); }
     });
-    socket.on('auth:expired', () => void this.extendAuth());
+    // `auth:expired` is followed at once by a server disconnect: the disconnect handler reconnects
+    // with a fresh token. Answering it with auth:refresh would only race that reconnection.
+    socket.on('auth:expired', () => undefined);
     // Every refreshed access token extends this socket's life on the server before it expires
     // (ADR 005 `auth:refresh`), so an idle office tab is never kicked in the first place.
     this.unsubAuth = useAuthStore.subscribe((state, prev) => {
@@ -169,7 +171,10 @@ export class OfficeClient {
     const token = useAuthStore.getState().accessToken;
     if (!socket || !token) return;
     if (!socket.connected) { socket.connect(); return; }
+    const connection = socket.id;
     const r = await socket.timeout(10_000).emitWithAck('auth:refresh', { token }).catch(() => null) as { success: boolean } | null;
+    // A reply that arrives after a reconnection is about an earlier connection: leave this one alone.
+    if (this.socket !== socket || socket.id !== connection) return;
     if (!r?.success) { socket.disconnect(); void this.reconnectWithFreshToken(); }
   }
 

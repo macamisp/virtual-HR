@@ -148,6 +148,13 @@ acknowledgement never arrives (network drop mid-walk) no longer blocks every lat
 forgotten when the window or tab loses focus, so a keyup lost to another window cannot keep the
 avatar walking. No automatic page reload anywhere.
 
+Found by repeating spec 37: the first version of this fix still answered `auth:expired` with
+`auth:refresh`; the server disconnects right after emitting that event, so the reply never comes,
+and the 10-second acknowledgement timeout then disconnected the socket that had meanwhile
+reconnected (a teleport sent in that window was refused with "Join the office first"). Now
+`auth:expired` is ignored (the disconnect handler does the work) and a late reply cannot touch a
+socket that has reconnected since (`socket.id` is compared).
+
 **Proof.** Spec 37: (1) A idles past the token's life, then walks and enters a room that B sees,
 and B's call still rings on A's page (UI socket); (2) a network drop while a key is held, then the
 walk reaches the server again (room entered and left by walking). The e2e API issues 120-second
