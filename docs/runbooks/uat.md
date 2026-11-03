@@ -198,6 +198,12 @@ Times come from the **server clock** only (the browser's time is ignored); a sig
 - **Leave / Sign out:** **Leave** in the small window ends the call for Wendy only (Leo stays connected); the camera light goes off. **Sign out** while in a call ends the call and removes Wendy from the office.
 - **Setting:** in the office **Audio and video** card, "Mute my microphone when I leave the office page" (off by default) mutes Wendy when she goes to another page during an office call.
 
+### AC-15c. The avatar never freezes after a quiet spell (ADR 048 §8): BUILT
+- **Accounts:** Wendy (window 1), Leo (window 2). **Steps:** both in the **Office**. Wendy leaves her window untouched for more than 16 minutes (an access token lives 15; a background tab counts too), then presses W/A/S/D and walks into Meeting room A.
+- **Expect:** the avatar moves at once (no reload, no "Connecting to the office…" banner); Leo's People list says Wendy is "in Meeting room A" within a few seconds; Leo's **Call** still rings in Wendy's window.
+- **Network:** with Wendy walking, switch Wi-Fi off for ~5 s and on again: the banner disappears by itself and her next walk reaches Leo's view. During a room call the call resumes without a new join.
+- **Automated:** Playwright 37 does this with a two-minute token (`ACCESS_TOKEN_TTL_SECONDS=120` in the e2e API only).
+
 ### AC-16. Contract expiring in 30 days: BUILT
 - **Accounts:** Hana, Leo (Sam's manager). **Steps:** Hana: **Documents → Contracts → New contract** (Person Sam, Title, Start, **End** = 30 days from today, Status Active, Signed document) → create. The reminder job runs every few minutes (or at once with background jobs on; see [web-local.md](web-local.md)).
 - **Expect:** Hana and Leo each get a notification "Contract ends in 30 days: Sam Subcontractor" and an email (Mailhog, http://localhost:8025). Reminders come at 30, 14 and 7 days and on the last day (FR-ORG-003). The seeded contract (about 25 days left) shows the same notice.

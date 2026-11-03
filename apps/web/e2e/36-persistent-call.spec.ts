@@ -84,6 +84,19 @@ test('the call and the office presence follow the user across pages; one tab own
     await expect(dock.getByTestId('dock-status')).toContainText('Meeting room A: Connected, 2 in call. Microphone on, camera on');
     for (const name of ['Mute', 'Camera', 'Share screen', 'Raise hand', 'Leave', 'Return to office']) await expect(dock.getByRole('button', { name, exact: true })).toBeVisible();
     await expect(a.getByTestId('office-presence')).toContainText('In the office');
+    // Keyboard accessibility: the handle moves the dock with the arrow keys and keeps it on screen.
+    const handle = dock.getByRole('button', { name: /Move the call window/ });
+    const at = async () => { const b = (await dock.boundingBox())!; return { x: Math.round(b.x), y: Math.round(b.y), r: Math.round(b.x + b.width), b: Math.round(b.y + b.height) }; };
+    const p0 = await at();
+    await handle.focus();
+    await a.keyboard.press('ArrowLeft');
+    await a.keyboard.press('ArrowUp');
+    await expect.poll(async () => { const p = await at(); return p.x < p0.x && p.y < p0.y; }).toBe(true);
+    for (let i = 0; i < 80; i += 1) await a.keyboard.press('ArrowRight'); // far beyond the edge: clamped
+    const vp = a.viewportSize()!;
+    await expect.poll(async () => (await at()).r <= vp.width).toBe(true);
+    await a.keyboard.press('Home');
+    await expect.poll(async () => { const p = await at(); return p.r <= vp.width && p.b <= vp.height; }).toBe(true);
     await b.getByLabel('Find a colleague').fill('Wendy');
     const bPeople = b.getByTestId('people-list').getByRole('listitem').filter({ hasText: USERS.worker.name });
     await expect(bPeople).toContainText('in Meeting room A · away from the office view');

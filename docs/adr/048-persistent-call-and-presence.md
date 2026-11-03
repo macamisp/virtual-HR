@@ -125,6 +125,35 @@ A per-user setting, off by default, in the office snapshot (`me.muteOnLeave`) an
 `PUT /office/me/preferences` (`users.vo_mute_on_leave`). When set, leaving `/office` during an
 office call mutes the microphone; the dock shows the microphone and camera state at all times.
 
+### 8. Idle recovery: the office socket outlives the access token (2026-11-03, V2 QA)
+
+**Bug.** After a while in the office, sometimes only after a quiet period, the avatar froze: keys
+did nothing and only a reload helped. Root cause, reproduced by Playwright spec 37 with a
+two-minute token: at the access token's `exp` the gateway emits `auth:expired` and immediately
+`disconnect(true)`s the socket (`AttendanceGateway.applyAuth`). Socket.IO never reconnects on its
+own after a server-side disconnect or a refused handshake, and the office client only set
+`connected = false`, so `OfficeClient.step()` returned early for ever. The shell refreshes the
+session a minute before expiry, but nothing handed the new token to the office or UI sockets, and
+a throttled background tab can refresh late anyway. The heartbeat worker already handled all of
+this; the office and UI sockets did not.
+
+**Fix (client only, no server change).** `OfficeClient` and `lib/ui-socket.ts` now: hand every
+refreshed access token to the live socket (`auth:refresh`, which extends the server's expiry timer,
+so an idle tab is not kicked at all); on `disconnect` with reason `io server disconnect`, or a
+`connect_error` of `Unauthorized`, refresh the session if the token is within 30 s of expiry and
+call `socket.connect()` (with a growing delay after repeated refusals); retry `office:join` after a
+transient failure (`Forbidden` is final). Two hardenings found on the way: a move whose
+acknowledgement never arrives (network drop mid-walk) no longer blocks every later move
+(`inFlight` and the path are reset on disconnect and on join), and held movement keys are
+forgotten when the window or tab loses focus, so a keyup lost to another window cannot keep the
+avatar walking. No automatic page reload anywhere.
+
+**Proof.** Spec 37: (1) A idles past the token's life, then walks and enters a room that B sees,
+and B's call still rings on A's page (UI socket); (2) a network drop while a key is held, then the
+walk reaches the server again (room entered and left by walking). The e2e API issues 120-second
+tokens (`ACCESS_TOKEN_TTL_SECONDS`, new; default 15 min, minimum 60 s), which also makes every
+longer spec (36 is three minutes in the office) cross an expiry.
+
 ## Consequences
 
 - The automatic audio-only fallback (FR-MEET-010) now needs the connection to stay poor for 5 s;

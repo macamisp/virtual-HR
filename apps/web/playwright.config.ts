@@ -62,6 +62,9 @@ export default defineConfig({
         RATE_LIMIT_REFRESH: '500',
         // The suite signs the same people in many times per minute; production default is 10/min.
         RATE_LIMIT_HEARTBEAT: '500',
+        // Spec 37 proves the office survives the access token's expiry while the user is idle: two
+        // minutes instead of fifteen (the web app refreshes a minute before expiry, as in production).
+        ACCESS_TOKEN_TTL_SECONDS: '120',
         BREACHED_PASSWORD_CHECK: 'local',
         // No Redis needed: notification emails are sent inline and no schedulers run, except the
         // attendance reconciler, which the accuracy spec (23) needs for tab-close and network-loss.

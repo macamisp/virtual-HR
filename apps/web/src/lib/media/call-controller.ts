@@ -68,8 +68,16 @@ export class CallController {
     this.officeMediaEnabled = typeof window !== 'undefined' && readEnabled();
     if (this.officeMediaEnabled) this.prefs = loadPrefs();
     this.session.subscribe(() => {
-      // The room ended under us (removed by the host, meeting ended): drop the route so the dock closes.
-      if (this.session.status === 'ended' && this.current) { this.current = null; this.routeKey = null; this.release(); }
+      // The room ended under us (removed by the host, meeting ended, a LiveKit full reconnect with
+      // an expired room token): drop the route so the dock closes. An office call is then joined
+      // again with a fresh token at once, not only when the next office event happens to arrive.
+      if (this.session.status === 'ended' && this.current) {
+        const wasOffice = this.current.kind === 'office';
+        this.current = null;
+        this.routeKey = null;
+        this.release();
+        if (wasOffice) setTimeout(() => this.evaluateRoute(), 1000);
+      }
       this.changed();
     });
   }

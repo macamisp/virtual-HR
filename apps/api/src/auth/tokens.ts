@@ -13,7 +13,11 @@ const AUDIENCE: Record<TokenType, string> = {
   mfa_enroll: 'hrvo-mfa-enroll',
 };
 
-export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60; // FR-AUTH-003
+/** FR-AUTH-003: 15 minutes. ACCESS_TOKEN_TTL_SECONDS (>= 60) shortens it for tests of the expiry paths. */
+export const ACCESS_TOKEN_TTL_SECONDS = (() => {
+  const n = Number.parseInt(process.env.ACCESS_TOKEN_TTL_SECONDS ?? '', 10);
+  return Number.isFinite(n) && n >= 60 ? n : 15 * 60;
+})();
 export const MFA_ENROLL_TOKEN_TTL_SECONDS = 10 * 60;
 
 type Claims = Omit<JwtPayload, 'exp'>;

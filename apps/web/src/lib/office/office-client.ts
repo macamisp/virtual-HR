@@ -12,6 +12,7 @@ import type {
 } from '@hrvo/shared';
 import { API_URL } from '../env';
 import { useAuthStore } from '../auth-store';
+import { refreshSession, secondsUntilExpiry } from '../session';
 
 export interface RemoteAvatar {
   id: string;
@@ -65,6 +66,10 @@ export class OfficeClient {
   private lastSent: { x: number; y: number } | null = null;
   private sendTimer: ReturnType<typeof setInterval> | null = null;
   private inFlight = false;
+  private unsubAuth: (() => void) | null = null;
+  private reconnecting = false;
+  private deniedCount = 0;
+  private joinRetry: ReturnType<typeof setTimeout> | null = null;
 
   /** Whether the office view is on screen, and whether the map wants the position stream (ADR 048). */
   private visible = true;
@@ -96,11 +101,25 @@ export class OfficeClient {
       reconnectionDelayMax: 10_000,
     });
     this.socket = socket;
-    socket.on('connect', () => void this.join());
-    socket.on('disconnect', () => { this.connected = false; this.changed(); });
-    socket.on('auth:expired', () => {
-      const token = useAuthStore.getState().accessToken;
-      socket.emit('auth:refresh', { token }, (r: { success: boolean }) => { if (!r?.success) { socket.disconnect(); socket.connect(); } });
+    socket.on('connect', () => { this.deniedCount = 0; void this.join(); });
+    socket.on('disconnect', (reason) => {
+      this.connected = false;
+      // A move whose acknowledgement will never come must not block every later move (ADR 048 §8).
+      this.inFlight = false;
+      this.path = [];
+      this.changed();
+      // Kicked by the server (expired token): Socket.IO does not reconnect from this on its own.
+      if (reason === 'io server disconnect') void this.reconnectWithFreshToken();
+    });
+    socket.on('connect_error', (err) => {
+      // Refused in the handshake (stale token): also never retried by Socket.IO itself.
+      if (err.message === 'Unauthorized') { this.deniedCount += 1; void this.reconnectWithFreshToken(Math.min(30_000, 2_000 * this.deniedCount)); }
+    });
+    socket.on('auth:expired', () => void this.extendAuth());
+    // Every refreshed access token extends this socket's life on the server before it expires
+    // (ADR 005 `auth:refresh`), so an idle office tab is never kicked in the first place.
+    this.unsubAuth = useAuthStore.subscribe((state, prev) => {
+      if (state.accessToken && state.accessToken !== prev.accessToken) void this.extendAuth();
     });
     socket.on('office:positions', (m: PositionsMessage) => this.onPositions(m));
     socket.on('office:presence', (e: RosterEntry | { id: string; gone: true }) => {
@@ -136,15 +155,51 @@ export class OfficeClient {
 
   disconnect(): void {
     if (this.sendTimer) clearInterval(this.sendTimer);
+    if (this.joinRetry) clearTimeout(this.joinRetry);
+    this.unsubAuth?.();
+    this.unsubAuth = null;
     this.socket?.emit('office:leave');
     this.socket?.disconnect();
     this.socket = null;
   }
 
+  /** Hands the current access token to the live socket (extends its expiry on the server). */
+  private async extendAuth(): Promise<void> {
+    const socket = this.socket;
+    const token = useAuthStore.getState().accessToken;
+    if (!socket || !token) return;
+    if (!socket.connected) { socket.connect(); return; }
+    const r = await socket.timeout(10_000).emitWithAck('auth:refresh', { token }).catch(() => null) as { success: boolean } | null;
+    if (!r?.success) { socket.disconnect(); void this.reconnectWithFreshToken(); }
+  }
+
+  /**
+   * ADR 048 §8: after a kick or a refused handshake, make sure the session is fresh (the shell
+   * refreshes a minute before expiry, but a throttled background tab can be late) and reconnect.
+   * A session that cannot be refreshed means a sign-out; the provider then closes the office.
+   */
+  private async reconnectWithFreshToken(afterMs = 0): Promise<void> {
+    if (this.reconnecting || !this.socket) return;
+    this.reconnecting = true;
+    try {
+      if (afterMs) await new Promise((r) => setTimeout(r, afterMs));
+      const token = useAuthStore.getState().accessToken;
+      if (!token || secondsUntilExpiry(token) < 30) { if (!(await refreshSession())) return; }
+      if (this.socket && !this.socket.connected) this.socket.connect();
+    } finally { this.reconnecting = false; }
+  }
+
   private async join(): Promise<void> {
     const sent = { positions: this.positions, visible: this.visible };
     const ack = await this.socket!.emitWithAck('office:join', { ...sent, floorId: this.self?.floorId }) as JoinAck;
-    if (!ack.ok) { this.notice = { kind: 'error', text: `Could not enter the office: ${ack.error}` }; this.changed(); return; }
+    if (!ack.ok) {
+      this.notice = { kind: 'error', text: `Could not enter the office: ${ack.error}` };
+      this.changed();
+      // Transient (a database hiccup, a token that just turned): try again; "Forbidden" is final.
+      if (ack.error !== 'Forbidden' && this.socket) this.joinRetry = setTimeout(() => { if (this.socket?.connected) void this.join(); }, 3_000);
+      return;
+    }
+    this.inFlight = false;
     this.connected = true;
     // The view may have changed while the join was in flight (ADR 048).
     if (sent.positions !== this.positions || sent.visible !== this.visible) this.socket!.emit('office:view', { visible: this.visible, positions: this.positions });
