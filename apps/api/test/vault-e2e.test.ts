@@ -201,7 +201,7 @@ describe('Confidential vault (FR-DOC-005, 006, 007, 010, 011, 017)', { concurren
   });
 
   describe('Encryption at rest: dumps reveal nothing (FR-DOC-007, SRS 10.1)', { concurrency: false }, () => {
-    it('a database dump plus a bucket dump contain no content, file name or confidential title', async () => {
+    it('a database dump plus a bucket dump contain no content, file name or confidential title', async (t) => {
       const markers = [MARKER_CONTENT, MARKER_TITLE, MARKER_FILE, 'OMEGA-55218'];
       const hexOf = (m: string) => Buffer.from(m, 'utf8').toString('hex');
       // Database: every row of every table, as text (bytea is rendered as hex).
@@ -216,10 +216,22 @@ describe('Confidential vault (FR-DOC-005, 006, 007, 010, 011, 017)', { concurren
         assert.ok(!dbDump.includes(m), `database dump contains "${m}"`);
         assert.ok(!dbDump.toLowerCase().includes(hexOf(m)), `database dump contains "${m}" as hex`);
       }
-      // Bucket: every object under this org.
+      // Bucket: every object under this org. `_staging/{document}/…` is plaintext by design until
+      // the scan finishes; one whose document no longer exists was left by an earlier, interrupted
+      // run (the test org's rows are recreated each run). Those are reported, not checked or
+      // deleted; staging objects of this run's documents are checked like everything else.
       const listed = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: `${ORG}/` }));
       assert.ok((listed.Contents ?? []).length >= 1);
+      const known = new Set((await adminPool.query<{ id: string }>(`SELECT id FROM documents WHERE org_id = $1`, [ORG])).rows.map((r) => r.id));
+      const orphan = (key: string) => {
+        const m = new RegExp(`^${ORG}/_staging/([^/]+)/`).exec(key);
+        return m !== null && !known.has(m[1]!);
+      };
+      const orphans = (listed.Contents ?? []).filter((o) => orphan(o.Key!));
+      if (orphans.length) t.diagnostic(`skipped ${orphans.length} staging object(s) from earlier runs whose documents no longer exist`);
+      assert.ok((listed.Contents ?? []).length > orphans.length, 'this run left encrypted objects to check');
       for (const o of listed.Contents ?? []) {
+        if (orphan(o.Key!)) continue;
         const body = Buffer.from(await (await s3.send(new GetObjectCommand({ Bucket: bucket, Key: o.Key! }))).Body!.transformToByteArray());
         const latin = body.toString('latin1').toUpperCase();
         for (const m of markers) {

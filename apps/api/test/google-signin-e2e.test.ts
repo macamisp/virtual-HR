@@ -11,6 +11,8 @@ import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import argon2 from 'argon2';
 import pg from 'pg';
+import jwt from 'jsonwebtoken';
+import { getJwtSecret } from '../src/common/config.ts';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
 import { MAIL_TRANSPORT } from '../src/common/mailer.ts';
@@ -44,17 +46,20 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
   const json = (path: string, body: unknown, token?: string) => fetch(`${base}${path}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body),
   });
+  /** ADR 042: the browser navigates to the start address; the API sets the state cookie and redirects to Google. */
+  const startRaw = (params: Record<string, unknown>) =>
+    fetch(`${base}/auth/google/start?${new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]))}`, { redirect: 'manual' });
   async function start(body: Record<string, unknown>): Promise<Flow> {
-    const res = await json('/auth/google/start', body);
+    const res = await startRaw(body);
     const text = await res.text();
-    assert.equal(res.status, 200, text);
+    assert.equal(res.status, 302, text);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
     const cookie = res.headers.getSetCookie().find((c) => c.startsWith('hrvo_oauth='));
     assert.ok(cookie, 'state cookie');
     assert.match(cookie, /HttpOnly/i);
     assert.match(cookie, /SameSite=Lax/i);
     assert.match(cookie, /Path=\/auth\/google/);
-    const { authorizeUrl } = JSON.parse(text) as { authorizeUrl: string };
-    const u = new URL(authorizeUrl);
+    const u = new URL(res.headers.get('location')!);
     assert.equal(u.origin, `http://localhost:${G_PORT}`);
     assert.equal(u.searchParams.get('code_challenge_method'), 'S256');
     assert.equal(u.searchParams.get('client_id'), CLIENT_ID);
@@ -112,18 +117,26 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
   });
 
   it('is refused while no client id and secret are configured; only openid email profile are requested', async () => {
-    const saved = process.env.GOOGLE_CLIENT_SECRET;
+    // Both the sign-in name and the calendar-sync fallback name (googleEnv) must be absent.
+    const saved = { GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET, GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET };
     delete process.env.GOOGLE_CLIENT_SECRET;
+    delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
     try {
-      assert.equal((await json('/auth/google/start', { mode: 'login' })).status, 503);
+      const off = await startRaw({ mode: 'login' });
+      assert.equal(off.status, 302);
+      assert.equal(off.headers.get('location'), 'http://localhost:3000/login?sso=error&code=not_configured');
     } finally {
-      process.env.GOOGLE_CLIENT_SECRET = saved;
+      for (const [k, v] of Object.entries(saved)) if (v !== undefined) process.env[k] = v;
     }
-    assert.equal((await json('/auth/google/start', { mode: 'login', returnTo: '//evil.example' })).status, 400, 'no open redirect');
-    assert.equal((await json('/auth/google/start', { mode: 'login', returnTo: 'https://evil.example/' })).status, 400, 'no open redirect');
-    const res = await json('/auth/google/start', { mode: 'login', returnTo: '/tasks' });
-    const { authorizeUrl } = JSON.parse(await res.text()) as { authorizeUrl: string };
-    const u = new URL(authorizeUrl);
+    for (const returnTo of ['//evil.example', 'https://evil.example/']) {
+      const bad = await startRaw({ mode: 'login', returnTo });
+      assert.equal(bad.status, 302, 'no open redirect');
+      assert.equal(bad.headers.get('location'), 'http://localhost:3000/login?sso=error&code=failed', 'no open redirect');
+      assert.equal(bad.headers.getSetCookie().some((c) => c.startsWith('hrvo_oauth=')), false, 'no state for a refused start');
+    }
+    assert.equal((await startRaw({ mode: 'link' })).headers.get('location'), 'http://localhost:3000/account/profile?sso=error&code=failed', 'linking needs the signed-in route');
+    const res = await startRaw({ mode: 'login', returnTo: '/tasks' });
+    const u = new URL(res.headers.get('location')!);
     assert.equal(u.searchParams.get('scope'), 'openid email profile');
     assert.equal(u.searchParams.get('redirect_uri'), `http://localhost:${PORT}/auth/google/callback`);
   });
@@ -133,11 +146,16 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     const r = await callback(flow, { email: 'EMP@gsso.test', sub: 'google-sub-emp' });
     assert.equal(r.sso, 'ok', r.location.toString());
     assert.equal(r.location.searchParams.get('returnTo'), '/tasks');
-    assert.ok(r.refresh, 'refresh cookie set by the callback');
+    assert.equal(r.refresh, null, 'no refresh cookie from the callback: a top-level page of the API site (ADR 042)');
+    assert.ok(r.fragmentToken, 'handoff token in the fragment');
     assert.ok(r.cleared, 'state cookie removed');
-    const session = await refreshWithCookie(base, r.refresh!);
-    assert.equal(session.status, 200);
-    const body = (await session.json()) as { accessToken: string; user: { id: string } };
+    const done = await json('/auth/google/complete', { handoffToken: r.fragmentToken });
+    const doneText = await done.text();
+    assert.equal(done.status, 200, doneText);
+    const body = JSON.parse(doneText) as { accessToken: string; refreshToken?: string; user: { id: string } };
+    assert.equal(body.refreshToken, undefined, 'refresh token only as the cookie');
+    const session = await refreshWithCookie(base, refreshCookie(done));
+    assert.equal(session.status, 200, 'the handed-over session refreshes like any other');
     assert.equal(body.user.id, U.emp.id);
     const me = await fetch(`${base}/me/access`, { headers: { Authorization: `Bearer ${body.accessToken}` } });
     assert.equal(me.status, 200);
@@ -149,6 +167,104 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     const again = await callback(await start({ mode: 'login' }), { email: 'renamed@gsso.test', sub: 'google-sub-emp' });
     assert.equal(again.sso, 'ok');
     assert.equal(await auditCount(ORG, 'GOOGLE_IDENTITY_LINKED'), 1, 'not linked twice');
+  });
+
+  it('the handoff token is single-use and short-lived; replay, expiry, tampering and a wrong audience are refused (ADR 042)', async () => {
+    const r = await callback(await start({ mode: 'login' }), { email: U.emp.email, sub: 'google-sub-emp' });
+    assert.equal(r.sso, 'ok');
+    assert.ok(r.fragmentToken);
+    const payload = jwt.decode(r.fragmentToken!) as jwt.JwtPayload;
+    assert.equal(payload.aud, 'hrvo-google-handoff');
+    assert.ok(payload.exp! - payload.iat! <= 60, 'one minute at most');
+    // The session behind an unclaimed handoff dies with the token: its own refresh token is never issued.
+    const row = (await adminPool.query<{ seconds: number }>(`SELECT EXTRACT(EPOCH FROM (expires_at - now()))::int AS seconds FROM auth_sessions WHERE id = $1`, [payload.sid])).rows[0];
+    assert.ok(row && row.seconds <= 60, 'the pending session expires with the handoff');
+
+    const expired = jwt.sign({ ...payload, iat: payload.iat! - 120, exp: payload.exp! - 120 }, getJwtSecret(), { algorithm: 'HS256' });
+    assert.equal((await json('/auth/google/complete', { handoffToken: expired })).status, 401, 'expired');
+    const parts = r.fragmentToken!.split('.');
+    parts[2] = `${parts[2]!.startsWith('a') ? 'b' : 'a'}${parts[2]!.slice(1)}`;
+    assert.equal((await json('/auth/google/complete', { handoffToken: parts.join('.') })).status, 401, 'tampered signature');
+    const challenge = await callback(await start({ mode: 'login' }), { email: U.hr.email, sub: 'google-sub-hr' });
+    assert.equal(challenge.sso, 'totp');
+    assert.equal((await json('/auth/google/complete', { handoffToken: challenge.fragmentToken })).status, 401, 'a 2FA challenge token is not a handoff');
+    assert.equal((await json('/auth/google/complete', { handoffToken: 'x'.repeat(10) })).status, 400, 'validated input');
+
+    const first = await json('/auth/google/complete', { handoffToken: r.fragmentToken });
+    assert.equal(first.status, 200, await first.text());
+    const cookie = refreshCookie(first);
+    assert.equal((await json('/auth/google/complete', { handoffToken: r.fragmentToken })).status, 401, 'single use');
+    assert.equal((await refreshWithCookie(base, cookie)).status, 401, 'a replay is token reuse: the whole family is revoked');
+    assert.ok((await auditCount(ORG, 'REFRESH_TOKEN_REUSE_DETECTED')) >= 1);
+    // Password sessions cannot be claimed through the handoff route.
+    const pw = await json('/auth/login', { email: U.emp.email, password: PASSWORD });
+    assert.equal(pw.status, 200, await pw.clone().text());
+    const pwSid = ((await pw.json()) as { sessionId: string }).sessionId;
+    const forged = jwt.sign({ sub: U.emp.id, orgId: ORG, sid: pwSid }, getJwtSecret(), { expiresIn: 60, issuer: 'hrvo-api', audience: 'hrvo-google-handoff', algorithm: 'HS256' });
+    assert.equal((await json('/auth/google/complete', { handoffToken: forged })).status, 401, 'only Google sessions');
+  });
+
+  it('sets a host-only, unpartitioned state cookie for cross-site HTTPS starts and keeps HTTP development working', async () => {
+    const previous = process.env.REFRESH_COOKIE_SAMESITE;
+    try {
+      for (const crossSite of [false, true]) {
+        process.env.APP_WEB_URL = crossSite ? 'https://web.oauth.test' : 'http://localhost:3000';
+        process.env.REFRESH_COOKIE_SAMESITE = crossSite ? 'none' : 'strict';
+        const res = await startRaw({ mode: 'login' });
+        assert.equal(res.status, 302);
+        const raw = res.headers.getSetCookie().find((c) => c.startsWith('hrvo_oauth='));
+        assert.ok(raw, 'state cookie is set');
+        // Assert booleans so a failure never prints the cookie's signed contents.
+        assert.ok(/; HttpOnly(?:;|$)/i.test(raw), 'HttpOnly');
+        assert.ok(/; Max-Age=600(?:;|$)/i.test(raw), 'ten-minute lifetime');
+        assert.ok(/; Path=\/auth\/google(?:;|$)/i.test(raw), 'start and callback path');
+        assert.equal(/; Secure(?:;|$)/i.test(raw), crossSite, 'HTTPS-only in the public demo');
+        assert.ok(new RegExp(`; SameSite=${crossSite ? 'None' : 'Lax'}(?:;|$)`, 'i').test(raw), 'SameSite matches the flow');
+        assert.equal(/; Domain=/i.test(raw), false, 'host-only');
+        assert.equal(/; Partitioned(?:;|$)/i.test(raw), false, 'callback navigates to the API as a top-level site');
+      }
+    } finally {
+      process.env.APP_WEB_URL = 'http://localhost:3000';
+      if (previous === undefined) delete process.env.REFRESH_COOKIE_SAMESITE;
+      else process.env.REFRESH_COOKIE_SAMESITE = previous;
+    }
+  });
+
+  it('rejects missing, expired and tampered state before token exchange, including error callbacks', async () => {
+    const flow = await start({ mode: 'login' });
+    const value = decodeURIComponent(flow.cookie.slice(flow.cookie.indexOf('=') + 1));
+    const payload = jwt.decode(value) as jwt.JwtPayload;
+    const expired = jwt.sign({ ...payload, exp: Math.floor(Date.now() / 1000) - 60 }, getJwtSecret(), { algorithm: 'HS256' });
+    const parts = value.split('.');
+    // Change signature bytes, not unused base64 padding bits.
+    parts[2] = `${parts[2]!.startsWith('a') ? 'b' : 'a'}${parts[2]!.slice(1)}`;
+    const badSignature = parts.join('.');
+    const edited = value.split('.');
+    edited[1] = Buffer.from(JSON.stringify({ ...payload, state: 'attacker-controlled' })).toString('base64url');
+    const tokenCalls = google.tokenCalls;
+    const cases = [
+      { name: 'missing cookie', cookie: '', query: { code: 'unused', state: flow.state } },
+      { name: 'missing state', cookie: flow.cookie, query: { code: 'unused' } },
+      { name: 'missing code', cookie: flow.cookie, query: { state: flow.state } },
+      { name: 'mismatched state', cookie: flow.cookie, query: { code: 'unused', state: 'forged' } },
+      { name: 'expired cookie', cookie: `hrvo_oauth=${expired}`, query: { code: 'unused', state: flow.state } },
+      { name: 'tampered signature', cookie: `hrvo_oauth=${badSignature}`, query: { code: 'unused', state: flow.state } },
+      { name: 'tampered payload', cookie: `hrvo_oauth=${edited.join('.')}`, query: { code: 'unused', state: 'attacker-controlled' } },
+      { name: 'error without state', cookie: flow.cookie, query: { error: 'access_denied' } },
+      { name: 'error with mismatched state', cookie: flow.cookie, query: { error: 'access_denied', state: 'forged' } },
+    ];
+    for (const entry of cases) {
+      const query = new URLSearchParams(Object.entries(entry.query).filter((pair): pair is [string, string] => typeof pair[1] === 'string'));
+      const res = await fetch(`${base}/auth/google/callback?${query}`, { redirect: 'manual', headers: { Cookie: entry.cookie } });
+      assert.equal(res.status, 302, entry.name);
+      const location = new URL(res.headers.get('location')!);
+      assert.equal(location.searchParams.get('code'), 'invalid_state', entry.name);
+      assert.ok(res.headers.getSetCookie().some((c) => c.startsWith('hrvo_oauth=;')), 'clears rejected state');
+      assert.equal(res.headers.getSetCookie().some((c) => c.startsWith('refreshToken=')), false, 'no session on rejected state');
+    }
+    assert.equal(google.tokenCalls, tokenCalls, 'no exchange on rejected state');
+    const accepted = await callback(flow, { email: U.emp.email, sub: 'google-sub-emp' }, { error: 'access_denied' });
+    assert.equal(accepted.code, 'denied', 'a valid state reaches the provider-error handler');
   });
 
   it('a role that needs 2FA still answers the TOTP challenge after Google; the enrolment path for an unenrolled one', async () => {
@@ -176,14 +292,22 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     assert.equal(setup.status, 200, 'the enrolment token opens 2FA setup');
   });
 
-  it('with "2FA after Google" switched off by the owner, Google alone signs an HR manager in', async () => {
+  it('Owner, Admin and HR always answer 2FA after Google, even with the owner\'s switch off; the switch only covers people who chose 2FA themselves (ADR 039)', async () => {
     await adminPool.query(`UPDATE organizations SET mfa_for_sso = false WHERE id = $1`, [ORG]);
+    // The employee turned 2FA on for themselves (their role does not require it).
+    await adminPool.query(`UPDATE users SET mfa_enabled = true, mfa_secret = $2 WHERE id = $1`, [U.emp.id, U.hr.totp]);
     try {
-      const r = await callback(await start({ mode: 'login' }), { email: U.hr.email, sub: 'google-sub-hr' });
-      assert.equal(r.sso, 'ok');
-      assert.ok(r.refresh);
+      const hr = await callback(await start({ mode: 'login' }), { email: U.hr.email, sub: 'google-sub-hr' });
+      assert.equal(hr.sso, 'totp', 'HR still answers the 2FA challenge');
+      assert.equal(hr.refresh, null, 'no session before the code');
+      const emp = await callback(await start({ mode: 'login' }), { email: U.emp.email, sub: 'google-sub-emp' });
+      assert.equal(emp.sso, 'ok', 'switch off: a person who chose 2FA is not asked after Google');
+      await adminPool.query(`UPDATE organizations SET mfa_for_sso = true WHERE id = $1`, [ORG]);
+      const empAsked = await callback(await start({ mode: 'login' }), { email: U.emp.email, sub: 'google-sub-emp' });
+      assert.equal(empAsked.sso, 'totp', 'switch on (the default): they are asked');
     } finally {
       await adminPool.query(`UPDATE organizations SET mfa_for_sso = true WHERE id = $1`, [ORG]);
+      await adminPool.query(`UPDATE users SET mfa_enabled = false, mfa_secret = NULL WHERE id = $1`, [U.emp.id]);
     }
   });
 
@@ -198,7 +322,7 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     const token = /#token=([0-9a-f]{64})/.exec([...outbox.outbox].reverse().find((m) => m.to === 'newbie@gsso.test')?.text ?? '')?.[1];
     assert.ok(token);
     // The role comes from the invitation only: a role sent by the browser is rejected outright.
-    assert.equal((await json('/auth/google/start', { mode: 'invite', inviteToken: token, role: 'SUPER_ADMIN' })).status, 400, 'no role from the client');
+    assert.match((await startRaw({ mode: 'invite', inviteToken: token, role: 'SUPER_ADMIN' })).headers.get('location') ?? '', /code=failed$/, 'no role from the client');
     const mismatch = await callback(await start({ mode: 'invite', inviteToken: token }), { email: 'someone-else@gsso.test', sub: 'google-sub-x' });
     assert.equal(mismatch.sso, 'error');
     assert.equal(mismatch.code, 'email_mismatch');
@@ -309,10 +433,13 @@ describe('Sign in with Google (FR-AUTH-005; ADR 037)', { concurrency: false }, (
     assert.equal(unlink.status, 200, await unlink.text());
     // The Google-only owner of GSignup has no password: removing Google is refused.
     const gail = (await adminPool.query<{ id: string; org_id: string }>(`SELECT id, org_id FROM users WHERE email = 'gail@gsignup.test'`)).rows[0]!;
+    // An owner always sets up 2FA after Google (ADR 039), whatever the organisation's switch says.
     await adminPool.query(`UPDATE organizations SET mfa_for_sso = false WHERE id = $1`, [gail.org_id]);
     const gailLogin = await callback(await start({ mode: 'login' }), { email: 'gail@gsignup.test', sub: 'google-sub-gail' });
-    assert.equal(gailLogin.sso, 'ok', gailLogin.location.toString());
-    const gailSession = JSON.parse(await (await refreshWithCookie(base, gailLogin.refresh!)).text()) as { accessToken: string };
+    assert.equal(gailLogin.sso, 'enroll', gailLogin.location.toString());
+    const gailSetup = JSON.parse(await (await json('/auth/2fa/setup', {}, gailLogin.fragmentToken!)).text()) as { secret: string };
+    const gailSession = JSON.parse(await (await json('/auth/2fa/verify', { code: await freshCode(gailSetup.secret) }, gailLogin.fragmentToken!)).text()) as { accessToken: string };
+    assert.ok(gailSession.accessToken, 'signed in once 2FA is set up');
     const refused = await fetch(`${base}/auth/google/link`, { method: 'DELETE', headers: { Authorization: `Bearer ${gailSession.accessToken}` } });
     assert.equal(refused.status, 409);
     assert.match(await refused.text(), /only way to sign in/);

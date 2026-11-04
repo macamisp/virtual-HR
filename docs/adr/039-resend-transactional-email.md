@@ -1,5 +1,7 @@
 # ADR 039: Resend transactional email
 
+> Status: merged. The transport described here was unified with the account e-mail work in ADR 039 (account e-mails and landing pages) and ADR 043 (SMTP STARTTLS/AUTH); `RESEND_FROM` is kept as an alias of `MAIL_FROM`. Kept for the record.
+
 **Status:** Accepted
 **Date:** 31 October 2026
 **Requirements:** FR-AUTH-001, FR-AUTH-008, FR-NOTIF-002, FR-MEET-003; SRS 4.1 (Resend).

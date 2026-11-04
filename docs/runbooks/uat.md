@@ -190,6 +190,20 @@ Times come from the **server clock** only (the browser's time is ignored); a sig
 - **Expect (works):** audio and video connect; each sees the other's video; both are recorded as present in the meeting. **Measure:** stopwatch until the other person's video appears (target 3 seconds).
 - **Not measured:** the 3-second target and the meeting minutes in **My attendance → Today** are not checked by any browser test; the rule that "in a call" counts as meeting time is tested at the unit level.
 
+### AC-15b. The call follows you across the app (ADR 048): BUILT
+- **Accounts:** Wendy (window 1), Leo (window 2, a private window). **Steps:** both as in AC-15 until you see each other in **Meeting room A**. Then Wendy: **Camera** on, click **Tasks** in the left menu.
+- **Expect:** Wendy's window shows a small call window in the bottom-right corner (people, mic and camera state, Mute, Camera, Share screen, Raise hand, Leave, **Return to office**) and "In the office" in the header; the tracking badge still says **In meeting**. Leo still hears Wendy and sees her video; Leo's **People** list says Wendy is "in Meeting room A · away from the office view", and her avatar on the map is faded with a dashed ring and "away" above it. Wendy: **Mute** → Leo sees the muted icon on her tile; **Raise hand** → Leo sees the hand. **Return to office** → the map comes back, the same call continues (no reconnection). **My attendance → Today → Meeting** keeps growing while Wendy is on other pages.
+- **Second tab:** Wendy opens a second tab on **Office**, **Turn on audio and video**: the second tab says "This call is open in another tab" with **Take over**. Take over → the second tab has the call, the first tab says it was taken over.
+- **Reload:** Wendy reloads the Office tab: she is still in Meeting room A and the call rejoins by itself.
+- **Leave / Sign out:** **Leave** in the small window ends the call for Wendy only (Leo stays connected); the camera light goes off. **Sign out** while in a call ends the call and removes Wendy from the office.
+- **Setting:** in the office **Audio and video** card, "Mute my microphone when I leave the office page" (off by default) mutes Wendy when she goes to another page during an office call.
+
+### AC-15c. The avatar never freezes after a quiet spell (ADR 048 §8): BUILT
+- **Accounts:** Wendy (window 1), Leo (window 2). **Steps:** both in the **Office**. Wendy leaves her window untouched for more than 16 minutes (an access token lives 15; a background tab counts too), then presses W/A/S/D and walks into Meeting room A.
+- **Expect:** the avatar moves at once (no reload, no "Connecting to the office…" banner); Leo's People list says Wendy is "in Meeting room A" within a few seconds; Leo's **Call** still rings in Wendy's window.
+- **Network:** with Wendy walking, switch Wi-Fi off for ~5 s and on again: the banner disappears by itself and her next walk reaches Leo's view. During a room call the call resumes without a new join.
+- **Automated:** Playwright 37 does this with a two-minute token (`ACCESS_TOKEN_TTL_SECONDS=120` in the e2e API only).
+
 ### AC-16. Contract expiring in 30 days: BUILT
 - **Accounts:** Hana, Leo (Sam's manager). **Steps:** Hana: **Documents → Contracts → New contract** (Person Sam, Title, Start, **End** = 30 days from today, Status Active, Signed document) → create. The reminder job runs every few minutes (or at once with background jobs on; see [web-local.md](web-local.md)).
 - **Expect:** Hana and Leo each get a notification "Contract ends in 30 days: Sam Subcontractor" and an email (Mailhog, http://localhost:8025). Reminders come at 30, 14 and 7 days and on the last day (FR-ORG-003). The seeded contract (about 25 days left) shows the same notice.

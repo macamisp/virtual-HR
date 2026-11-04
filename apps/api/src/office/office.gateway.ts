@@ -12,13 +12,14 @@ import { AttendanceService } from '../attendance/attendance.service.ts';
 import { Permission } from '../../../../packages/shared/src/auth/types.ts';
 import type { JwtPayload } from '../../../../packages/shared/src/index.ts';
 import {
-  JoinDtoSchema, ModeDtoSchema, MoveDtoSchema, RoomAnswerDtoSchema, RoomKnockDtoSchema, TeleportDtoSchema,
+  JoinDtoSchema, ModeDtoSchema, MoveDtoSchema, RoomAnswerDtoSchema, RoomKnockDtoSchema, TeleportDtoSchema, ViewDtoSchema,
 } from '../../../../packages/shared/src/office/index.ts';
 import type { JoinAck, ManualStatus, MoveAck, TeleportAck } from '../../../../packages/shared/src/office/index.ts';
 import { OfficeRegistry } from './office-registry.ts';
 import type { Avatar, OfficeWorld } from './office-world.ts';
 
-interface SocketAuth { user: JwtPayload }
+/** From AttendanceGateway.authenticate: the JWT and its session family (stable across refresh rotations). */
+interface SocketAuth { user: JwtPayload; familyId?: string }
 
 const MOVE_RATE_PER_S = 15;
 const PASSWORD_ATTEMPTS_PER_MIN = 5;
@@ -102,6 +103,13 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     const userId = auth.user.sub;
     const world = await this.registry.world(orgId);
     let a = world.avatars.get(userId);
+    // ADR 048: the place is kept for the login session that dropped (a reload, whose refresh rotates the
+    // token but not the session family); a new sign-in starts fresh.
+    if (a && a.goneAt !== null && a.goneSid !== (auth.familyId ?? null)) {
+      world.remove(userId);
+      this.server?.to(`vo-org:${orgId}`).emit('office:presence', { id: userId, gone: true });
+      a = undefined;
+    }
     if (!a) {
       const u = await this.prisma.runWithTenantContext(orgId, async (db) => (await db.query<{ display_name: string | null; email: string; vo_status: ManualStatus; vo_status_message: string }>(
         `SELECT display_name, email, vo_status, vo_status_message FROM users WHERE id = $1`, [userId])).rows[0]);
@@ -112,31 +120,54 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
       a = {
         userId, name: u.display_name ?? u.email, floorId: start.floorId, x: 0, y: 0, dir: 0, roomId: null, lastMoveAt: 0, version: 0,
         attendance: attendanceState, manual: u.vo_status, message: u.vo_status_message, roomOnly: false,
-        isAdmin: access.permissions.includes(Permission.ORG_MANAGE), sockets: new Map(), ct: null,
+        isAdmin: access.permissions.includes(Permission.ORG_MANAGE), sockets: new Map(), ct: null, goneAt: null, goneSid: null,
       };
       world.avatars.set(userId, a);
       world.place(a, start.floorId, start.p, Date.now());
       world.rosterChanged = true;
       world.changedRoster.add(userId);
     }
-    a.sockets.set(client.id, { positions: dto.positions });
+    // ADR 048: a rejoin within the leave grace (a reload) keeps the avatar where it was.
+    a.goneAt = null;
+    a.goneSid = null;
+    const wasAway = world.away(a);
+    a.sockets.set(client.id, { positions: dto.positions, viewing: dto.visible });
+    if (wasAway !== world.away(a)) world.touch(a);
     client.data.officeOrg = orgId;
     await client.join([`vo-org:${orgId}`, `vo:${userId}`]);
-    if (dto.positions) await client.join(`vo:${userId}:pos`);
+    if (dto.positions) { world.forgetKnown(userId); await client.join(`vo:${userId}:pos`); }
     return { ok: true, self: { x: a.x, y: a.y, floorId: a.floorId, roomId: a.roomId }, roster: world.roster() };
+  }
+
+  /** ADR 048: the office view came on or off screen; the position stream follows the map. */
+  @SubscribeMessage('office:view')
+  async view(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): Promise<{ ok: boolean }> {
+    const orgId = client.data?.officeOrg as string | undefined;
+    const world = orgId ? this.registry.peek(orgId) : null;
+    const a = world ? this.avatarOf(world, client) : null;
+    const dto = parse(ViewDtoSchema, body);
+    if (!world || !a || !dto) return { ok: false };
+    const wasAway = world.away(a);
+    const had = a.sockets.get(client.id)?.positions ?? false;
+    a.sockets.set(client.id, { positions: dto.positions, viewing: dto.visible });
+    if (wasAway !== world.away(a)) world.touch(a);
+    if (dto.positions && !had) { world.forgetKnown(a.userId); await client.join(`vo:${a.userId}:pos`); }
+    else if (!dto.positions && had) await client.leave(`vo:${a.userId}:pos`);
+    return { ok: true };
   }
 
   @SubscribeMessage('office:leave')
   async leave(@ConnectedSocket() client: Socket): Promise<{ ok: true }> {
-    await this.detach(client);
+    await this.detach(client, true);
     return { ok: true };
   }
 
   async handleDisconnect(client: Socket): Promise<void> {
-    await this.detach(client);
+    await this.detach(client, false);
   }
 
-  private async detach(client: Socket): Promise<void> {
+  /** `explicit`: the user left (remove now); otherwise the connection dropped (kept for the grace, ADR 048). */
+  private async detach(client: Socket, explicit: boolean): Promise<void> {
     const auth = this.auth(client);
     const orgId = client.data?.officeOrg as string | undefined;
     if (!auth || !orgId) return;
@@ -144,12 +175,19 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     const a = world?.avatars.get(auth.user.sub);
     this.moveWindow.delete(client.id);
     if (!world || !a) return;
+    const wasAway = world.away(a);
     a.sockets.delete(client.id);
     for (const room of [`vo-org:${orgId}`, `vo:${a.userId}`, `vo:${a.userId}:pos`]) void client.leave(room);
     if (a.sockets.size === 0) {
-      world.remove(a.userId);
-      this.server?.to(`vo-org:${orgId}`).emit('office:presence', { id: a.userId, gone: true });
+      if (explicit || this.registry.leaveGraceMs === 0) {
+        world.remove(a.userId);
+        this.server?.to(`vo-org:${orgId}`).emit('office:presence', { id: a.userId, gone: true });
+        return;
+      }
+      a.goneAt = Date.now();
+      a.goneSid = auth.familyId ?? null;
     }
+    if (wasAway !== world.away(a)) world.touch(a);
   }
 
   @SubscribeMessage('office:move')
@@ -157,15 +195,17 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     const orgId = client.data?.officeOrg as string | undefined;
     const world = orgId ? this.registry.peek(orgId) : null;
     const a = world ? this.avatarOf(world, client) : null;
-    if (!world || !a) return { ok: false, reason: 'NOT_JOINED', x: 0, y: 0, floorId: '' };
+    if (!world || !a) return { ok: false, reason: 'NOT_JOINED', x: 0, y: 0, floorId: '', roomId: null };
     const now = Date.now();
     const win = this.moveWindow.get(client.id);
+    const refuse = (reason: string): MoveAck => ({ ok: false, reason, x: a.x, y: a.y, floorId: a.floorId, roomId: a.roomId });
     if (!win || now - win.at >= 1000) this.moveWindow.set(client.id, { at: now, n: 1 });
-    else if ((win.n += 1) > MOVE_RATE_PER_S) return { ok: false, reason: 'RATE_LIMITED', x: a.x, y: a.y, floorId: a.floorId };
+    else if ((win.n += 1) > MOVE_RATE_PER_S) return refuse('RATE_LIMITED');
     const dto = parse(MoveDtoSchema, body);
-    if (!dto) return { ok: false, reason: 'BAD_REQUEST', x: a.x, y: a.y, floorId: a.floorId };
+    if (!dto) return refuse('BAD_REQUEST');
     const r = world.move(a, { x: dto.x, y: dto.y }, dto.dir, now, dto.ct ?? null);
-    return r.ok ? { ok: true } : { ok: false, reason: r.reason, x: a.x, y: a.y, floorId: a.floorId };
+    // The room comes from the server's own room check (OfficeWorld.place), never from the client.
+    return r.ok ? { ok: true, roomId: a.roomId } : refuse(r.reason);
   }
 
   /** FR-VO-007: go to my desk, to a colleague, to a room (with its password), or to another floor. */

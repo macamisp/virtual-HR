@@ -6,8 +6,8 @@ import { RequirePermissions } from '../common/decorators/permissions.decorator.t
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.ts';
 import { Permission } from '../../../../packages/shared/src/index.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
-import { BroadcastDtoSchema, DeskAssignDtoSchema, OfficeMapDtoSchema, PeopleQuerySchema, RoomInvitesDtoSchema, RoomUpdateDtoSchema, StatusDtoSchema } from '../../../../packages/shared/src/office/index.ts';
-import type { BroadcastDto, DeskAssignDto, OfficeDefinition, PeopleQuery, RoomInvitesDto, RoomUpdateDto, StatusDto } from '../../../../packages/shared/src/office/index.ts';
+import { BroadcastDtoSchema, DeskAssignDtoSchema, OfficeMapDtoSchema, OfficePreferencesDtoSchema, PeopleQuerySchema, RoomInvitesDtoSchema, RoomUpdateDtoSchema, StatusDtoSchema } from '../../../../packages/shared/src/office/index.ts';
+import type { BroadcastDto, DeskAssignDto, OfficeDefinition, OfficePreferencesDto, PeopleQuery, RoomInvitesDto, RoomUpdateDto, StatusDto } from '../../../../packages/shared/src/office/index.ts';
 import { OfficeService } from './office.service.ts';
 
 const id = new ParseUUIDPipe({ version: '4' });
@@ -32,6 +32,12 @@ export class OfficeController {
   @Put('me/status')
   status(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(StatusDtoSchema)) dto: StatusDto) {
     return this.office.setStatus(user, dto);
+  }
+
+  /** ADR 048: "Mute my microphone when I leave the office page". */
+  @Put('me/preferences')
+  preferences(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(OfficePreferencesDtoSchema)) dto: OfficePreferencesDto) {
+    return this.office.setPreferences(user, dto);
   }
 
   @Post('desks/:id/claim')

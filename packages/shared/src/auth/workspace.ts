@@ -44,8 +44,36 @@ export const SignupResponseSchema = z.object({
   /** The workspace address; the person signs in once the e-mail is verified. */
   workspace: z.object({ name: z.string(), slug: z.string() }),
   message: z.string(),
+  /** ADR 039: the "Resend e-mail" button stays disabled this long after each e-mail. */
+  resendAfterSeconds: z.number().int().min(0),
 });
 export type SignupResponse = z.infer<typeof SignupResponseSchema>;
+
+// ---------------------------------------------------------------- e-mailed links (ADR 039)
+
+/** verify: confirm a new owner's address; invite: accept an invitation; reset: new password. */
+export const LINK_KINDS = ['verify', 'invite', 'reset'] as const;
+export type LinkKind = (typeof LINK_KINDS)[number];
+
+export const LinkTokenDtoSchema = z.object({ kind: z.enum(LINK_KINDS), token: z.string().min(32).max(128) }).strict();
+export type LinkTokenDto = z.infer<typeof LinkTokenDtoSchema>;
+
+/** What an e-mailed link can still do. `revoked`: an invitation withdrawn, or an account no longer active. */
+export const LINK_STATES = ['valid', 'used', 'expired', 'revoked', 'invalid'] as const;
+export type LinkState = (typeof LINK_STATES)[number];
+
+export const LinkStatusSchema = z.object({
+  state: z.enum(LINK_STATES),
+  /** The address the link was sent to (the holder of the link received it there); null when unknown. */
+  email: z.string().nullable(),
+  workspace: z.string().nullable(),
+  /** verify links: the address is confirmed already (for instance, the link was opened twice). */
+  alreadyVerified: z.boolean(),
+});
+export type LinkStatus = z.infer<typeof LinkStatusSchema>;
+
+export const VerifyEmailResponseSchema = z.object({ success: z.literal(true), email: z.string(), alreadyVerified: z.boolean() });
+export type VerifyEmailResponse = z.infer<typeof VerifyEmailResponseSchema>;
 
 /** A sign-in that needs the person to say which workspace they mean. */
 export const WorkspaceChoiceSchema = z.object({ slug: z.string(), name: z.string() });
@@ -86,6 +114,10 @@ export const GoogleTotpDtoSchema = z
   .object({ challengeToken: z.string().min(20).max(2048), code: z.string().regex(/^(\d{6}|[0-9a-f]{10})$/, 'Expected a 6-digit code or a recovery code') })
   .strict();
 export type GoogleTotpDto = z.infer<typeof GoogleTotpDtoSchema>;
+
+/** Last step of a Google sign-in (ADR 042): the single-use handoff token the callback left in the URL fragment. */
+export const GoogleCompleteDtoSchema = z.object({ handoffToken: z.string().min(20).max(2048) }).strict();
+export type GoogleCompleteDto = z.infer<typeof GoogleCompleteDtoSchema>;
 
 /** Result codes carried back to the web app after the Google redirect (`?sso=` and `&code=`). */
 export const GOOGLE_RESULT_CODES = ['ok', 'totp', 'enroll', 'linked', 'email_mismatch', 'no_account', 'unverified_email', 'denied', 'invalid_state', 'failed', 'choose_workspace', 'not_configured', 'account_inactive', 'invitation_invalid', 'redirect_uri_mismatch', 'already_linked', 'token_invalid'] as const;

@@ -1,18 +1,15 @@
-import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import { PASSWORD, adminPool } from './fixtures';
 import { freshTotp, passNoticeGate, signIn } from './helpers';
+import { pressEmailButton, waitForMail } from './mail';
 
 /**
  * Self-service workspace: signup → e-mail verification → owner 2FA → onboarding → invitation →
  * acceptance → role change → access difference (FR-AUTH-001, FR-AUTH-006, FR-ORG-001; ADR 037).
- * E-mails go to the API's in-memory outbox, so the verification and invitation tokens are set
- * through the database instead of being read from mail.
+ * The real e-mails are read (MAIL_TRANSPORT=file, e2e/mail.ts) and their buttons pressed (ADR 039).
  */
-const SLUG = 'e2e-signup-co';
 const OWNER = { email: 'owner@e2e-signup.test', name: 'Olive Owner' };
 const MEMBER = { email: 'member@e2e-signup.test', name: 'Max Member' };
-const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
 test.describe.serial('Workspace signup to role-based access (ADR 037)', () => {
   let ownerSecret = '';
@@ -36,17 +33,18 @@ test.describe.serial('Workspace signup to role-based access (ADR 037)', () => {
     // Not before the address is verified.
     await signIn(page, OWNER.email);
     await expect(page.getByRole('alert').filter({ hasText: /verify your e-mail/i })).toBeVisible();
-    const pool = adminPool();
-    try {
-      const org = await pool.query<{ id: string }>(`SELECT id FROM organizations WHERE slug = $1`, [SLUG]);
-      expect(org.rows).toHaveLength(1);
-      await pool.query(`UPDATE users SET email_verified_at = now() WHERE org_id = $1 AND email = $2`, [org.rows[0]!.id, OWNER.email]);
-    } finally {
-      await pool.end();
-    }
+
+    // The confirmation e-mail: press its button; the page confirms and leads to sign-in.
+    const mail = await waitForMail(OWNER.email);
+    expect(mail.subject).toBe('Confirm your e-mail to open E2E Signup Co on HRVO');
+    await pressEmailButton(page, mail, 'Confirm e-mail and sign in');
+    await expect(page.getByRole('heading', { name: 'E-mail confirmed' })).toBeVisible();
+    await page.getByRole('link', { name: 'Continue to sign in' }).click();
+    await expect(page.getByLabel('Email')).toHaveValue(OWNER.email);
+    await page.getByLabel('Password').fill(PASSWORD);
+    await page.getByRole('button', { name: 'Sign in' }).click();
 
     // Owners must set up 2FA on the first sign-in.
-    await signIn(page, OWNER.email);
     await expect(page).toHaveURL(/\/2fa\/setup/);
     ownerSecret = ((await page.getByTestId('totp-secret').textContent()) ?? '').replace(/\s+/g, '');
     expect(ownerSecret.length).toBeGreaterThan(10);
@@ -76,24 +74,22 @@ test.describe.serial('Workspace signup to role-based access (ADR 037)', () => {
   });
 
   test('the member accepts the invitation, sees only member links; a role change ends their session and widens access', async ({ page, browser }) => {
-    // Give the pending invitation a token we know (the e-mailed one is in the API's memory only).
-    const token = randomBytes(32).toString('hex');
-    const pool = adminPool();
-    try {
-      const upd = await pool.query(`UPDATE invitations SET token_hash = $1 WHERE email = $2 AND accepted_at IS NULL AND revoked_at IS NULL`, [sha256(token), MEMBER.email]);
-      expect(upd.rowCount).toBe(1);
-    } finally {
-      await pool.end();
-    }
+    // The invitation e-mail the owner sent from the wizard: press its button in the member's browser.
     const ctx = await browser.newContext();
     const member = await ctx.newPage();
-    await member.goto(`/accept-invitation#token=${token}`);
+    const mail = await waitForMail(MEMBER.email);
+    expect(mail.subject).toBe('Olive Owner invited you to E2E Signup Co Ltd on HRVO'); // renamed in the wizard
+    await pressEmailButton(member, mail, 'Accept invitation');
+    await expect(member.getByText(`You are joining E2E Signup Co Ltd as ${MEMBER.email}`)).toBeVisible();
     await member.getByLabel('Your name').fill(MEMBER.name);
     await member.getByLabel('Password', { exact: true }).fill(PASSWORD);
     await member.getByLabel('Confirm password').fill(PASSWORD);
     await member.getByRole('button', { name: 'Create account' }).click();
     await expect(member.getByRole('heading', { name: 'Account created' })).toBeVisible();
-    await signIn(member, MEMBER.email);
+    await member.getByRole('link', { name: 'Continue to sign in' }).click();
+    await expect(member.getByLabel('Email')).toHaveValue(MEMBER.email);
+    await member.getByLabel('Password').fill(PASSWORD);
+    await member.getByRole('button', { name: 'Sign in' }).click();
     await passNoticeGate(member);
     const memberNav = member.getByRole('navigation', { name: 'Main' });
     await expect(memberNav.getByRole('link', { name: 'My attendance' })).toBeVisible();

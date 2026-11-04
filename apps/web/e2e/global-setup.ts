@@ -1,15 +1,17 @@
 import argon2 from 'argon2';
 import { ADMIN_GUARD } from './guard';
+import { clearMail } from './mail';
 import { ADMIN_USER, ORG_ID, ORG_SLUG, PASSWORD, TEAM_ID, USERS, adminPool } from './fixtures';
 
 /** Re-seeds the dedicated e2e organisation. Never touches other tenants. */
 export default async function globalSetup(): Promise<void> {
   ADMIN_GUARD();
+  clearMail();
   const pool = adminPool();
   try {
     await pool.query(`DELETE FROM organizations WHERE id = $1 OR slug = $2`, [ORG_ID, ORG_SLUG]);
     // Workspaces created by the signup flow (spec 31).
-    await pool.query(`DELETE FROM organizations WHERE slug LIKE 'e2e-signup-co%' OR slug LIKE 'e2e-google-co%'`);
+    await pool.query(`DELETE FROM organizations WHERE slug LIKE 'e2e-signup-co%' OR slug LIKE 'e2e-google-co%' OR slug LIKE 'e2e-mail-co%'`);
     await pool.query(`DELETE FROM invitations WHERE org_id = $1`, [ORG_ID]);
     // The shortest grace and silence windows SRS 6.4 allows, so the accuracy spec (23) can watch a
     // tab close and a network loss end a session within the test's time budget.

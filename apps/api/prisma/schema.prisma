@@ -175,6 +175,8 @@ model User {
   /// FR-VO-003: AUTO (attendance decides), AWAY or DND, and an optional message.
   voStatus            String    @default("AUTO") @map("vo_status") @db.VarChar(8)
   voStatusMessage     String    @default("") @map("vo_status_message") @db.VarChar(100)
+  /// ADR 048: mute the microphone when leaving the office page during an office call.
+  voMuteOnLeave       Boolean   @default(false) @map("vo_mute_on_leave")
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz()
   lastCountry         String?   @map("last_country") @db.VarChar(2)
   lastCountryAt       DateTime? @map("last_country_at") @db.Timestamptz()

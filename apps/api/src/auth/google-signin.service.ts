@@ -19,13 +19,13 @@ import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
 import { PermissionResolver } from '../common/permission-resolver.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
-import { getJwtSecret, mfaEnforced, servedOverHttps } from '../common/config.ts';
+import { getJwtSecret, mfaEnforced, refreshCookieSameSite, servedOverHttps } from '../common/config.ts';
 import { pkcePair } from '../calendar/providers.ts';
 import { AuthService } from './auth.service.ts';
 import type { AuthUserRow } from './auth.service.ts';
 import { WorkspaceService, emailDomain } from './workspace.service.ts';
 import { requiresMfa } from '../../../../packages/shared/src/auth/types.ts';
-import type { GoogleResultCode, GoogleSigninMode, GoogleStartDto, GoogleTotpDto } from '../../../../packages/shared/src/auth/workspace.ts';
+import type { GoogleCompleteDto, GoogleResultCode, GoogleSigninMode, GoogleStartDto, GoogleTotpDto } from '../../../../packages/shared/src/auth/workspace.ts';
 
 export const OAUTH_COOKIE = 'hrvo_oauth';
 export const OAUTH_COOKIE_PATH = '/auth/google';
@@ -34,6 +34,9 @@ const CHALLENGE_TTL_SECONDS = 5 * 60;
 const ISSUER = 'hrvo-api';
 const AUD_STATE = 'hrvo-google-state';
 const AUD_CHALLENGE = 'hrvo-google-mfa';
+const AUD_HANDOFF = 'hrvo-google-handoff';
+/** How long the web app has to exchange the callback's handoff token for the session (ADR 042). */
+const HANDOFF_TTL_SECONDS = 60;
 const JWKS_TTL_MS = 60 * 60 * 1000;
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -72,8 +75,15 @@ export function googleEnv(env: Env = process.env) {
 }
 
 export function oauthCookieOptions(): CookieOptions {
-  // Lax: the cookie must come back on Google's top-level redirect to the callback.
-  return { httpOnly: true, secure: servedOverHttps(), sameSite: 'lax', path: OAUTH_COOKIE_PATH, maxAge: STATE_TTL_SECONDS * 1000 };
+  // Lax: the cookie must come back on Google's top-level redirect to the callback. Sign-in starts with a
+  // top-level navigation to GET /auth/google/start (ADR 042), so the cookie is a first-party cookie of
+  // the API site and Lax is enough even when the web app is on another site. Linking from the profile
+  // still starts from a cross-site fetch; with REFRESH_COOKIE_SAMESITE=none (ADR 040) the browser would
+  // refuse a Lax cookie from that response (SchemefulSameSiteLax), so it goes out as None; Secure instead.
+  // Never Partitioned: the callback is a top-level navigation to the API host, where a cookie partitioned
+  // under the web app's site would not be presented.
+  const sameSite = refreshCookieSameSite() === 'none' ? 'none' : 'lax';
+  return { httpOnly: true, secure: servedOverHttps(), sameSite, path: OAUTH_COOKIE_PATH, maxAge: STATE_TTL_SECONDS * 1000 };
 }
 
 @Injectable()
@@ -109,8 +119,8 @@ export class GoogleSignInService {
 
   // ---------------------------------------------------------------- callback
 
-  /** Where to send the browser next, plus the refresh token when a login was completed. */
-  async callback(q: { code?: string; state?: string; error?: string }, cookie: string | undefined, meta: Meta): Promise<{ redirect: string; refreshToken?: string }> {
+  /** Where to send the browser next. A completed login travels as a handoff token in the fragment (ADR 042). */
+  async callback(q: { code?: string; state?: string; error?: string }, cookie: string | undefined, meta: Meta): Promise<{ redirect: string }> {
     const env = googleEnv();
     let st: StatePayload | null = null;
     try {
@@ -118,13 +128,15 @@ export class GoogleSignInService {
     } catch { st = null; }
     const fail = (code: GoogleResultCode) => ({ redirect: this.resultUrl(env.webUrl, st?.mode ?? 'login', 'error', { code }) });
     if (!st) return fail('invalid_state');
+    // Bind every callback to the browser's attempt, including Google's error responses.
+    if (!q.state || q.state !== st.state) { await this.auditFailure(st, 'invalid_state', meta); return fail('invalid_state'); }
     if (q.error) {
       // Google's own refusals. access_denied also covers an app in Testing mode whose test users
       // do not include this address; the web app explains both.
       await this.auditFailure(st, q.error === 'access_denied' ? 'denied' : q.error === 'redirect_uri_mismatch' ? 'redirect_uri_mismatch' : 'failed', meta);
       return fail(q.error === 'access_denied' ? 'denied' : q.error === 'redirect_uri_mismatch' ? 'redirect_uri_mismatch' : 'failed');
     }
-    if (!q.code || !q.state || q.state !== st.state) { await this.auditFailure(st, 'invalid_state', meta); return fail('invalid_state'); }
+    if (!q.code) { await this.auditFailure(st, 'invalid_state', meta); return fail('invalid_state'); }
     if (!env.configured) return fail('not_configured');
 
     const claims = await this.exchange(env, q.code, st).catch(() => null);
@@ -182,6 +194,11 @@ export class GoogleSignInService {
     const q = new URLSearchParams({ sso });
     for (const [k, v] of Object.entries(params)) if (v) q.set(k, v);
     return `${web}${path}?${q.toString()}${fragment ? `#token=${fragment}` : ''}`;
+  }
+
+  /** Where a refused start sends the browser (the start is a navigation, so errors are shown by the web app). */
+  errorRedirect(mode: GoogleSigninMode, code: GoogleResultCode): string {
+    return this.resultUrl(googleEnv().webUrl, mode, 'error', { code });
   }
 
   private async exchange(env: ReturnType<typeof googleEnv>, code: string, st: StatePayload): Promise<IdClaims | null> {
@@ -339,7 +356,7 @@ export class GoogleSignInService {
 
   // ---------------------------------------------------------------- finishing a login
 
-  private async finish(web: string, st: StatePayload, user: AuthUserRow, meta: Meta): Promise<{ redirect: string; refreshToken?: string }> {
+  private async finish(web: string, st: StatePayload, user: AuthUserRow, meta: Meta): Promise<{ redirect: string }> {
     if (user.status !== 'ACTIVE') {
       await this.auth.auditUser(user, 'LOGIN_REJECTED_INACTIVE', meta, { status: user.status, method: 'google' });
       return { redirect: this.resultUrl(web, st.mode, 'error', { code: 'account_inactive' }) };
@@ -350,16 +367,36 @@ export class GoogleSignInService {
     const needsMfa = requiresMfa(user.role, access?.permissions ?? []);
     // Enrolment, the TOTP step and the finished login all continue on the sign-in page, whatever
     // the flow started as (signup, invitation or login): that page knows how to take them on.
-    if (org.mfa_for_sso && needsMfa && !user.mfa_enabled && mfaEnforced()) {
+    // ADR 039 (owner decision, FR-AUTH-004): roles that need 2FA (Owner, Admin, HR) always answer
+    // it after Google, exactly as after a password; the organisation's `mfa_for_sso` switch only
+    // decides whether people who turned 2FA on for themselves are asked too.
+    if (needsMfa && !user.mfa_enabled && mfaEnforced()) {
       return { redirect: this.resultUrl(web, 'login', 'enroll', { returnTo: st.returnTo }, await this.auth.mfaEnrollmentToken(user, meta)) };
     }
-    if (org.mfa_for_sso && user.mfa_enabled) {
+    if (user.mfa_enabled && (needsMfa || org.mfa_for_sso)) {
       await this.auth.auditUser(user, '2FA_CHALLENGE_ISSUED', meta, { method: 'google' });
       const challenge = jwt.sign({ sub: user.id, orgId: user.org_id, returnTo: st.returnTo }, getJwtSecret(), { expiresIn: CHALLENGE_TTL_SECONDS, issuer: ISSUER, audience: AUD_CHALLENGE, algorithm: 'HS256' });
       return { redirect: this.resultUrl(web, 'login', 'totp', { returnTo: st.returnTo }, challenge) };
     }
-    const session = await this.auth.issueSessionFor(user, meta, 'LOGIN_SUCCESS_GOOGLE');
-    return { redirect: this.resultUrl(web, 'login', 'ok', { returnTo: st.returnTo }), refreshToken: session.refreshToken };
+    // ADR 042: the callback is a top-level page of the API site, so a refresh cookie set here would sit in
+    // the wrong cookie partition for the web app's requests (and be dropped by browsers that block
+    // third-party cookies). The session is created now but handed over through a short-lived, single-use
+    // token in the URL fragment; POST /auth/google/complete rotates it and sets the cookie like a login.
+    const session = await this.auth.issueSessionFor(user, meta, 'LOGIN_SUCCESS_GOOGLE', 'GOOGLE', HANDOFF_TTL_SECONDS * 1000);
+    const handoff = jwt.sign({ sub: user.id, orgId: user.org_id, sid: session.sessionId }, getJwtSecret(), { expiresIn: HANDOFF_TTL_SECONDS, issuer: ISSUER, audience: AUD_HANDOFF, algorithm: 'HS256' });
+    return { redirect: this.resultUrl(web, 'login', 'ok', { returnTo: st.returnTo }, handoff) };
+  }
+
+  /** Exchanges the callback's handoff token for the session; the controller moves the refresh token into the cookie. */
+  async complete(dto: GoogleCompleteDto, meta: Meta) {
+    let payload: { orgId: string; sid: string };
+    try {
+      payload = jwt.verify(dto.handoffToken, getJwtSecret(), { issuer: ISSUER, audience: AUD_HANDOFF, algorithms: ['HS256'] }) as { orgId: string; sid: string };
+    } catch {
+      throw new UnauthorizedException('The sign-in attempt has expired. Start again.');
+    }
+    if (typeof payload.orgId !== 'string' || typeof payload.sid !== 'string') throw new UnauthorizedException('The sign-in attempt has expired. Start again.');
+    return await this.auth.rotateSessionById(payload.orgId, payload.sid, meta);
   }
 
   /** Second step for roles that need 2FA: the challenge token from the redirect plus the code. */

@@ -149,7 +149,7 @@ function OwnershipCard({ people, meId }: { people: AdminUserRow[]; meId: string 
           {create.isSuccess ? <Alert variant="success" className="sm:col-span-2"><AlertDescription>The new owner has been e-mailed. Nothing changes until they accept.</AlertDescription></Alert> : null}
           <div className="sm:col-span-2"><Button type="submit" disabled={create.isPending || !newOwner}>Ask them to take ownership</Button></div>
         </form>
-        {profile.data ? <p className="text-xs text-muted-foreground">Owners: {profile.data.ownerCount}. Sign-in settings (Google auto-join, 2FA after Google) are on the <Link className="underline" href="/onboarding">workspace settings</Link> page.</p> : null}
+        {profile.data ? <p className="text-xs text-muted-foreground">Owners: {profile.data.ownerCount}. Sign-in settings (joining by invitation, the domain exception, 2FA after Google) are on the <Link className="underline" href="/onboarding">workspace settings</Link> page.</p> : null}
       </CardContent>
     </Card>
   );

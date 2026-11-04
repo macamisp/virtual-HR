@@ -11,7 +11,7 @@ import { IoAdapter } from '@nestjs/platform-socket.io';
 import type { ServerOptions } from 'socket.io';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
-import { CSRF_HEADER, getCorsOrigins, isOriginAllowed, isProduction } from './config.ts';
+import { CSRF_HEADER, getCorsOrigins, isOriginAllowed, isProduction, refreshCookieSameSite } from './config.ts';
 
 /** Socket.IO adapter with the same origin allow-list as HTTP CORS. */
 export class ConfiguredIoAdapter extends IoAdapter {
@@ -79,6 +79,7 @@ export function configureApp(app: INestApplication): void {
     req.on('error', (e) => next(e));
   });
 
+  refreshCookieSameSite(); // fail at startup, not at the first sign-in, on a bad REFRESH_COOKIE_SAMESITE
   const origins = getCorsOrigins();
   app.enableCors({
     origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {

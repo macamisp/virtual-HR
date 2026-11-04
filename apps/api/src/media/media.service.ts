@@ -2,6 +2,7 @@ import { ConflictException, ForbiddenException, Injectable, NotFoundException } 
 import type pg from 'pg';
 import { PrismaService } from '../common/prisma.service.ts';
 import { OfficeRegistry } from '../office/office-registry.ts';
+import { isClosedRoom } from '../../../../packages/shared/src/office/index.ts';
 import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import type { MediaToken } from '../../../../packages/shared/src/meetings/types.ts';
@@ -53,7 +54,7 @@ export class MediaService {
     if (!world || !a) throw new ConflictException('Enter the office first');
     const room = a.roomId ? world.rooms.find((r) => r.id === a.roomId) : null;
     if (!room) throw new ForbiddenException('You are not in a room');
-    if (room.type === 'OPEN') throw new ConflictException('Open areas use proximity audio');
+    if (!isClosedRoom(room)) throw new ConflictException('Open areas use proximity audio');
     // The avatar is inside, which the server only allows when entry was permitted; re-check anyway.
     if (world.mayEnter(user.id, room, a.isAdmin, true)) throw new ForbiddenException('You may not join this room');
     const lk = await this.prisma.runWithTenantContext(user.orgId, (db) => db.query<{ livekit_room_name: string }>(`SELECT livekit_room_name FROM rooms WHERE id = $1`, [room.id]));

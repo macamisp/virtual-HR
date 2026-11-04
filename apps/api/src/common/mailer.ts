@@ -1,18 +1,29 @@
 /**
- * Transactional mail transport (FR-AUTH-008 reset links).
+ * Transactional mail transport (FR-AUTH-008 reset links; ADR 039).
  *
  * MAIL_TRANSPORT selects the implementation:
- *  - "smtp" (default outside production): minimal plaintext SMTP client for the local
- *    Mailhog container (docker-compose.yml). No TLS/auth, so it is refused in production.
- *  - "memory": in-process outbox for tests.
- *  - "resend": production HTTPS delivery using RESEND_API_KEY and RESEND_FROM.
- * Production refuses both development transports.
+ *  - "smtp" (default outside production): minimal SMTP client. Without SMTP_USER/SMTP_PASSWORD it
+ *    is the plaintext client for the local Mailhog container (docker-compose.yml, web UI on
+ *    http://localhost:8025). With them it requires STARTTLS with a verified certificate before
+ *    AUTH PLAIN, e.g. Gmail with an App Password for the Internet demo (ADR 043). In production
+ *    only the authenticated form is allowed, on port 587 to a public host name with a plain
+ *    sender address (ADR 046).
+ *  - "resend": the Resend HTTPS API (https://resend.com). RESEND_API_KEY and MAIL_FROM (or its
+ *    alias RESEND_FROM) come from the environment only. The production choice today; see
+ *    docs/runbooks/mail.md.
+ *  - "memory": in-process outbox for the API tests. Nothing is delivered.
+ *  - "file": one JSON file per message in MAIL_FILE_DIR, for the browser tests (they read the
+ *    e-mail and click its link). Nothing is delivered.
+ * "memory" and "file" are refused in production, and outside tests the API warns that nothing is
+ * delivered with them.
  *
  * Message bodies may contain single-use links; they are never logged.
  */
 import net from 'node:net';
-import { z } from 'zod';
-import { isProduction } from './config.ts';
+import tls from 'node:tls';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 
 export const MAIL_TRANSPORT = Symbol('MAIL_TRANSPORT');
 
@@ -27,6 +38,8 @@ export interface MailMessage {
   to: string;
   subject: string;
   text: string;
+  /** ADR 039: the same content as HTML, with a button; the text part keeps the plain link. */
+  html?: string;
   /** ADR 016: calendar invites (.ics). Text attachments only. */
   attachments?: MailAttachment[];
 }
@@ -43,21 +56,96 @@ export class InMemoryMailTransport implements MailTransport {
   }
 }
 
+/** Browser tests: each message becomes `<time>-<random>.json` in the directory. Test only. */
+export class FileMailTransport implements MailTransport {
+  private readonly dir: string;
+
+  constructor(dir: string) {
+    this.dir = dir;
+    mkdirSync(dir, { recursive: true });
+  }
+
+  async send(message: MailMessage): Promise<void> {
+    const name = `${Date.now()}-${randomBytes(4).toString('hex')}.json`;
+    // Recreated on every send: the browser tests empty the directory between runs.
+    mkdirSync(this.dir, { recursive: true });
+    writeFileSync(join(this.dir, name), JSON.stringify({ ...message, sentAt: new Date().toISOString() }), { mode: 0o600 });
+  }
+}
+
+/** Resend (https://resend.com/docs/api-reference/emails/send-email) over HTTPS; no extra package. */
+export class ResendMailTransport implements MailTransport {
+  private readonly apiKey: string;
+  private readonly from: string;
+  private readonly endpoint: string;
+
+  constructor(apiKey: string, from: string, endpoint = 'https://api.resend.com/emails') {
+    this.apiKey = apiKey;
+    this.from = from;
+    this.endpoint = endpoint;
+  }
+
+  async send(message: MailMessage): Promise<void> {
+    assertNoHeaderInjection(message.to, 'recipient');
+    assertNoHeaderInjection(message.subject, 'subject');
+    const res = await fetch(this.endpoint, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: this.from, to: [message.to], subject: message.subject, text: message.text,
+        ...(message.html ? { html: message.html } : {}),
+        ...(message.attachments?.length ? { attachments: message.attachments.map((a) => ({ filename: a.filename, content: Buffer.from(a.content, 'utf8').toString('base64'), content_type: a.contentType })) } : {}),
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    // Only the status reaches the error: the body could echo the message.
+    if (!res.ok) throw new Error(`Resend refused the message (HTTP ${res.status})`);
+  }
+}
+
 function assertNoHeaderInjection(value: string, field: string): void {
   if (/[\r\n]/.test(value)) {
     throw new Error(`Invalid ${field}: line breaks are not allowed`);
   }
 }
 
+export interface SmtpOptions {
+  /**
+   * ADR 043: submission login (e.g. Gmail with an App Password). When set, the connection must be
+   * upgraded with STARTTLS and the server certificate verified before AUTH; there is no plaintext
+   * fallback. Without it the transport stays the plaintext Mailhog client.
+   */
+  auth?: { user: string; password: string };
+  /** Extra trusted CA (PEM). Tests only; the system trust store is always used otherwise. */
+  ca?: string;
+}
+
+interface SmtpReply {
+  code: number;
+  /** Text after the code on every line, e.g. the EHLO capabilities. */
+  lines: string[];
+}
+
 export class SmtpMailTransport implements MailTransport {
   private readonly host: string;
-  private readonly port: number;
+  readonly port: number;
   private readonly from: string;
+  private readonly options: SmtpOptions;
 
-  constructor(host: string, port: number, from: string) {
+  constructor(host: string, port: number, from: string, options: SmtpOptions = {}) {
     this.host = host;
     this.port = port;
     this.from = from;
+    this.options = options;
+  }
+
+  get authenticated(): boolean {
+    return this.options.auth !== undefined;
+  }
+
+  /** True only when a test added its own CA; production never does. */
+  get trustsExtraCa(): boolean {
+    return this.options.ca !== undefined;
   }
 
   async send(message: MailMessage): Promise<void> {
@@ -65,32 +153,41 @@ export class SmtpMailTransport implements MailTransport {
     assertNoHeaderInjection(message.subject, 'subject');
     assertNoHeaderInjection(this.from, 'sender');
 
-    const socket = net.createConnection({ host: this.host, port: this.port });
-    socket.setEncoding('utf8');
-    socket.setTimeout(5000, () => socket.destroy(new Error('SMTP timeout')));
-
+    let socket: net.Socket = net.createConnection({ host: this.host, port: this.port });
     let buffer = '';
-    const waiters: Array<{ resolve: (code: number) => void; reject: (err: Error) => void }> = [];
-    socket.on('data', (chunk: string) => {
-      buffer += chunk;
+    let pendingLines: string[] = [];
+    const waiters: Array<{ resolve: (r: SmtpReply) => void; reject: (err: Error) => void }> = [];
+    const onData = (chunk: Buffer) => {
+      buffer += chunk.toString('utf8');
       let idx: number;
       while ((idx = buffer.indexOf('\r\n')) >= 0) {
         const line = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 2);
+        if (!/^\d{3}/.test(line)) continue;
+        pendingLines.push(line.slice(4));
         // Multi-line replies use "250-"; the final line uses "250 ".
-        if (/^\d{3} /.test(line) || /^\d{3}$/.test(line)) {
-          waiters.shift()?.resolve(Number.parseInt(line.slice(0, 3), 10));
+        if (line.length === 3 || line[3] === ' ') {
+          const lines = pendingLines;
+          pendingLines = [];
+          waiters.shift()?.resolve({ code: Number.parseInt(line.slice(0, 3), 10), lines });
         }
       }
-    });
-    socket.on('error', (err) => {
+    };
+    const onError = (err: Error) => {
       for (const w of waiters.splice(0)) w.reject(err);
-    });
+    };
+    const attach = (s: net.Socket) => {
+      s.on('data', onData);
+      s.on('error', onError);
+      s.setTimeout(15_000, () => s.destroy(new Error('SMTP timeout')));
+    };
+    attach(socket);
 
-    const reply = () => new Promise<number>((resolve, reject) => waiters.push({ resolve, reject }));
-    const expect = async (pending: Promise<number>, ok: number[]) => {
-      const code = await pending;
-      if (!ok.includes(code)) throw new Error(`SMTP unexpected reply ${code}`);
+    const reply = () => new Promise<SmtpReply>((resolve, reject) => waiters.push({ resolve, reject }));
+    const expect = async (pending: Promise<SmtpReply>, ok: number[]) => {
+      const r = await pending;
+      if (!ok.includes(r.code)) throw new Error(`SMTP unexpected reply ${r.code}`);
+      return r;
     };
     const command = (line: string, ok: number[]) => {
       const pending = reply();
@@ -100,7 +197,34 @@ export class SmtpMailTransport implements MailTransport {
 
     try {
       await expect(reply(), [220]);
-      await command('EHLO hrvo.local', [250]);
+      const ehlo = await command('EHLO hrvo.local', [250]);
+      const auth = this.options.auth;
+      if (auth) {
+        if (!ehlo.lines.some((l) => /^STARTTLS\b/i.test(l))) throw new Error('SMTP server does not offer STARTTLS; refusing to send credentials');
+        await command('STARTTLS', [220]);
+        socket.removeListener('data', onData);
+        buffer = '';
+        // Certificate and host name are verified. rejectUnauthorized is explicit so that
+        // NODE_TLS_REJECT_UNAUTHORIZED=0 in the environment cannot turn the check off.
+        const secure = tls.connect({
+          socket, servername: net.isIP(this.host) ? undefined : this.host, host: this.host,
+          rejectUnauthorized: true, minVersion: 'TLSv1.2',
+          ca: this.options.ca ? [...tls.rootCertificates, this.options.ca] : undefined,
+        });
+        await new Promise<void>((resolve, reject) => {
+          secure.once('secureConnect', resolve);
+          secure.once('error', reject);
+        });
+        socket = secure;
+        attach(socket);
+        const caps = await command('EHLO hrvo.local', [250]);
+        if (!caps.lines.some((l) => /^AUTH\b.*\bPLAIN\b/i.test(l))) throw new Error('SMTP server does not offer AUTH PLAIN');
+        const pending = reply();
+        socket.write(`AUTH PLAIN ${Buffer.from(`\0${auth.user}\0${auth.password}`, 'utf8').toString('base64')}\r\n`);
+        const login = await pending;
+        // Only the code reaches the error; the reply text could echo the account.
+        if (login.code !== 235) throw new Error(`SMTP login refused (reply ${login.code})`);
+      }
       await command(`MAIL FROM:<${this.from}>`, [250]);
       await command(`RCPT TO:<${message.to}>`, [250, 251]);
       await command('DATA', [354]);
@@ -110,10 +234,17 @@ export class SmtpMailTransport implements MailTransport {
         .map((l) => (l.startsWith('.') ? `.${l}` : l))
         .join('\r\n');
       const headers = [`From: <${this.from}>`, `To: <${message.to}>`, `Subject: ${message.subject}`, `Date: ${new Date().toUTCString()}`, 'MIME-Version: 1.0'];
+      const boundaryOf = (kind: string) => `hrvo-${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      // ADR 039: text and HTML as alternatives; mail programs show the HTML, Mailhog both.
+      const htmlB64 = message.html ? Buffer.from(message.html, 'utf8').toString('base64').replace(/.{76}/g, '$&\r\n') : null;
+      const alt = boundaryOf('alt');
+      const bodyPart = htmlB64
+        ? [`Content-Type: multipart/alternative; boundary="${alt}"`, '', `--${alt}`, 'Content-Type: text/plain; charset=utf-8', '', body, `--${alt}`, 'Content-Type: text/html; charset=utf-8', 'Content-Transfer-Encoding: base64', '', htmlB64, `--${alt}--`]
+        : ['Content-Type: text/plain; charset=utf-8', '', body];
       let content: string[];
       if (message.attachments?.length) {
-        const boundary = `hrvo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-        content = [`Content-Type: multipart/mixed; boundary="${boundary}"`, '', `--${boundary}`, 'Content-Type: text/plain; charset=utf-8', '', body];
+        const boundary = boundaryOf('mix');
+        content = [`Content-Type: multipart/mixed; boundary="${boundary}"`, '', `--${boundary}`, ...bodyPart];
         for (const a of message.attachments) {
           assertNoHeaderInjection(a.filename, 'attachment name');
           assertNoHeaderInjection(a.contentType, 'attachment type');
@@ -121,7 +252,7 @@ export class SmtpMailTransport implements MailTransport {
           content.push(`--${boundary}`, `Content-Type: ${a.contentType}; charset=utf-8; name="${a.filename}"`, 'Content-Transfer-Encoding: base64', `Content-Disposition: attachment; filename="${a.filename}"`, '', b64);
         }
         content.push(`--${boundary}--`);
-      } else content = ['Content-Type: text/plain; charset=utf-8', '', body];
+      } else content = bodyPart;
       const data = [...headers, ...content, '.'].join('\r\n');
       await command(data, [250]);
       await command('QUIT', [221]);
@@ -131,80 +262,71 @@ export class SmtpMailTransport implements MailTransport {
   }
 }
 
-/** Resend HTTPS API (FR-AUTH-001/008, FR-NOTIF-002, FR-MEET-003). One request, no retries. */
-export class ResendMailTransport implements MailTransport {
-  private readonly apiKey: string;
-  private readonly from: string;
-
-  constructor(apiKey: string, from: string) {
-    if (!apiKey.trim()) throw new Error('RESEND_API_KEY is required for MAIL_TRANSPORT=resend');
-    if (/\s/.test(apiKey)) throw new Error('RESEND_API_KEY must not contain whitespace');
-    if (!from.trim()) throw new Error('RESEND_FROM is required for MAIL_TRANSPORT=resend');
-    assertNoHeaderInjection(from, 'sender');
-    this.from = from.trim();
-    const address = this.from.includes('<') ? this.from.match(/^[^<>]+<([^<>]+)>$/)?.[1] : this.from;
-    if (!z.email().safeParse(address).success) throw new Error('RESEND_FROM must be an email address or Name <email>');
-    this.apiKey = apiKey;
-  }
-
-  async send(message: MailMessage): Promise<void> {
-    assertNoHeaderInjection(message.to, 'recipient');
-    assertNoHeaderInjection(message.subject, 'subject');
-    const attachments = message.attachments?.map((attachment) => {
-      assertNoHeaderInjection(attachment.filename, 'attachment name');
-      assertNoHeaderInjection(attachment.contentType, 'attachment type');
-      return {
-        filename: attachment.filename,
-        content_type: attachment.contentType,
-        content: Buffer.from(attachment.content, 'utf8').toString('base64'),
-      };
-    });
-    const signal = AbortSignal.timeout(10_000);
-    let response: Response;
-    try {
-      response = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: this.from, to: [message.to], subject: message.subject, text: message.text, attachments }),
-        signal,
-        // Do not forward credentials or message content to a redirect target.
-        redirect: 'error',
-      });
-    } catch {
-      // Fetch errors and provider bodies may contain sensitive data. Never attach them as causes.
-      throw new Error(signal.aborted ? 'Resend request timed out' : 'Resend request failed');
-    }
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => {});
-      throw new Error(`Resend delivery failed (HTTP ${response.status})`);
-    }
-    try {
-      const result: unknown = await response.json();
-      if (!z.object({ id: z.string().min(1) }).safeParse(result).success) throw new Error('Missing email id');
-    } catch {
-      throw new Error(signal.aborted ? 'Resend request timed out' : 'Resend returned an invalid response');
-    }
-  }
-}
-
-export function createMailTransport(): MailTransport {
-  const mode = process.env.MAIL_TRANSPORT ?? 'smtp';
-  if (mode === 'resend') {
-    return new ResendMailTransport(process.env.RESEND_API_KEY ?? '', process.env.RESEND_FROM ?? '');
-  }
+export function createMailTransport(env: Record<string, string | undefined> = process.env): MailTransport {
+  const mode = env.MAIL_TRANSPORT ?? 'smtp';
+  const production = env.NODE_ENV === 'production';
+  const nothingDelivered = (why: string) => {
+    if (production) throw new Error(`MAIL_TRANSPORT=${mode} delivers nothing and is refused in production; use resend (docs/runbooks/mail.md)`);
+    if (env.NODE_ENV !== 'test') console.warn(`MAIL_TRANSPORT=${mode}: e-mails are ${why} and never delivered. Sign-up, invitation and reset links will not arrive. Use smtp with Mailhog (http://localhost:8025) or resend (docs/runbooks/mail.md).`);
+  };
   if (mode === 'memory') {
-    if (isProduction()) throw new Error('MAIL_TRANSPORT=memory is not allowed in production');
+    nothingDelivered('kept in memory');
     return new InMemoryMailTransport();
+  }
+  if (mode === 'file') {
+    nothingDelivered('written to MAIL_FILE_DIR');
+    if (!env.MAIL_FILE_DIR) throw new Error('MAIL_TRANSPORT=file needs MAIL_FILE_DIR');
+    return new FileMailTransport(env.MAIL_FILE_DIR);
+  }
+  if (mode === 'resend') {
+    const key = env.RESEND_API_KEY ?? '';
+    // RESEND_FROM: the name used by deployments configured from main's earlier Resend set-up.
+    const from = env.MAIL_FROM ?? env.RESEND_FROM ?? '';
+    if (!key) throw new Error('MAIL_TRANSPORT=resend needs RESEND_API_KEY');
+    if (!from) throw new Error('MAIL_TRANSPORT=resend needs MAIL_FROM (an address on a domain verified in Resend; RESEND_FROM is accepted too)');
+    return new ResendMailTransport(key, from);
   }
   if (mode !== 'smtp') {
     throw new Error(`Unknown MAIL_TRANSPORT: ${mode}`);
   }
-  if (isProduction()) {
-    throw new Error('MAIL_TRANSPORT=smtp is a plaintext dev transport (Mailhog); configure a production provider before deploying');
+  if (production) return productionSmtp(env);
+  const user = env.SMTP_USER ?? '';
+  const password = env.SMTP_PASSWORD ?? '';
+  if (Boolean(user) !== Boolean(password)) {
+    throw new Error('MAIL_TRANSPORT=smtp needs both SMTP_USER and SMTP_PASSWORD, or neither (Mailhog)');
   }
   return new SmtpMailTransport(
-    process.env.SMTP_HOST || 'localhost',
-    Number.parseInt(process.env.SMTP_PORT || '1025', 10),
-    process.env.SMTP_FROM || 'no-reply@hrvo.local',
+    env.SMTP_HOST || 'localhost',
+    Number.parseInt(env.SMTP_PORT || '1025', 10),
+    env.MAIL_FROM || env.RESEND_FROM || env.SMTP_FROM || 'no-reply@hrvo.local',
+    user ? { auth: { user, password } } : {},
   );
+}
+
+/** A plain address: what MAIL FROM and the From header need (no display name, no spaces or breaks). */
+const PLAIN_ADDRESS = /^[^\s<>@"]+@[^\s<>@"]+\.[A-Za-z]{2,}$/;
+
+/**
+ * ADR 046: production SMTP is authenticated submission only (e.g. Gmail with an App Password).
+ * With a login, SmtpMailTransport requires STARTTLS and a certificate that the system trust store
+ * accepts for SMTP_HOST before AUTH is sent; nothing here can add a CA or skip the check.
+ * Errors name the setting, never its value.
+ */
+function productionSmtp(env: Record<string, string | undefined>): SmtpMailTransport {
+  const refuse = (why: string) => new Error(`MAIL_TRANSPORT=smtp in production ${why} (ADR 046, docs/runbooks/mail.md)`);
+  const user = env.SMTP_USER ?? '';
+  const password = env.SMTP_PASSWORD ?? '';
+  if (!user || !password) throw refuse('needs SMTP_USER and SMTP_PASSWORD: only authenticated submission over STARTTLS is allowed');
+  const host = (env.SMTP_HOST ?? '').trim().toLowerCase();
+  if (!host) throw refuse('needs SMTP_HOST');
+  if (net.isIP(host) || !host.includes('.') || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) {
+    throw refuse('needs SMTP_HOST to be the public host name on the server certificate (not an IP address or a local name)');
+  }
+  const port = env.SMTP_PORT ? Number(env.SMTP_PORT) : 587;
+  if (port !== 587) throw refuse('needs SMTP_PORT=587 (submission with STARTTLS); 25 and 465 are not supported');
+  const from = env.MAIL_FROM || env.RESEND_FROM || env.SMTP_FROM || '';
+  if (!from) throw refuse('needs MAIL_FROM (the sender address, usually the SMTP account)');
+  if (!PLAIN_ADDRESS.test(from)) throw refuse('needs MAIL_FROM to be a plain address such as sender@example.com (no display name)');
+  if (env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw refuse('is not allowed while NODE_TLS_REJECT_UNAUTHORIZED=0 disables certificate checks');
+  return new SmtpMailTransport(host, port, from, { auth: { user, password } });
 }

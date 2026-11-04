@@ -27,6 +27,7 @@
     "seed:demo:internet": "node --env-file-if-exists=.env --experimental-strip-types apps/api/test/seed-internet-demo.ts",
     "demo:internet": "bash scripts/demo-internet.sh",
     "demo:internet:teardown": "bash scripts/demo-internet.sh teardown",
+    "test:imds-guard": "bash infra/staging-ec2/test/imds-guard-netns.sh",
     "test:attendance": "tsc && node --test --test-concurrency=4 dist/apps/api/test/attendance-*.test.js dist/apps/api/test/leave-e2e.test.js",
     "e2e:attendance": "tsc && npm run e2e -w @hrvo/web -- 23-accuracy.spec.ts 24-leave.spec.ts",
     "lan:env": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/lan.ts env",

@@ -21,6 +21,7 @@ import { MAIL_TRANSPORT, InMemoryMailTransport, createMailTransport } from '../s
 import { AttendanceGateway } from '../src/attendance/attendance.gateway.ts';
 import { signAccessToken } from '../src/auth/tokens.ts';
 import { getCorsOrigins, getJwtSecret, refreshCookieOptions } from '../src/common/config.ts';
+import { oauthCookieOptions } from '../src/auth/google-signin.service.ts';
 import {
   BreachCheckUnavailableError,
   HibpRangeChecker,
@@ -606,6 +607,27 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       await withEnv({ APP_WEB_URL: 'http://localhost:3000' }, () => {
         assert.equal(refreshCookieOptions().secure, false);
       });
+      // ADR 040: web app and API on two sites (quick tunnels): SameSite=None, Secure and Partitioned; HTTPS only.
+      await withEnv({ APP_WEB_URL: 'https://app.example.test', REFRESH_COOKIE_SAMESITE: 'none' }, () => {
+        assert.deepEqual(refreshCookieOptions(), { httpOnly: true, secure: true, sameSite: 'none', path: '/auth/refresh', partitioned: true });
+      });
+      await withEnv({ APP_WEB_URL: 'http://localhost:3000', REFRESH_COOKIE_SAMESITE: 'none' }, () => {
+        assert.throws(() => refreshCookieOptions(), /HTTPS/);
+      });
+      await withEnv({ REFRESH_COOKIE_SAMESITE: 'lax' }, () => {
+        assert.throws(() => refreshCookieOptions(), /"strict" \(default\) or "none"/);
+      });
+      // ADR 040: the Google sign-in state cookie (FR-AUTH-005) follows the same switch. Lax by default, since it
+      // must come back on Google's top-level redirect to the callback; None (Secure, never Partitioned: that
+      // redirect is a top-level navigation to the API host, where a partitioned cookie would not be sent) when
+      // the web app that starts the flow is on another site. Otherwise the browser refuses the cookie
+      // (SchemefulSameSiteLax) and every sign-in ends in invalid_state.
+      await withEnv({ APP_WEB_URL: 'http://localhost:3000', REFRESH_COOKIE_SAMESITE: undefined }, () => {
+        assert.deepEqual(oauthCookieOptions(), { httpOnly: true, secure: false, sameSite: 'lax', path: '/auth/google', maxAge: 600_000 });
+      });
+      await withEnv({ APP_WEB_URL: 'https://app.example.test', REFRESH_COOKIE_SAMESITE: 'none' }, () => {
+        assert.deepEqual(oauthCookieOptions(), { httpOnly: true, secure: true, sameSite: 'none', path: '/auth/google', maxAge: 600_000 });
+      });
     });
 
     it('cookie-based /auth/refresh requires the CSRF header and an allowed Origin', async () => {
@@ -772,6 +794,13 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
     it('defaults to HIBP; the local stub is refused in production', async () => {
       await withEnv({ BREACHED_PASSWORD_CHECK: undefined }, () => {
         assert.ok(createBreachedPasswordChecker() instanceof HibpRangeChecker);
+      });
+      // Empty (exported as "" by `set -a; . ./.env.demo-internet`) is the default too, not an unknown mode.
+      await withEnv({ BREACHED_PASSWORD_CHECK: '' }, () => {
+        assert.ok(createBreachedPasswordChecker() instanceof HibpRangeChecker);
+      });
+      await withEnv({ BREACHED_PASSWORD_CHECK: 'nope' }, () => {
+        assert.throws(() => createBreachedPasswordChecker(), /Unknown BREACHED_PASSWORD_CHECK mode/);
       });
       await withEnv({ BREACHED_PASSWORD_CHECK: 'local', NODE_ENV: 'production' }, () => {
         assert.throws(() => createBreachedPasswordChecker(), /not allowed in production/);

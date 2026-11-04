@@ -121,12 +121,29 @@ export function servedOverHttps(): boolean {
   return isProduction() || /^https:\/\//i.test(process.env.APP_WEB_URL ?? '');
 }
 
+/**
+ * SameSite of the refresh cookie (ADR 040). Strict by default: the browser sends it only when the
+ * web app and the API are the same site. REFRESH_COOKIE_SAMESITE=none is for a web app and an API
+ * on two different sites (quick tunnels, docs/runbooks/demo-internet.md): the cookie is then also
+ * Secure and Partitioned (kept per top-level site), and /auth/refresh still demands the CSRF
+ * header and an allowed Origin, which a cross-site form cannot send. Refused without HTTPS.
+ */
+export function refreshCookieSameSite(): 'strict' | 'none' {
+  const raw = (process.env.REFRESH_COOKIE_SAMESITE ?? '').trim().toLowerCase();
+  if (raw === '' || raw === 'strict') return 'strict';
+  if (raw !== 'none') throw new Error('REFRESH_COOKIE_SAMESITE must be "strict" (default) or "none"');
+  if (!servedOverHttps()) throw new Error('REFRESH_COOKIE_SAMESITE=none needs HTTPS: APP_WEB_URL must be an https:// address');
+  return 'none';
+}
+
 export function refreshCookieOptions(): CookieOptions {
+  const sameSite = refreshCookieSameSite();
   return {
     httpOnly: true,
     secure: servedOverHttps(),
-    sameSite: 'strict',
+    sameSite,
     path: REFRESH_COOKIE_PATH,
+    ...(sameSite === 'none' ? { partitioned: true } : {}),
   };
 }
 

@@ -1,13 +1,18 @@
 'use client';
 
-import { GoogleStartResponseSchema } from '@hrvo/shared';
 import type { GoogleResultCode, GoogleStartDto } from '@hrvo/shared';
-import { apiFetch } from './api';
+import { API_URL } from './env';
 
-/** Starts "Continue with Google": the API answers with Google's URL and sets the state cookie. */
+/**
+ * Starts "Continue with Google" with a top-level navigation to the API (ADR 042): the API sets the state
+ * cookie as a first-party cookie of its own site and redirects to Google. Started from a fetch instead,
+ * that cookie would be a third-party cookie, which private windows, Safari and Firefox drop, and every
+ * sign-in would end in "invalid_state".
+ */
 export async function startGoogleSignIn(dto: GoogleStartDto): Promise<void> {
-  const r = await apiFetch('/auth/google/start', { method: 'POST', auth: 'none', body: dto, schema: GoogleStartResponseSchema });
-  window.location.assign(r.authorizeUrl);
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(dto)) if (typeof v === 'string' && v !== '') q.set(k, v);
+  window.location.assign(`${API_URL}/auth/google/start?${q.toString()}`);
 }
 
 const MESSAGES: Record<GoogleResultCode, string> = {

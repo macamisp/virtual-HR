@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { DoorOpen, Lock, Megaphone, Map as MapIcon, Minus, Navigation, Plus, Users } from 'lucide-react';
 import { ACCESS_MODES, VO_STATUS_LABEL } from '@hrvo/shared';
 import type { AccessMode, OfficeSnapshot, Room, VoStatus } from '@hrvo/shared';
@@ -15,7 +15,8 @@ import { NativeSelect } from '@/components/ui/select';
 import { OfficeMedia } from '@/components/media/office-media';
 import { AvatarActions } from '@/components/office/avatar-actions';
 import { CallPerson } from '@/components/call-person';
-import { OfficeClient } from '@/lib/office/office-client';
+import type { OfficeClient } from '@/lib/office/office-client';
+import { CallContext } from '@/components/media/use-call-controller';
 import { STATUS_COLOUR } from '@/lib/office/office-renderer';
 import type { OfficeRenderer } from '@/lib/office/office-renderer';
 import { useBroadcast, useClaimDesk, useOfficePeople, useOfficeSnapshot, useReleaseDesk, useSetStatus, useUpdateRoom } from '@/lib/office-queries';
@@ -31,23 +32,21 @@ function StatusDot({ status }: { status: VoStatus }) {
   return <span aria-hidden="true" className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: hex(STATUS_COLOUR[status]) }} />;
 }
 
+/**
+ * ADR 048: the office connection belongs to the call controller and outlives this page; the page
+ * only says that the office view is on screen (and whether the map wants the position stream).
+ */
 function useClient(snapshot: OfficeSnapshot | undefined, view: View) {
-  const [client, setClient] = useState<OfficeClient | null>(null);
+  const c = useContext(CallContext);
+  if (!c) throw new Error('useClient needs CallProvider');
+  useEffect(() => { if (snapshot) c.enterOffice(snapshot); }, [c, snapshot]);
   useEffect(() => {
-    if (!snapshot) return;
-    const c = new OfficeClient(snapshot, view === 'map');
-    c.connect();
-    setClient(c);
-    return () => c.disconnect();
-    // Reconnect only when the view (position stream) changes, not on every snapshot refresh.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, !!snapshot]);
-  useEffect(() => {
-    if (client && snapshot) {
-      client.snapshot = snapshot;
-      client.changed();
-    }
-  }, [client, snapshot]);
+    c.setOfficeView(true, view === 'map');
+    return () => c.setOfficeView(false, false);
+  }, [c, view]);
+  // Re-render on the office client's own changes only; the controller's other events (every
+  // LiveKit speaker or quality change) are the call views' business, not the whole page's.
+  const client = useSyncExternalStore(c.subscribe, () => c.office, () => null);
   useSyncExternalStore(client?.subscribe ?? noopSubscribe, client?.getVersion ?? zero, zero);
   return client;
 }
@@ -81,6 +80,9 @@ function MapView({ client }: { client: OfficeClient }) {
         host.current?.setAttribute('data-fps', String(Math.round(renderer.current.fps)));
         host.current?.setAttribute('data-frame-ms', renderer.current.frameMs.toFixed(2));
         host.current?.setAttribute('data-avatars', String(client.avatars.size + 1));
+        // For the browser tests: where the own avatar is and whether the office socket is live.
+        host.current?.setAttribute('data-self', client.self ? `${Math.round(client.self.x)},${Math.round(client.self.y)}` : '');
+        host.current?.setAttribute('data-connected', client.connected ? 'true' : 'false');
       }
     }, 500);
     return () => { cancelled = true; clearInterval(t); r?.destroy(); renderer.current = null; };
@@ -93,6 +95,14 @@ function MapView({ client }: { client: OfficeClient }) {
     for (const k of pressed.current) { const v = KEYS[k]; if (v) { x += v[0]; y += v[1]; } }
     client.keys = { x: Math.sign(x), y: Math.sign(y) };
   };
+  // A key released while the window or tab was not in front never sends its keyup here: forget
+  // held keys whenever focus leaves (the element's blur covers most cases, not a hidden tab).
+  useEffect(() => {
+    const release = () => { pressed.current.clear(); client.keys = { x: 0, y: 0 }; };
+    window.addEventListener('blur', release);
+    document.addEventListener('visibilitychange', release);
+    return () => { window.removeEventListener('blur', release); document.removeEventListener('visibilitychange', release); };
+  }, [client]);
   return (
     <div className="relative h-[calc(100vh-12rem)] min-h-[420px] overflow-hidden rounded border bg-slate-50">
       <div
@@ -210,7 +220,7 @@ function People({ client }: { client: OfficeClient }) {
           const live = client.roster.get(p.id);
           const status = live?.status ?? p.status;
           const roomName = live?.roomId ? client.snapshot.rooms.find((r) => r.id === live.roomId)?.name : live ? null : p.roomName;
-          const where = live ? (roomName ? `in ${roomName}` : 'in the open area') : 'not in the office';
+          const where = live ? `${roomName ? `in ${roomName}` : 'in the open area'}${live.away ? ' · away from the office view' : ''}` : 'not in the office';
           return (
             <li key={p.id} className="flex items-center justify-between gap-2 rounded px-1 py-1 hover:bg-accent/50">
               <div className="min-w-0">

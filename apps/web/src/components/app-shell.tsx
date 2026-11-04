@@ -12,6 +12,8 @@ import { LiveAlerts } from '@/components/live-alerts';
 import { PresenceChallengeDialog } from '@/components/presence-challenge';
 import { TimerBadge } from '@/components/timesheets/timer';
 import { ConsentGate } from '@/components/consent-gate';
+import { CallProvider, OfficePresenceBadge } from '@/components/media/call-provider';
+import { callController } from '@/lib/media/call-controller';
 import { ErrorState, LoadingState } from '@/components/state-views';
 import { useAuthStore } from '@/lib/auth-store';
 import { logout, refreshSession, secondsUntilExpiry } from '@/lib/session';
@@ -146,12 +148,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   const signOut = async () => {
+    // ADR 048: the call ends and the devices are released before the session is revoked.
+    await callController().shutdown();
     await logout();
     queryClient.clear();
     router.replace('/login');
   };
 
   return (
+    <CallProvider>
     <div className="flex min-h-screen flex-col">
       <a
         href="#main"
@@ -173,6 +178,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </Button>
         <span className="font-semibold">HR Virtual Office</span>
         <div className="ml-auto flex items-center gap-3">
+          <OfficePresenceBadge />
           <TrackingBadge />
           <TimerBadge />
           <NotificationBell />
@@ -400,5 +406,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <PresenceChallengeDialog />
       </div>
     </div>
+    </CallProvider>
   );
 }

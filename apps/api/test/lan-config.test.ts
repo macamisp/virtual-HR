@@ -8,7 +8,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { insecureUrls, lanEnv, parseLanHost } from '../../../scripts/lan-config.ts';
+import { insecureUrls, lanEnv, localhostLinkWarning, parseLanHost } from '../../../scripts/lan-config.ts';
 import { followPageHost, isLocalHostname } from '../../../packages/shared/src/net/local-url.ts';
 import { getCorsOrigins, isOriginAllowed, listenHost, originMatcher } from '../src/common/config.ts';
 
@@ -147,3 +147,21 @@ describe('The API listens on every interface unless HOST says otherwise', () => 
     withEnv({ HOST: '::' }, () => assert.equal(listenHost(), '::'));
   });
 });
+
+describe('E-mailed links and APP_WEB_URL (ADR 039)', () => {
+  it('warns when APP_WEB_URL is localhost while other addresses point at the network', () => {
+    const w = localhostLinkWarning({ APP_WEB_URL: 'http://localhost:3000', NEXT_PUBLIC_API_URL: 'https://192.168.1.20:3444', NEXT_PUBLIC_STORAGE_URL: 'http://localhost:9000' });
+    assert.ok(w);
+    assert.match(w, /APP_WEB_URL is http:\/\/localhost:3000, but NEXT_PUBLIC_API_URL points at the network/);
+    assert.match(w, /LAN HTTPS address/);
+  });
+  it('says nothing when everything is local, or when APP_WEB_URL is the LAN or public address', () => {
+    assert.equal(localhostLinkWarning({ APP_WEB_URL: 'http://localhost:3000', NEXT_PUBLIC_API_URL: 'http://localhost:3001' }), null);
+    assert.equal(localhostLinkWarning({ APP_WEB_URL: 'https://192.168.1.20:3443', NEXT_PUBLIC_API_URL: 'https://192.168.1.20:3444' }), null);
+    assert.equal(localhostLinkWarning({ APP_WEB_URL: 'https://hrvo.example.com', NEXT_PUBLIC_API_URL: 'https://api.hrvo.example.com' }), null);
+  });
+  it('the generated LAN settings never trigger it', () => {
+    assert.equal(localhostLinkWarning(lanEnv({ host: '192.168.1.20' })), null);
+  });
+});
+

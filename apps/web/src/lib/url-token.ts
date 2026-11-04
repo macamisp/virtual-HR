@@ -17,6 +17,13 @@ export function useUrlToken(): string | null | undefined {
     if (fromHash || fromQuery) {
       window.history.replaceState(null, '', window.location.pathname);
     }
+    // A second e-mailed link pasted into this same tab only changes the part after #, which does
+    // not reload the page; reload so the new link is read from the start (ADR 039).
+    const onHashChange = () => {
+      if (new URLSearchParams(window.location.hash.replace(/^#/, '')).get('token')) window.location.reload();
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
   return token;
 }

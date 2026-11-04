@@ -7,7 +7,7 @@
  * only echoed for latency measurement.
  */
 import {
-  buildGrid, centre, displayStatus, inRect, InterestGrid, nearestWalkable, proximityGroups, spawnPoint, TILE_SIZE, validateMove,
+  buildGrid, centre, displayStatus, inRect, InterestGrid, isClosedRoom, nearestWalkable, proximityGroups, spawnPoint, TILE_SIZE, validateMove,
 } from '../../../../packages/shared/src/office/index.ts';
 import type {
   AccessMode, CollisionGrid, ManualStatus, OfficeDefinition, Point, PositionEntry, PositionsMessage, ProximityMessage, Rect, RosterEntry, RoomType, VoStatus,
@@ -49,9 +49,13 @@ export interface Avatar {
   message: string;
   roomOnly: boolean;
   isAdmin: boolean;
-  /** Socket ids in the office; those with positions=true get the position stream. */
-  sockets: Map<string, { positions: boolean }>;
+  /** Socket ids in the office; those with positions=true get the position stream, viewing=true show the office view (ADR 048). */
+  sockets: Map<string, { positions: boolean; viewing: boolean }>;
   ct: number | null;
+  /** ADR 048: server ms when the last socket dropped without leaving; removed by the tick after the grace. */
+  goneAt: number | null;
+  /** The login session family that dropped: only it gets its place back (a reload); a new sign-in starts fresh. */
+  goneSid: string | null;
 }
 
 export type Denial = 'KNOCK' | 'INVITE' | 'PASSWORD' | 'FULL';
@@ -124,8 +128,26 @@ export class OfficeWorld {
     return displayStatus(a.attendance, a.manual, true);
   }
 
+  /** ADR 048: in the office but not looking at it (every socket on another page, or none left). */
+  away(a: Avatar): boolean {
+    for (const s of a.sockets.values()) if (s.viewing) return false;
+    return true;
+  }
+
   rosterEntry(a: Avatar): RosterEntry {
-    return { id: a.userId, name: a.name, status: this.status(a), statusMessage: a.message, floorId: a.floorId, roomId: a.roomId };
+    return { id: a.userId, name: a.name, status: this.status(a), statusMessage: a.message, floorId: a.floorId, roomId: a.roomId, away: this.away(a) };
+  }
+
+  /** Observers whose position stream was off get a full neighbourhood again when it comes back. */
+  forgetKnown(userId: string): void {
+    this.known.delete(userId);
+  }
+
+  /** Mark an avatar changed for the position stream and the roster. */
+  touch(a: Avatar): void {
+    a.version += 1;
+    this.rosterChanged = true;
+    this.changedRoster.add(a.userId);
   }
 
   roster(): RosterEntry[] {
@@ -205,7 +227,11 @@ export class OfficeWorld {
   }
 
   /** The 10 Hz tick: per-observer deltas of the neighbourhood, proximity changes, roster changes. */
-  tick(emit: WorldEmitter, now: number): { messages: number; entries: number } {
+  tick(emit: WorldEmitter, now: number, leaveGraceMs = 0): { messages: number; entries: number } {
+    // ADR 048: a dropped connection (reload) keeps its place for the grace, then is gone for everyone.
+    for (const a of this.avatars.values()) {
+      if (a.goneAt !== null && now - a.goneAt >= leaveGraceMs) { this.remove(a.userId); emit.roster(this.orgId, { id: a.userId, gone: true }); }
+    }
     const all = [...this.avatars.values()];
     const interest = new InterestGrid(all.map((a) => ({ id: a.userId, floorId: a.floorId, x: a.x, y: a.y })));
     const entry = new Map<string, PositionEntry>();
@@ -213,7 +239,7 @@ export class OfficeWorld {
       let e = entry.get(a.userId);
       // The mover's clock is echoed only for a move made since the previous tick, so a resend
       // (someone re-entering the neighbourhood, a status change) never looks like a slow delivery.
-      if (!e) { e = [a.userId, a.x, a.y, a.dir, this.status(a), a.roomId, a.ct !== null && now - a.lastMoveAt <= 150 ? a.ct : null]; entry.set(a.userId, e); }
+      if (!e) { e = [a.userId, a.x, a.y, a.dir, this.status(a), a.roomId, a.ct !== null && now - a.lastMoveAt <= 150 ? a.ct : null, this.away(a) ? 1 : 0]; entry.set(a.userId, e); }
       return e;
     };
     let messages = 0;
@@ -240,7 +266,7 @@ export class OfficeWorld {
     // Proximity groups: only changes are sent.
     const groups = proximityGroups(all.map((a) => {
       const room = a.roomId ? this.rooms.find((r) => r.id === a.roomId) : null;
-      return { id: a.userId, floorId: a.floorId, x: a.x, y: a.y, closedRoomId: room && room.type !== 'OPEN' ? room.id : null, roomOnly: a.roomOnly };
+      return { id: a.userId, floorId: a.floorId, x: a.x, y: a.y, closedRoomId: room && isClosedRoom(room) ? room.id : null, roomOnly: a.roomOnly };
     }), this.proximityRadius);
     const groupOf = new Map<string, { id: string; members: string[] }>();
     for (const [id, members] of groups) for (const m of members) groupOf.set(m, { id, members });

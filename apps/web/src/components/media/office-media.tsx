@@ -1,111 +1,84 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
+import { useId, useState } from 'react';
 import { Headphones } from 'lucide-react';
-import type { MediaTokenRequest, OfficeSnapshot } from '@hrvo/shared';
+import type { OfficeSnapshot } from '@hrvo/shared';
 import { Button } from '@/components/ui/button';
-import { ApiError } from '@/lib/api';
-import { loadPrefs, type DevicePrefs } from '@/lib/media/devices';
-import { MediaSession } from '@/lib/media/media-session';
-import { fetchMediaToken } from '@/lib/meeting-queries';
+import { officeRoute } from '@/lib/media/call-controller';
+import { useSetOfficePreferences } from '@/lib/office-queries';
 import type { OfficeClient } from '@/lib/office/office-client';
-import { CallView, useSession } from './call-view';
+import { CallView } from './call-view';
+import { useCallController } from './use-call-controller';
 import { PreJoin } from './prejoin';
 
-const ENABLED_KEY = 'hrvo.office.media';
-function readEnabled(): boolean { try { return window.sessionStorage.getItem(ENABLED_KEY) === '1'; } catch { return false; } }
-function writeEnabled(v: boolean): void { try { if (v) window.sessionStorage.setItem(ENABLED_KEY, '1'); else window.sessionStorage.removeItem(ENABLED_KEY); } catch { /* storage unavailable */ } }
-
-/** Which call the avatar's position implies: a closed room, a proximity group, or none. */
-export function mediaTarget(client: OfficeClient, snapshot: OfficeSnapshot): { key: string; req: MediaTokenRequest } | null {
-  const roomId = client.self?.roomId;
-  const room = roomId ? snapshot.rooms.find((r) => r.id === roomId) : null;
-  if (room && room.accessMode !== 'OPEN') return { key: `room:${room.id}`, req: { kind: 'room' } };
-  if (!client.roomOnly && client.proximity.groupId && client.proximity.members.length > 1) return { key: `prox:${client.proximity.groupId}`, req: { kind: 'proximity' } };
-  return null;
-}
-
 /**
- * FR-VO-005 / FR-VO-010 (ADR 016): walking into a closed room joins its call; standing near people
- * in the open area joins the proximity group's call, with volume falling off with distance.
- * Media starts only after the user has turned it on and passed the device check.
+ * FR-VO-005 / FR-VO-010 (ADR 016, 046): walking into a closed room joins its call; standing near
+ * people in the open area joins the proximity group's call, with volume falling off with distance.
+ * Media starts only after the user has turned it on and passed the device check. The call itself
+ * belongs to the call controller, so it keeps going on other pages (ADR 048).
  */
 export function OfficeMedia({ client, snapshot }: { client: OfficeClient; snapshot: OfficeSnapshot }) {
-  const [enabled, setEnabled] = useState(false);
+  const c = useCallController();
   const [setup, setSetup] = useState(false);
-  const [session] = useState(() => new MediaSession());
-  const [notice, setNotice] = useState<string | null>(null);
-  const prefs = useRef<DevicePrefs | null>(null);
-  const current = useRef<string | null>(null);
-  useSession(session);
-  useEffect(() => { if (readEnabled()) { prefs.current = loadPrefs(); setEnabled(true); } }, []);
-  useEffect(() => () => { void session.disconnect(); }, [session]);
+  const prefs = useSetOfficePreferences();
+  const id = useId();
 
-  const target = enabled ? mediaTarget(client, snapshot) : null;
-  const key = target?.key ?? null;
-  useEffect(() => {
-    if (key === current.current) return;
-    // Debounced: walking along the edge of a group should not reconnect every tick.
-    const t = setTimeout(() => {
-      current.current = key;
-      setNotice(null);
-      if (!key || !target) { void session.disconnect(); return; }
-      const go = async (retry: boolean): Promise<void> => {
-        try {
-          const token = await fetchMediaToken(target.req);
-          if (current.current !== key) return;
-          await session.connect(token, prefs.current ?? loadPrefs());
-        } catch (err) {
-          // The server's proximity grouping can lag the client by one tick.
-          if (retry && err instanceof ApiError && err.status === 409) { setTimeout(() => void go(false), 1000); return; }
-          if (current.current === key) setNotice(err instanceof Error ? err.message : 'Could not join the call');
-        }
-      };
-      void go(true);
-    }, 600);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-
-  // Distance falloff for proximity calls (full volume close by, quiet at the edge of the radius).
-  useEffect(() => {
-    if (!key?.startsWith('prox:')) return;
-    const radius = snapshot.office.proximityRadius;
-    const t = setInterval(() => {
-      const me = client.self;
-      if (!me) return;
-      const v = new Map<string, number>();
-      for (const a of client.avatars.values()) v.set(a.id, 1 - (Math.hypot(a.rx - me.x, a.ry - me.y) / radius) * 0.85);
-      session.setVolumes(v);
-    }, 300);
-    return () => clearInterval(t);
-  }, [key, client, session, snapshot.office.proximityRadius]);
-
-  if (!enabled) {
+  if (!c.officeMediaEnabled) {
     return setup ? (
-      <PreJoin title="Audio and video in the office" joinLabel="Turn on" onCancel={() => setSetup(false)} onJoin={(p) => { prefs.current = p; writeEnabled(true); setEnabled(true); setSetup(false); }} />
+      <PreJoin title="Audio and video in the office" joinLabel="Turn on" onCancel={() => setSetup(false)} onJoin={(p) => { c.enableOfficeMedia(p); setSetup(false); }} />
     ) : (
-      <div className="space-y-1">
+      <div className="space-y-1" data-testid="office-media-off">
         <p className="text-sm text-muted-foreground">Talk to people when you walk into a closed room or stand near them.</p>
+        {c.notice ? <p role="status" className="text-sm text-muted-foreground">{c.notice}</p> : null}
         <Button size="sm" variant="outline" onClick={() => setSetup(true)}><Headphones aria-hidden="true" /> Turn on audio and video</Button>
       </div>
     );
   }
-  const off = () => { writeEnabled(false); setEnabled(false); current.current = null; void session.disconnect(); };
+  const off = () => c.disableOfficeMedia();
+  const route = officeRoute(client);
+  const cur = c.current;
+  let body: React.ReactNode;
+  if (cur?.kind === 'meeting') {
+    body = (
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-sm text-muted-foreground">You are in the meeting “{cur.title}”.</p>
+        <Button size="sm" variant="outline" asChild><Link href={`/meetings/${cur.meetingId}`}>Return to meeting</Link></Button>
+      </div>
+    );
+  } else if (c.lock === 'elsewhere') {
+    body = (
+      <div className="flex flex-wrap items-center gap-2" data-testid="call-elsewhere">
+        <p className="text-sm">This call is open in another tab.</p>
+        <Button size="sm" onClick={() => void c.takeOver()}>Take over</Button>
+        <Button size="sm" variant="ghost" onClick={off}>Turn off</Button>
+      </div>
+    );
+  } else if (c.session.room && cur?.kind === 'office') {
+    body = (
+      <>
+        <p className="text-sm font-medium">{cur.label}</p>
+        <CallView session={c.session} compact onLeave={off} />
+      </>
+    );
+  } else {
+    body = (
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-sm text-muted-foreground">{route ? 'Joining…' : 'Nobody to talk to here. Walk into a room or up to a colleague.'}</p>
+        <Button size="sm" variant="ghost" onClick={off}>Turn off</Button>
+      </div>
+    );
+  }
   return (
     <div className="space-y-2" data-testid="office-media">
-      {notice ? <p role="status" className="text-sm text-muted-foreground">{notice}</p> : null}
-      {session.room && key ? (
-        <>
-          <p className="text-sm font-medium">{key.startsWith('room:') ? session.token?.label ?? 'Room call' : 'Nearby'}</p>
-          <CallView session={session} compact onLeave={off} />
-        </>
-      ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="text-sm text-muted-foreground">{key ? 'Joining…' : 'Nobody to talk to here. Walk into a room or up to a colleague.'}</p>
-          <Button size="sm" variant="ghost" onClick={off}>Turn off</Button>
-        </div>
-      )}
+      {c.notice ? <p role="status" className="text-sm text-muted-foreground">{c.notice}</p> : null}
+      {body}
+      <label htmlFor={id} className="flex items-center gap-2 text-xs text-muted-foreground">
+        <input id={id} type="checkbox" checked={snapshot.me.muteOnLeave} disabled={prefs.isPending}
+          onChange={(e) => { c.setMuteOnLeave(e.target.checked); prefs.mutate({ muteOnLeave: e.target.checked }); }} />
+        Mute my microphone when I leave the office page
+      </label>
+      {prefs.isError ? <p role="alert" className="text-xs text-destructive">{prefs.error.message}</p> : null}
     </div>
   );
 }

@@ -1,3 +1,5 @@
+> Note (merge of ADR 039/043): the API also offers `MAIL_TRANSPORT=file` and SMTP with STARTTLS/AUTH, and reads the sender from `MAIL_FROM` (`RESEND_FROM` still works). The current guide is `docs/runbooks/mail.md`.
+
 # Transactional email with Resend
 
 The API uses the same `MailTransport` for password resets, user invitations, workspace email

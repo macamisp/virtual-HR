@@ -5,8 +5,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildGrid, centre, defaultOffice, displayStatus, findPath, generateDefaultFloor, InterestGrid, INTEREST_CELL, mapDesks, mapRooms,
-  MOVE_SPEED, nearestWalkable, OfficeDefinitionSchema, OfficeMapSchema, proximityGroups, segmentClear, spawnPoint, TILE_SIZE, validateMove, walkable,
+  buildGrid, centre, defaultOffice, displayStatus, findPath, generateDefaultFloor, InterestGrid, INTEREST_CELL, isClosedRoom, mapDesks, mapRooms,
+  mediaRoute, MOVE_SPEED, nearestWalkable, OfficeDefinitionSchema, OfficeMapSchema, proximityGroups, segmentClear, spawnPoint, TILE_SIZE, validateMove, walkable,
 } from '../../../packages/shared/src/office/index.ts';
 import type { OfficeMap } from '../../../packages/shared/src/office/index.ts';
 
@@ -113,11 +113,62 @@ describe('Proximity groups (FR-VO-005, without media)', () => {
     assert.deepEqual([...groups.entries()].sort(), [['a', ['a', 'b', 'c']], ['room:R', ['m1', 'm2']]]);
   });
 
+  it('a room\'s type, not its access mode, decides whether it is closed (an open-access meeting room is closed)', () => {
+    const rooms = mapRooms(map);
+    const closed = Object.fromEntries(rooms.map((r) => [r.name, isClosedRoom(r)]));
+    assert.deepEqual(closed, {
+      'Meeting room A': true, 'Meeting room B': true, 'Meeting room C': true, 'Board room': true, 'Focus room': true, 'HR office': true, Reception: false, Lounge: false,
+    });
+    assert.ok(rooms.some((r) => r.type === 'MEETING' && r.access === 'OPEN'), 'the default map has open-access meeting rooms (the case that broke)');
+  });
+
   it('200 people are grouped quickly', () => {
     const people = Array.from({ length: 200 }, (_, i) => ({ id: `u${String(i).padStart(3, '0')}`, floorId: 'f', x: (i % 20) * 60, y: Math.floor(i / 20) * 60, closedRoomId: null, roomOnly: false }));
     const t0 = performance.now();
     for (let i = 0; i < 10; i += 1) proximityGroups(people, 96);
     assert.ok((performance.now() - t0) / 10 < 20, 'under 20 ms per tick');
+  });
+});
+
+describe('Audio route from the avatar\'s room (FR-MEET-002, FR-VO-005; regression 2026-10-29)', () => {
+  const rooms = mapRooms(map).map((r, i) => ({ id: `room-${i}`, name: r.name, type: r.type }));
+  const id = (name: string) => rooms.find((r) => r.name === name)!.id;
+  const alone = { groupId: null, members: [] };
+  const route = (roomId: string | null, proximity: { groupId: string | null; members: string[] } = alone, roomOnly = false) => mediaRoute({ roomId, rooms, roomOnly, proximity });
+
+  it('inside any closed room, whatever its access mode, the route is that room\'s call', () => {
+    for (const name of ['Meeting room A', 'Meeting room B', 'Meeting room C', 'Board room', 'Focus room', 'HR office']) {
+      assert.deepEqual(route(id(name), { groupId: `room:${id(name)}`, members: ['u1', 'u2'] }), { key: `room:${id(name)}`, kind: 'room' }, name);
+    }
+  });
+
+  it('different rooms are different calls; leaving a room ends its call', () => {
+    assert.notEqual(route(id('Meeting room A'))!.key, route(id('Meeting room B'))!.key);
+    assert.equal(route(null), null, 'alone in the open area');
+    assert.equal(route(id('Reception')), null, 'alone in an open-type area');
+  });
+
+  it('in the open area (and open-type areas) a proximity group of two or more is a call; room-only mode opts out', () => {
+    const near = { groupId: 'u1', members: ['u1', 'u2'] };
+    assert.deepEqual(route(null, near), { key: 'prox:u1', kind: 'proximity' });
+    assert.deepEqual(route(id('Lounge'), near), { key: 'prox:u1', kind: 'proximity' });
+    assert.equal(route(null, { groupId: 'u1', members: ['u1'] }), null);
+    assert.equal(route(null, near, true), null);
+  });
+
+  it('a stale room group never becomes a proximity call (the server refuses those with 409)', () => {
+    assert.equal(route(null, { groupId: `room:${id('Meeting room A')}`, members: ['u1', 'u2'] }), null);
+  });
+
+  it('agrees with the server\'s grouping for two people standing together in every room', () => {
+    for (const r of mapRooms(map)) {
+      const rid = id(r.name);
+      const p = nearestWalkable(grid, centre(r.bounds))!;
+      const groups = proximityGroups(['u1', 'u2'].map((u) => ({ id: u, floorId: 'f', x: p.x, y: p.y, closedRoomId: isClosedRoom(r) ? rid : null, roomOnly: false })), 96);
+      const [gid, members] = [...groups.entries()][0]!;
+      const want = isClosedRoom(r) ? { key: `room:${rid}`, kind: 'room' } : { key: `prox:${gid}`, kind: 'proximity' };
+      assert.deepEqual(route(rid, { groupId: gid, members }), want, r.name);
+    }
   });
 });
 

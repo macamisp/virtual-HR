@@ -28,6 +28,16 @@ host, port, path, no trailing slash). Google allows plain `http://` only for `lo
 address (docs/runbooks/lan-https.md) needs `https://192.168.x.x:3444/auth/google/callback`, and
 Google refuses raw IP addresses in redirect URIs, so use a name (e.g. `hrvo.local`) or a tunnel.
 
+For the internet demo with separate quick tunnels, use the API tunnel host, not the web host:
+`https://<api-tunnel-host>/auth/google/callback`. Register that exact URI in Google Cloud Console
+and set the same value as `GOOGLE_REDIRECT_URI` before restarting the API. The web origin remains
+the authorised JavaScript origin.
+
+The browser starts the flow with a **navigation** to `GET /auth/google/start` (ADR 042), so the
+state cookie is a first-party cookie of the API site and survives browsers that block third-party
+cookies. After the callback the session is handed over through a 60-second, single-use token in
+the URL fragment and `POST /auth/google/complete`; the callback itself sets no cookie.
+
 `npm run google:check` prints these values for your `.env`, says whether the three settings are
 present (never their values), and fetches Google's discovery document.
 
@@ -70,10 +80,13 @@ present (never their values), and fetches Google's discovery document.
 - **New visitor:** on the signup page, *Continue with Google* stays disabled until the workspace
   name is entered; it then creates the workspace and makes them its owner (2FA set-up follows for
   owners). No password and no verification e-mail are needed on this path.
-- **Joining by domain** is off unless the owner switches it on under Workspace settings → Sign-in
-  settings ("Let Google accounts on this domain join by themselves"); such people join as Member.
-- **2FA:** owners, admins and HR still enter their code after Google unless the owner switched
-  "Roles that need 2FA also need it after a Google sign-in" off.
+- **Joining by domain** is off by default: people join a workspace by invitation (ADR 039). An
+  owner can make one exception under Workspace settings → Sign-in settings ("let Google accounts of
+  your own domain join as Member"). Only the domain of the owner's own e-mail address is accepted,
+  never a public one such as gmail.com.
+- **2FA:** owners, admins and HR always enter their code after Google, exactly as after a
+  password (ADR 039). The owner's switch "People who turned on 2FA for themselves also enter their
+  code after a Google sign-in" covers only everyone else.
 - **Profile → Sign-in methods** shows Password and Google; Google can be linked or removed there,
   but never as the last remaining method.
 

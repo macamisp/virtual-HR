@@ -21,6 +21,7 @@ import { appendAuditEntry } from '../common/audit-chain.ts';
 import type { AuditEntry } from '../common/audit-chain.ts';
 import { MAIL_TRANSPORT } from '../common/mailer.ts';
 import type { MailTransport } from '../common/mailer.ts';
+import { appWebUrl, renderActionEmail } from '../common/email-layout.ts';
 import {
   BREACHED_PASSWORD_CHECKER,
   BreachCheckUnavailableError,
@@ -171,7 +172,7 @@ export class AuthService {
       });
       return res.rows[0];
     });
-    await this.sendInvitation(email, inviteToken, inviter.displayName ?? inviter.email);
+    await this.sendInvitation(email, inviteToken, inviter.displayName ?? inviter.email, await this.workspaceName(inviter.orgId));
     return {
       id: created.id,
       inviteToken, // Also returned so the inviter can copy the link.
@@ -181,19 +182,22 @@ export class AuthService {
     };
   }
 
-  private async sendInvitation(to: string, inviteToken: string, inviterName: string): Promise<void> {
-    const base = process.env.APP_WEB_URL || 'http://localhost:3000';
-    await this.mailer.send({
-      to,
-      subject: `${inviterName} invited you to HRVO`,
-      text: [
-        `${inviterName} invited you to join their workspace on HRVO.`,
-        '',
-        `Accept the invitation (valid for 7 days, single use): ${base}/accept-invitation#token=${inviteToken}`,
-        '',
-        'If you were not expecting this, you can ignore this e-mail.',
-      ].join('\n'),
-    });
+  /** The organisation's display name, for e-mails. */
+  async workspaceName(orgId: string): Promise<string> {
+    const r = await this.prisma.runWithTenantContext(orgId, (db) => db.query<{ name: string }>(`SELECT name FROM organizations WHERE id = $1`, [orgId]));
+    return r.rows[0]?.name ?? 'your workspace';
+  }
+
+  /** ADR 039: also used when an invitee asks for a fresh link from an expired one. */
+  async sendInvitation(to: string, inviteToken: string, inviterName: string, workspaceName: string): Promise<void> {
+    await this.mailer.send({ to, ...renderActionEmail({
+      subject: `${inviterName} invited you to ${workspaceName} on HRVO`,
+      intro: `${inviterName} invited you to join "${workspaceName}" on HRVO.`,
+      paragraphs: ['Accept the invitation to choose your name and password (or use your Google account with this address). Then you sign in.'],
+      buttonLabel: 'Accept invitation',
+      url: `${appWebUrl()}/accept-invitation#token=${inviteToken}`,
+      footer: ['The invitation works once and expires in 7 days. If it has expired, the page it opens can send you a new one.', 'If you were not expecting this, you can ignore this e-mail.'],
+    }) });
   }
 
   private static invitationStatus(r: { accepted_at: Date | null; revoked_at: Date | null; expires_at: Date }): InvitationRow['status'] {
@@ -239,7 +243,7 @@ export class AuthService {
       await this.recordAudit(client, { orgId: user.orgId, actorId: user.id, action: 'INVITATION_RESENT', entityType: 'INVITATION', entityId: id, after: { email: current.email }, ip, userAgent });
       return (await client.query(`${AuthService.INVITATION_SELECT} WHERE i.id = $1`, [id])).rows[0];
     });
-    await this.sendInvitation(row.email as string, inviteToken, user.displayName ?? user.email);
+    await this.sendInvitation(row.email as string, inviteToken, user.displayName ?? user.email, await this.workspaceName(user.orgId));
     return this.mapInvitation(row);
   }
 
@@ -540,6 +544,7 @@ export class AuthService {
     meta: RequestMeta,
     auditAction: string,
     method: 'PASSWORD' | 'GOOGLE' | 'AGENT' = 'PASSWORD',
+    expiresInMs: number = REFRESH_TTL_MS,
   ) {
     const sessionId = randomUUID();
     const familyId = randomUUID();
@@ -554,7 +559,7 @@ export class AuthService {
         user.id,
         familyId,
         sha256(refreshToken),
-        new Date(Date.now() + REFRESH_TTL_MS),
+        new Date(Date.now() + expiresInMs),
         meta.ip || null,
         meta.userAgent || null,
         method,
@@ -650,7 +655,32 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    const session = sessionRes.rows[0];
+    const session = sessionRes.rows[0] as SessionForRefreshRow;
+    return await this.rotateSession(session, meta);
+  }
+
+  /**
+   * Google sign-in handoff (ADR 042): the session the callback created is claimed once, by id, and
+   * rotated exactly like a refresh. A second claim is token reuse and revokes the whole family.
+   */
+  async rotateSessionById(orgId: string, sessionId: string, meta: RequestMeta) {
+    const session = await this.prisma.runWithTenantContext(orgId, async (client) =>
+      (await client.query<SessionForRefreshRow & { login_method: string }>(
+        `SELECT s.id, s.org_id, s.user_id, s.family_id, s.is_revoked, s.revoked_reason, s.expires_at, s.login_method,
+                u.email, u.display_name, u.role, u.team_id, u.status AS user_status
+         FROM auth_sessions s JOIN users u ON u.id = s.user_id
+         WHERE s.id = $1 AND s.org_id = $2`,
+        [sessionId, orgId],
+      )).rows[0]);
+    if (!session || session.login_method !== 'GOOGLE') {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+    return await this.rotateSession(session, meta);
+  }
+
+  /** Reuse detection, expiry and account checks, then a new token in the same family (ADR 018). */
+  private async rotateSession(session: SessionForRefreshRow, meta: RequestMeta) {
+    const { ip, userAgent } = meta;
 
     if (session.is_revoked) {
       if (session.revoked_reason === 'ROTATED' || session.revoked_reason === null) {
@@ -978,18 +1008,14 @@ export class AuthService {
       });
 
       // The token travels in the URL fragment so it is not sent to servers or in Referer headers.
-      const base = process.env.APP_WEB_URL || 'http://localhost:3000';
-      await this.mailer.send({
-        to: user.email,
+      await this.mailer.send({ to: user.email, ...renderActionEmail({
         subject: 'Reset your HRVO password',
-        text: [
-          'A password reset was requested for your HRVO account.',
-          '',
-          `Reset link (valid for 30 minutes, single use): ${base}/reset-password#token=${token}`,
-          '',
-          'If you did not request this, you can ignore this email. Resetting signs you out everywhere.',
-        ].join('\n'),
-      });
+        intro: 'A password reset was requested for your HRVO account.',
+        paragraphs: ['Choose a new password, then sign in with it. Resetting signs you out on every device.'],
+        buttonLabel: 'Choose a new password',
+        url: `${appWebUrl()}/reset-password#token=${token}`,
+        footer: ['The link works once and expires in 30 minutes. If it has expired, the page it opens sends you a new one.', 'If you did not ask for this, ignore this e-mail; your password stays as it is.'],
+      }) });
     }
 
     return { success: true, message: 'If the account exists, a reset link has been sent.' };
@@ -1070,10 +1096,10 @@ export class AuthService {
   }
 
   /** A new login for a person whose identity was verified by other means (Google), audited as such. */
-  async issueSessionFor(user: AuthUserRow, meta: RequestMeta, auditAction: string, method: 'PASSWORD' | 'GOOGLE' = 'GOOGLE') {
+  async issueSessionFor(user: AuthUserRow, meta: RequestMeta, auditAction: string, method: 'PASSWORD' | 'GOOGLE' = 'GOOGLE', expiresInMs?: number) {
     return await this.prisma.runWithTenantContext(user.org_id, async (client) => {
       await client.query(`UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`, [user.id]);
-      return await this.issueSession(client, user, meta, auditAction, method);
+      return await this.issueSession(client, user, meta, auditAction, method, expiresInMs);
     });
   }
 
@@ -1105,4 +1131,20 @@ export class AuthService {
   private async recordAudit(client: pg.PoolClient, entry: AuditEntry) {
     await appendAuditEntry(client, entry);
   }
+}
+
+/** A session joined with its user, as fn_lookup_session_for_refresh returns it. */
+interface SessionForRefreshRow {
+  id: string;
+  org_id: string;
+  user_id: string;
+  family_id: string;
+  is_revoked: boolean;
+  revoked_reason: string | null;
+  expires_at: Date | string;
+  email: string;
+  display_name: string | null;
+  role: AuthenticatedUser['role'];
+  team_id: string | null;
+  user_status: string;
 }

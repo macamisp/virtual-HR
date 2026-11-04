@@ -90,7 +90,8 @@ export class LocalBlocklistChecker implements BreachedPasswordChecker {
 }
 
 export function createBreachedPasswordChecker(): BreachedPasswordChecker {
-  const mode = process.env.BREACHED_PASSWORD_CHECK ?? 'hibp';
+  // Unset or empty (the runbooks say "leave it empty") means the default, HIBP.
+  const mode = (process.env.BREACHED_PASSWORD_CHECK ?? '').trim() || 'hibp';
   if (mode === 'local') {
     if (isProduction()) {
       throw new Error('BREACHED_PASSWORD_CHECK=local is a test stub and is not allowed in production');

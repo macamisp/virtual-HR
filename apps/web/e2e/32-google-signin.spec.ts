@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { ORG_ID, USERS, adminPool } from './fixtures';
-import { passNoticeGate, signInAdmin } from './helpers';
+import { freshTotp, passNoticeGate, signInAdmin } from './helpers';
+import { mailsTo } from './mail';
 
 /**
  * Sign in with Google against the fake OIDC provider (FR-AUTH-005; ADR 037): an existing
@@ -71,7 +72,7 @@ test.describe.serial('Sign in with Google (fake provider)', () => {
     await expect(page.getByRole('alert').filter({ hasText: /different e-mail address than the invitation/ })).toBeVisible();
   });
 
-  test('a new visitor creates a workspace with Google and becomes its owner (2FA set-up follows); Google cannot be removed as the only method', async ({ page }) => {
+  test('a new visitor creates a workspace with Google and becomes its owner: no e-mail, 2FA set-up, signed in; Google cannot be removed as the only method', async ({ page }) => {
     await page.goto('/signup');
     // The Google path waits for the workspace-name step.
     await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeDisabled();
@@ -80,22 +81,40 @@ test.describe.serial('Sign in with Google (fake provider)', () => {
     await page.getByLabel('Your name').fill('Greta Google');
     await page.getByRole('button', { name: 'Continue with Google' }).click();
     await fakeGoogleSignIn(page, 'greta@e2e-google.test');
+    // Google verified the address: no confirmation e-mail, straight to the owner's 2FA set-up (ADR 039).
     await expect(page).toHaveURL(/\/2fa\/setup/);
-    await expect(page.getByTestId('totp-secret')).toBeVisible();
+    expect(mailsTo('greta@e2e-google.test'), 'no e-mail is needed').toHaveLength(0);
     const pool = adminPool();
     try {
-      const owner = (await pool.query<{ role: string; is_owner: boolean; password_hash: string | null; org_slug: string }>(
-        `SELECT u.role, u.is_owner, u.password_hash, o.slug AS org_slug FROM users u JOIN organizations o ON o.id = u.org_id WHERE u.email = 'greta@e2e-google.test'`)).rows[0];
+      const owner = (await pool.query<{ role: string; is_owner: boolean; password_hash: string | null; org_slug: string; email_verified_at: Date | null }>(
+        `SELECT u.role, u.is_owner, u.password_hash, u.email_verified_at, o.slug AS org_slug FROM users u JOIN organizations o ON o.id = u.org_id WHERE u.email = 'greta@e2e-google.test'`)).rows[0];
       expect(owner).toMatchObject({ role: 'SUPER_ADMIN', is_owner: true, password_hash: null, org_slug: 'e2e-google-co' });
-      // Let the browser test skip 2FA and the onboarding wizard for this workspace (both covered elsewhere).
-      await pool.query(`UPDATE organizations SET mfa_for_sso = false, onboarded_at = now() WHERE slug = 'e2e-google-co'`);
+      expect(owner?.email_verified_at).toBeTruthy();
+      // Skip the onboarding wizard for this workspace (covered by spec 31).
+      await pool.query(`UPDATE organizations SET onboarded_at = now() WHERE slug = 'e2e-google-co'`);
     } finally {
       await pool.end();
     }
+    const secret = ((await page.getByTestId('totp-secret').textContent()) ?? '').replace(/\s+/g, '');
+    await page.getByLabel('Authentication code').fill(await freshTotp(page, secret));
+    await page.getByRole('button', { name: 'Verify and enable' }).click();
+    await page.getByLabel('I have saved these codes somewhere safe').check();
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await passNoticeGate(page);
+    await expect(page.getByTestId('current-user')).toContainText('Greta Google');
+
+    // Signing in with Google again: an owner always confirms 2FA, even with the switch off.
+    const pool2 = adminPool();
+    try { await pool2.query(`UPDATE organizations SET mfa_for_sso = false WHERE slug = 'e2e-google-co'`); } finally { await pool2.end(); }
+    await page.context().clearCookies();
     await page.goto('/login');
     await page.getByRole('button', { name: 'Continue with Google' }).click();
     await fakeGoogleSignIn(page, 'greta@e2e-google.test');
+    await expect(page.getByRole('heading', { name: 'Two-factor authentication' })).toBeVisible();
+    await page.getByLabel('Authentication code').fill(await freshTotp(page, secret));
+    await page.getByRole('button', { name: 'Verify' }).click();
     await passNoticeGate(page);
+
     await page.goto('/account/profile');
     const methods = page.getByTestId('sign-in-methods');
     await expect(methods).toContainText('Password: not set');

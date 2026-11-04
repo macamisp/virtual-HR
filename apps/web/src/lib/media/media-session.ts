@@ -31,6 +31,8 @@ export interface Tile {
 export type SessionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error' | 'ended';
 
 let active = 0;
+/** FR-MEET-010: how long the connection must stay poor before the automatic audio-only fallback. */
+const POOR_FOR_MS = 5000;
 const setInCall = () => usePresenceStore.getState().setInCall(active > 0);
 
 export class MediaSession {
@@ -42,6 +44,7 @@ export class MediaSession {
   audioOnly = false;
   hands = new Set<string>();
   private counted = false;
+  private poorSince: ReturnType<typeof setTimeout> | null = null;
   private version = 0;
   private listeners = new Set<() => void>();
 
@@ -78,7 +81,14 @@ export class MediaSession {
       .on(RoomEvent.LocalTrackUnpublished, refresh)
       .on(RoomEvent.ActiveSpeakersChanged, refresh)
       .on(RoomEvent.ConnectionQualityChanged, (q: ConnectionQuality, p: Participant) => {
-        if (p.isLocal && q === ConnectionQuality.Poor && !this.audioOnly) void this.setAudioOnly(true);
+        // Audio-only after the connection has been poor for a while, not on one bad report
+        // (the first reports after connecting are noisy; a user who just turned the camera on
+        // would see it switched off again).
+        if (p.isLocal) {
+          if (q === ConnectionQuality.Poor || q === ConnectionQuality.Lost) {
+            this.poorSince ??= setTimeout(() => { this.poorSince = null; if (this.room === room && !this.audioOnly) void this.setAudioOnly(true); }, POOR_FOR_MS);
+          } else this.clearPoor();
+        }
         refresh();
       })
       .on(RoomEvent.ConnectionStateChanged, (s: ConnectionState) => {
@@ -86,6 +96,8 @@ export class MediaSession {
         refresh();
       })
       .on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
+        // Our own disconnect() (leaving, or switching rooms) has already let go of this room (ADR 048).
+        if (this.room !== room) return;
         this.uncount();
         this.status = 'ended';
         this.endedReason = reason === DisconnectReason.PARTICIPANT_REMOVED ? 'You were removed by the host.' : reason === DisconnectReason.ROOM_DELETED ? 'The meeting has ended.' : null;
@@ -115,9 +127,12 @@ export class MediaSession {
   private count(): void { if (!this.counted) { this.counted = true; active += 1; setInCall(); } }
   private uncount(): void { if (this.counted) { this.counted = false; active -= 1; setInCall(); } }
 
+  private clearPoor(): void { if (this.poorSince) clearTimeout(this.poorSince); this.poorSince = null; }
+
   async disconnect(): Promise<void> {
     const room = this.room;
     this.room = null;
+    this.clearPoor();
     this.uncount();
     this.hands.clear();
     if (room) await room.disconnect().catch(() => undefined);

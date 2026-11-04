@@ -77,9 +77,10 @@ export class ScheduledWorkService {
   }
 
   /** Runs `fn` per organisation; one failing tenant never stops the others. */
-  private async perOrg(job: string, fn: (org: OrgRow) => Promise<number>): Promise<number> {
+  private async perOrg(job: string, fn: (org: OrgRow) => Promise<number>, onlyOrgIds?: readonly string[]): Promise<number> {
     let total = 0;
     for (const org of await this.orgs()) {
+      if (onlyOrgIds && !onlyOrgIds.includes(org.id)) continue;
       try {
         total += await fn(org);
       } catch (err) {
@@ -378,7 +379,8 @@ export class ScheduledWorkService {
   // ---------------------------------------------------------------- attendance jobs (FR-ATT-002, 008, 009, 015, 020)
 
   /** Every minute: missed heartbeats, expired grace windows, midnight split, max length. */
-  async attendanceReconcile(now: Date = new Date()): Promise<number> {
+  /** `onlyOrgIds`: limit the run to these organisations (operations, and tests that move the clock). */
+  async attendanceReconcile(now: Date = new Date(), onlyOrgIds?: readonly string[]): Promise<number> {
     return await this.perOrg('attendance-reconcile', async (org) => {
       const r = await this.attendance.runReconciliation(now, org.id);
       // FR-ATT-021: tell people when the server clocked them out, with a way to correct it.
@@ -390,7 +392,7 @@ export class ScheduledWorkService {
       }));
       if (told.length) await this.notifications.notify(org.id, told);
       return r.closedCount + r.splitCount;
-    });
+    }, onlyOrgIds);
   }
 
   /**
