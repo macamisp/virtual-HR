@@ -104,7 +104,7 @@ function MapView({ client }: { client: OfficeClient }) {
     return () => { window.removeEventListener('blur', release); document.removeEventListener('visibilitychange', release); };
   }, [client]);
   return (
-    <div className="relative h-[calc(100vh-12rem)] min-h-[420px] overflow-hidden rounded border bg-slate-50">
+    <div className="relative h-[calc(100vh-12rem)] min-h-[420px] min-w-0 overflow-hidden rounded border bg-slate-50">
       <div
         ref={host}
         data-testid="office-canvas"
@@ -355,7 +355,8 @@ export default function OfficePage() {
             {view === 'map' ? <MapView client={client} /> : (
               <Card><CardHeader><CardTitle className="text-base">Rooms</CardTitle></CardHeader><CardContent><Rooms client={client} snapshot={snapshot.data} /></CardContent></Card>
             )}
-            <div className="space-y-3">
+            {/* min-w-0: a long name or status truncates instead of widening the page on a phone. */}
+            <div className="min-w-0 space-y-3">
               <Card><CardHeader><CardTitle className="text-base">Me</CardTitle></CardHeader><CardContent><MyPanel client={client} snapshot={snapshot.data} /></CardContent></Card>
               <Card><CardHeader><CardTitle className="text-base">Audio and video</CardTitle></CardHeader><CardContent><OfficeMedia client={client} snapshot={snapshot.data} /></CardContent></Card>
               {view === 'map' ? <Card><CardHeader><CardTitle className="text-base">Rooms</CardTitle></CardHeader><CardContent><Rooms client={client} snapshot={snapshot.data} /></CardContent></Card> : null}

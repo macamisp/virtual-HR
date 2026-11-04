@@ -27,9 +27,19 @@ function readPos(): { x: number; y: number } | null {
 }
 function writePos(p: { x: number; y: number }): void { try { window.localStorage.setItem(POS_KEY, JSON.stringify(p)); } catch { /* storage unavailable */ } }
 
+/**
+ * The layout viewport a fixed box is placed in. Not innerWidth/innerHeight: on a phone, content wider
+ * than the screen widens those beyond what is visible, which put the dock off screen.
+ */
+function viewport(win: Window): { w: number; h: number } {
+  const el = win.document.documentElement;
+  return { w: el.clientWidth || win.innerWidth, h: el.clientHeight || win.innerHeight };
+}
+
 /** Keeps the whole box inside the window. */
 function clamp(p: { x: number; y: number }, w: number, h: number, win: Window): { x: number; y: number } {
-  return { x: Math.min(Math.max(MARGIN, p.x), Math.max(MARGIN, win.innerWidth - w - MARGIN)), y: Math.min(Math.max(MARGIN, p.y), Math.max(MARGIN, win.innerHeight - h - MARGIN)) };
+  const v = viewport(win);
+  return { x: Math.min(Math.max(MARGIN, p.x), Math.max(MARGIN, v.w - w - MARGIN)), y: Math.min(Math.max(MARGIN, p.y), Math.max(MARGIN, v.h - h - MARGIN)) };
 }
 
 export function canDocumentPip(): boolean {
@@ -100,7 +110,8 @@ function DockBody({ floating, onFloat, onUnfloat }: { floating: boolean; onFloat
     const el = box.current;
     if (!el) return;
     const w = el.offsetWidth; const h = el.offsetHeight;
-    const next = clamp(p ?? readPos() ?? { x: window.innerWidth - w - MARGIN, y: window.innerHeight - h - MARGIN }, w, h, window);
+    const v = viewport(window);
+    const next = clamp(p ?? readPos() ?? { x: v.w - w - MARGIN, y: v.h - h - MARGIN }, w, h, window);
     setPos(next);
     writePos(next);
     setDock({ visible: true, height: h });
