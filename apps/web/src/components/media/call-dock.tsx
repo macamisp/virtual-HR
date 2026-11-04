@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeftRight, GripHorizontal, Hand, Mic, MicOff, MonitorUp, PhoneOff, PictureInPicture2, Video, VideoOff } from 'lucide-react';
+import { ArrowLeftRight, GripHorizontal, Hand, Mic, MicOff, MonitorUp, PhoneOff, PictureInPicture2, Video, VideoOff, Volume2, VolumeX } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useDockStore } from '@/lib/media/dock-store';
 import { cn } from '@/lib/utils';
@@ -156,6 +156,7 @@ function DockBody({ floating, onFloat, onUnfloat }: { floating: boolean; onFloat
       data-testid="call-dock"
       data-status={session.status}
       data-mic={session.micOn ? 'on' : 'off'}
+      data-speaker={session.speakerMuted ? 'off' : 'on'}
       data-cam={session.camOn ? 'on' : 'off'}
       className={cn('z-40 w-72 rounded-lg border bg-background p-2 text-foreground shadow-xl', floating ? 'relative m-2' : 'fixed max-w-[calc(100vw-2rem)]', !floating && !pos && 'invisible')}
       style={!floating && pos ? { left: pos.x, top: pos.y } : undefined}
@@ -180,6 +181,7 @@ function DockBody({ floating, onFloat, onUnfloat }: { floating: boolean; onFloat
       </div>
       <div role="toolbar" aria-label="Call controls" className="mt-1 flex flex-wrap items-center gap-1">
         <Button size="sm" variant={session.micOn ? 'default' : 'outline'} aria-pressed={session.micOn} aria-label={session.micOn ? 'Mute' : 'Unmute'} title={session.micOn ? 'Mute' : 'Unmute'} onClick={() => void session.toggleMic()}>{session.micOn ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />}</Button>
+        <Button size="sm" variant={session.speakerMuted ? 'outline' : 'default'} aria-pressed={!session.speakerMuted} aria-label={session.speakerMuted ? 'Unmute speakers' : 'Mute speakers'} title={session.speakerMuted ? 'Unmute speakers' : 'Mute speakers'} onClick={() => void session.setSpeakerMuted(!session.speakerMuted)}>{session.speakerMuted ? <VolumeX aria-hidden="true" /> : <Volume2 aria-hidden="true" />}</Button>
         <Button size="sm" variant={session.camOn ? 'default' : 'outline'} aria-pressed={session.camOn} aria-label="Camera" title="Camera" onClick={() => void session.toggleCam()}>{session.camOn ? <Video aria-hidden="true" /> : <VideoOff aria-hidden="true" />}</Button>
         <Button size="sm" variant={session.sharing ? 'default' : 'outline'} aria-pressed={session.sharing} aria-label={session.sharing ? 'Stop sharing' : 'Share screen'} title={session.sharing ? 'Stop sharing' : 'Share screen'} onClick={() => void session.toggleShare()}><MonitorUp aria-hidden="true" /></Button>
         <Button size="sm" variant={handUp ? 'default' : 'outline'} aria-pressed={handUp} aria-label={handUp ? 'Lower hand' : 'Raise hand'} title={handUp ? 'Lower hand' : 'Raise hand'} onClick={() => void session.raiseHand(!handUp)}><Hand aria-hidden="true" /></Button>

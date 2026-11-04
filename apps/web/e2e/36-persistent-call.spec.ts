@@ -41,7 +41,7 @@ async function framesOn(tile: Locator): Promise<number> { await tile.scrollIntoV
 async function cameraOn(page: Page): Promise<void> {
   const media = page.getByTestId('office-media');
   await expect(media.getByTestId('tile-local').getByLabel('Microphone on')).toBeVisible();
-  const camera = media.getByRole('button', { name: 'Camera', exact: true });
+  const camera = page.getByTestId('office-toolbar').getByRole('button', { name: 'Camera', exact: true });
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await camera.click();
     try { await expect(camera).toHaveAttribute('aria-pressed', 'true', { timeout: 20_000 }); return; } catch { /* rejected publish: once more */ }

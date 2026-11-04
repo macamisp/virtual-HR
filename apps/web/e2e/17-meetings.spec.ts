@@ -140,9 +140,9 @@ test.describe.serial('Meetings: instant call, device check, lobby', () => {
     await expect(lead.getByTestId('office-media').getByTestId('tile-remote')).toHaveAttribute('data-identity', USERS.worker.id);
 
     // FR-VO-009: screen share (Chromium picks the fake screen without a prompt).
-    await media.getByRole('button', { name: 'Share screen' }).click();
+    await worker.getByTestId('office-toolbar').getByRole('button', { name: 'Share screen' }).click();
     await expect(lead.getByTestId('office-media').getByTestId('screen-share')).toContainText(`${USERS.worker.name} is presenting`);
-    await media.getByRole('button', { name: 'Stop sharing' }).click();
+    await worker.getByTestId('office-toolbar').getByRole('button', { name: 'Stop sharing' }).click();
     await expect(lead.getByTestId('office-media').getByTestId('screen-share')).toHaveCount(0);
     await lead.context().close();
     await worker.context().close();

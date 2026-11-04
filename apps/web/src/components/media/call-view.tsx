@@ -54,26 +54,37 @@ export function RemoteAudio({ session }: { session: MediaSession }) {
   for (const p of room.remoteParticipants.values()) {
     for (const pub of p.audioTrackPublications.values()) if (pub.track) tracks.push({ key: `${p.identity}-${pub.trackSid}`, track: pub.track });
   }
-  return <>{tracks.map((t) => <AudioEl key={t.key} track={t.track} />)}</>;
+  return <>{tracks.map((t) => <AudioEl key={t.key} track={t.track} muted={session.speakerMuted} />)}</>;
 }
 
-function AudioEl({ track }: { track: Track }) {
+/**
+ * LiveKit unmutes attached elements (attach, startAudio), so the speaker setting is applied again
+ * after every render and whenever the element's muted state changes.
+ */
+function AudioEl({ track, muted }: { track: Track; muted: boolean }) {
   const ref = useRef<HTMLAudioElement | null>(null);
+  const want = useRef(muted);
+  want.current = muted;
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     track.attach(el);
-    return () => { track.detach(el); };
+    el.muted = want.current;
+    const keep = () => { if (el.muted !== want.current) el.muted = want.current; };
+    el.addEventListener('volumechange', keep);
+    return () => { el.removeEventListener('volumechange', keep); track.detach(el); };
   }, [track]);
-  return <audio ref={ref} autoPlay />;
+  useEffect(() => { if (ref.current) ref.current.muted = muted; });
+  return <audio ref={ref} autoPlay data-speaker-muted={muted ? 'true' : 'false'} />;
 }
 
 /**
  * FR-MEET-004/005, FR-VO-009: tiles (a shared screen takes the stage: presentation mode, with
  * expand, full screen, new window and picture-in-picture; ADR 045), and
- * controls for microphone, camera, screen share, raise hand, audio-only and leave.
+ * controls for microphone, camera, screen share, raise hand, audio-only and leave (the office page
+ * hides them with controls={false}: its toolbar above the map has them, ADR 048 §3b).
  */
-export function CallView({ session, onLeave, compact, extraControls }: { session: MediaSession; onLeave: () => void; compact?: boolean; extraControls?: React.ReactNode }) {
+export function CallView({ session, onLeave, compact, extraControls, controls = true }: { session: MediaSession; onLeave: () => void; compact?: boolean; extraControls?: React.ReactNode; controls?: boolean }) {
   useSession(session);
   const tiles = session.tiles();
   const presenters = tiles.filter((t) => t.screen);
@@ -92,7 +103,7 @@ export function CallView({ session, onLeave, compact, extraControls }: { session
       <div className={cn('grid gap-2', compact ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-3 xl:grid-cols-4')}>
         {tiles.map((t) => <TileView key={t.identity} t={t} />)}
       </div>
-      <div role="toolbar" aria-label="Call controls" className="flex flex-wrap items-center gap-2">
+      {controls ? <div role="toolbar" aria-label="Call controls" className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant={session.micOn ? 'default' : 'outline'} aria-pressed={session.micOn} onClick={() => void session.toggleMic()}>{session.micOn ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />} {session.micOn ? 'Mute' : 'Unmute'}</Button>
         <Button size="sm" variant={session.camOn ? 'default' : 'outline'} aria-pressed={session.camOn} onClick={() => void session.toggleCam()}>{session.camOn ? <Video aria-hidden="true" /> : <VideoOff aria-hidden="true" />} Camera</Button>
         <Button size="sm" variant={session.sharing ? 'default' : 'outline'} aria-pressed={session.sharing} onClick={() => void session.toggleShare()}><MonitorUp aria-hidden="true" /> {session.sharing ? 'Stop sharing' : 'Share screen'}</Button>
@@ -100,7 +111,7 @@ export function CallView({ session, onLeave, compact, extraControls }: { session
         <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={session.audioOnly} onChange={(e) => void session.setAudioOnly(e.target.checked)} /> Audio only</label>
         {extraControls}
         <Button size="sm" variant="destructive" onClick={onLeave}><PhoneOff aria-hidden="true" /> Leave</Button>
-      </div>
+      </div> : null}
     </section>
   );
 }

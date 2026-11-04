@@ -44,7 +44,7 @@ test('office: a shared screen can be expanded, shown full screen and in a new wi
     await goTo(lead, 'Meeting room A');
     await goTo(worker, 'Meeting room A');
     await expect(lead.getByTestId('office-media').getByTestId('tile-remote')).toHaveAttribute('data-identity', USERS.worker.id);
-    await worker.getByTestId('office-media').getByRole('button', { name: 'Share screen' }).click();
+    await worker.getByTestId('office-toolbar').getByRole('button', { name: 'Share screen' }).click();
 
     const share = lead.getByTestId('screen-share');
     await expect(share).toContainText(`${USERS.worker.name} is presenting`);
@@ -120,7 +120,7 @@ test('office: a shared screen can be expanded, shown full screen and in a new wi
     await worker.getByTestId('screen-share').getByTestId('screen-stop').click();
     await expect(lead.getByTestId('screen-share')).toHaveCount(0);
     await expect(big).toHaveCount(0);
-    await expect(worker.getByTestId('office-media').getByRole('button', { name: 'Share screen' })).toBeVisible();
+    await expect(worker.getByTestId('office-toolbar').getByRole('button', { name: 'Share screen' })).toBeVisible();
   } finally {
     await worker.context().close();
     await lead.context().close();
