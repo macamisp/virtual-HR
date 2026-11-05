@@ -23,7 +23,7 @@ import { useProjects, useTasks } from '@/lib/task-queries';
 import { useAddManualEntry, useMyEntries, useTimer, useTimerAction } from '@/lib/timesheet-queries';
 import { addDays, formatClock, formatDuration, toWorkDate } from '@/lib/format';
 
-const SOURCE_LABEL: Record<TimeEntry['source'], string> = { TIMER: 'Timer', MANUAL: 'Manual', AUTO_FROM_ATTENDANCE: 'Automatic' };
+const SOURCE_LABEL: Record<TimeEntry['source'], string> = { TIMER: 'Timer', MANUAL: 'Manual', AUTO_FROM_ATTENDANCE: 'Automatic', ONSITE: 'Onsite (approved)' };
 
 function workLabel(e: Pick<TimeEntry, 'taskTitle' | 'title'>): string {
   return e.title ?? e.taskTitle ?? 'Work';

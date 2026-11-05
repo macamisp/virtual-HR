@@ -89,6 +89,7 @@ export function TimesheetView({ sheet, heading }: { sheet: TimesheetDetail; head
         </div>
         <div className="space-y-4">
           <PayableCard sheet={sheet} />
+          <OvertimeCard sheet={sheet} />
           <NotesCard sheet={sheet} />
           <HistoryCard sheet={sheet} />
         </div>
@@ -188,6 +189,7 @@ function DaysCard({ sheet }: { sheet: TimesheetDetail }) {
               <TableHead>Day</TableHead>
               <TableHead className="text-right">Attendance</TableHead>
               <TableHead className="text-right">Meetings</TableHead>
+              <TableHead className="text-right">Onsite</TableHead>
               <TableHead className="text-right">Logged</TableHead>
               <TableHead className="text-right">Variance</TableHead>
               <TableHead>Flags</TableHead>
@@ -199,6 +201,7 @@ function DaysCard({ sheet }: { sheet: TimesheetDetail }) {
                 <TableCell>{formatWorkDate(d.date)}</TableCell>
                 <TableCell className="text-right tabular-nums">{minutesLabel(d.attendanceMinutes)}</TableCell>
                 <TableCell className="text-right tabular-nums" data-testid={`day-meeting-${d.date}`}>{minutesLabel(d.meetingMinutes)}</TableCell>
+                <TableCell className="text-right tabular-nums" data-testid={`day-onsite-${d.date}`}>{minutesLabel(d.onsiteMinutes)}</TableCell>
                 <TableCell className="text-right tabular-nums">{minutesLabel(d.loggedMinutes)}</TableCell>
                 <TableCell className="text-right tabular-nums">{signed(d.varianceMinutes)}{d.variancePct !== null && d.varianceMinutes !== 0 ? ` (${d.variancePct}%)` : ''}</TableCell>
                 <TableCell>
@@ -239,8 +242,10 @@ function EntriesCard({ sheet }: { sheet: TimesheetDetail }) {
                 <TableRow key={e.id} data-testid="entry-row" className={cn(e.flagged && 'bg-warning/10')}>
                   <TableCell>{formatWorkDate(e.workDate)}</TableCell>
                   <TableCell>
-                    <span className="block">{e.taskTitle ?? e.projectName ?? <span className="text-muted-foreground">No task</span>}</span>
-                    {e.taskTitle && e.projectName ? <span className="block text-xs text-muted-foreground">{e.projectName}</span> : null}
+                    <span className="block">{e.title ?? e.taskTitle ?? e.projectName ?? <span className="text-muted-foreground">No task</span>}</span>
+                    {e.title && e.taskTitle ? <span className="block text-xs text-muted-foreground">Task: {e.taskTitle}</span> : null}
+                    {(e.title || e.taskTitle) && e.projectName ? <span className="block text-xs text-muted-foreground">{e.projectName}</span> : null}
+                    {e.taskTitleNow ? <span className="block text-xs text-muted-foreground">Task renamed since: {e.taskTitleNow}</span> : null}
                     {e.note ? <span className="block text-xs text-muted-foreground">{e.note}</span> : null}
                   </TableCell>
                   <TableCell>
@@ -249,6 +254,8 @@ function EntriesCard({ sheet }: { sheet: TimesheetDetail }) {
                         <Badge variant="outline">Manual</Badge>
                         <span className="mt-1 block text-xs text-muted-foreground">Reason: {e.manualReason}</span>
                       </>
+                    ) : e.source === 'ONSITE' ? (
+                      <Badge variant="outline">Onsite · approved</Badge>
                     ) : (
                       <Badge variant="secondary">{e.running ? 'Timer · running' : e.autoStopped ? 'Timer · stopped at clock-out' : 'Timer'}</Badge>
                     )}
@@ -256,7 +263,7 @@ function EntriesCard({ sheet }: { sheet: TimesheetDetail }) {
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{e.running ? '…' : minutesLabel(e.minutes)}</TableCell>
                   <TableCell>
-                    {e.editable && !e.running ? (
+                    {e.editable && !e.running && e.source !== 'ONSITE' ? (
                       <Button variant="ghost" size="sm" aria-label={`Delete ${minutesLabel(e.minutes)} on ${formatWorkDate(e.workDate)}`}
                         disabled={mutate.isPending} onClick={() => { if (window.confirm('Delete this time entry?')) mutate.mutate({ id: e.id, remove: true }); }}>
                         <Trash2 aria-hidden="true" />
@@ -370,7 +377,10 @@ function PayableCard({ sheet }: { sheet: TimesheetDetail }) {
         {pay ? (
           <>
             <p className="text-2xl font-semibold tabular-nums" data-testid="payable-amount">{pay.currency} {pay.amount}</p>
-            <p className="text-muted-foreground">{minutesLabel(pay.regularMinutes)} regular{pay.overtimeMinutes ? ` · ${minutesLabel(pay.overtimeMinutes)} overtime` : ''}</p>
+            <p className="text-muted-foreground">
+              {minutesLabel(pay.regularMinutes)} regular{pay.overtimeMinutes ? ` · ${minutesLabel(pay.overtimeMinutes)} overtime` : ''}
+              {pay.unapprovedOvertimeMinutes ? ` · ${minutesLabel(pay.unapprovedOvertimeMinutes)} overtime not approved (paid at the base rate)` : ''}
+            </p>
             {pay.lines.length > 1 || pay.lines[0]?.projectId ? (
               <ul className="space-y-1 border-t pt-2">
                 {pay.lines.map((l) => (
@@ -385,6 +395,27 @@ function PayableCard({ sheet }: { sheet: TimesheetDetail }) {
         ) : (
           <p className="text-muted-foreground">{sheet.payableNote}</p>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** ADR 049 §2 (FR-WT-011): three overtime numbers, never merged. */
+function OvertimeCard({ sheet }: { sheet: TimesheetDetail }) {
+  const o = sheet.overtime;
+  if (!o.workedMinutes && !o.requestedMinutes && !o.approvedMinutes) return null;
+  return (
+    <Card data-testid="overtime-summary">
+      <CardHeader>
+        <CardTitle className="text-base">Overtime</CardTitle>
+        <CardDescription>{o.requiresApproval ? 'Only approved overtime is paid at the overtime rate.' : 'Requests are recorded; pay follows the rate profile.'}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid grid-cols-3 gap-2 text-sm">
+          <div><dt className="text-xs text-muted-foreground">Worked beyond schedule</dt><dd className="tabular-nums">{minutesLabel(o.workedMinutes)}</dd></div>
+          <div><dt className="text-xs text-muted-foreground">Requested</dt><dd className="tabular-nums">{minutesLabel(o.requestedMinutes)}</dd></div>
+          <div><dt className="text-xs text-muted-foreground">Approved</dt><dd className="tabular-nums" data-testid="overtime-approved">{minutesLabel(o.approvedMinutes)}</dd></div>
+        </dl>
       </CardContent>
     </Card>
   );
