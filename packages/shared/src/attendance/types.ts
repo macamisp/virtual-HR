@@ -151,6 +151,13 @@ export interface AttendanceConfig {
   maxCorrectionAgeDays?: number;         // default 7 days
   currentNoticeVersion?: string;         // default 'v1.0.0'
   presenceRetentionDays?: number;        // default 90 (FR-ADM-004, per organisation)
+  /**
+   * ADR 049 §1a/§1e: 2 = input during a meeting is not counted again and only the device in the
+   * call ends it. Absent = the V2 rules. Every saved attendance input stores the config it was
+   * processed with, so the nightly replay recomputes days recorded before V3 with the V2 rules
+   * and never reports a difference that only the new rules would produce.
+   */
+  meetingAccounting?: 2;
   /** FR-ATT-023 (ADR 019): ask "Are you still working?" before pausing. Off by default. */
   presenceChallengeEnabled?: boolean;
   presenceChallengeSeconds?: number;     // default 60

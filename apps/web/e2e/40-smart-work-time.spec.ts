@@ -48,7 +48,12 @@ test.describe.serial('Smart work time (ADR 049)', () => {
     await timer.getByLabel('What are you working on?').fill(TITLE);
     await timer.getByLabel('Where').selectOption('REMOTE');
     await timer.getByLabel('Kind of work').selectOption('DEVELOPMENT');
+    // One run in fifteen once saw this request still pending after 15 s (not reproduced in 8
+    // repeats). Waiting for the response makes a recurrence report the server status, not a timeout.
+    const started = page.waitForResponse((r) => r.url().endsWith('/timer/start') && r.request().method() === 'POST', { timeout: 30_000 });
     await timer.getByRole('button', { name: 'Start timer' }).click();
+    const res = await started;
+    expect(res.status(), await res.text()).toBe(200);
     await expect(timer.getByTestId('running-title')).toHaveText(TITLE);
     await expect(page.getByTestId('timer-badge')).toContainText(TITLE.slice(0, 10));
     await page.screenshot({ path: `${SHOTS}/01-work-time-timer.png`, fullPage: true });

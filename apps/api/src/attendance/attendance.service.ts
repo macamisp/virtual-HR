@@ -109,14 +109,17 @@ export class AttendanceService {
     holidayOrLeave?: IHolidayProvider | ILeaveProvider,
     leaveProvider?: ILeaveProvider,
   ) {
+    // ADR 049: live processing uses the V3 meeting accounting; it is stored with every input, so
+    // the replay of inputs recorded before V3 (stored config without it) keeps the V2 rules.
+    // Not part of DEFAULT_ATTENDANCE_CONFIG, which the replayed machines are built from.
     if (isRepository(configOrRepo)) {
       this.repository = configOrRepo;
-      this.config = { ...DEFAULT_ATTENDANCE_CONFIG };
+      this.config = { ...DEFAULT_ATTENDANCE_CONFIG, meetingAccounting: 2 };
       this.clock = (repoOrClock as Clock | undefined) || clockOrUndefined || new SystemClock();
       this.holidayProvider = defaultOrgIdOrHoliday as IHolidayProvider | undefined;
       this.leaveProvider = holidayOrLeave as ILeaveProvider | undefined;
     } else {
-      this.config = { ...DEFAULT_ATTENDANCE_CONFIG, ...(configOrRepo ?? {}) };
+      this.config = { ...DEFAULT_ATTENDANCE_CONFIG, meetingAccounting: 2, ...(configOrRepo ?? {}) };
       this.clock = clockOrUndefined || new SystemClock();
       this.repository = repoOrClock as IAttendanceRepository | undefined;
       this.defaultOrgId = defaultOrgIdOrHoliday as string | undefined;

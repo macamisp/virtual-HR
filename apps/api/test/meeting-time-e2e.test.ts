@@ -126,6 +126,10 @@ describe('ADR 049: meeting time is verified, listed and shown everywhere', { con
     assert.equal(solo.currentState, AttendanceState.ACTIVE, 'not in the office, so not in a call');
     const fake = await send({ inCall: true, activeSeconds: 0, idleSeconds: 30, meetingId: MEETING });
     assert.equal(fake.currentState, AttendanceState.ACTIVE, 'an ended meeting nobody is connected to');
+    // ADR 049: each saved input records the V3 meeting accounting, so the nightly replay of these
+    // days uses the same rules (and days recorded before V3 keep theirs).
+    const stored = (await adminPool.query(`SELECT meta FROM presence_events WHERE org_id = $1 AND user_id = $2 AND event_type = 'ATTENDANCE_INPUT' ORDER BY server_ts DESC LIMIT 1`, [ORG, U.peer.id])).rows[0]?.meta as { config?: { meetingAccounting?: number } } | undefined;
+    assert.equal(stored?.config?.meetingAccounting, 2);
     await attendance.onExplicitLogout(U.peer.id, undefined, ORG);
   });
 

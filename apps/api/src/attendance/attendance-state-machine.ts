@@ -172,7 +172,9 @@ export class AttendanceStateMachine {
 
     // Accumulate total counters. ADR 049 §1a (D1): a heartbeat that arrives during a meeting covers
     // time the wall-clock meeting segment already credits, so its input is not counted again.
-    if (prev !== AttendanceState.IN_MEETING) {
+    // Inputs recorded before V3 (no meetingAccounting in their config) replay with the V2 rule.
+    const v3Meetings = this.config.meetingAccounting === 2;
+    if (prev !== AttendanceState.IN_MEETING || !v3Meetings) {
       updatedSession.activeSeconds += heartbeat.activeSeconds;
       updatedSession.idleSeconds += heartbeat.idleSeconds;
     }
@@ -219,7 +221,7 @@ export class AttendanceStateMachine {
     const confirmedAt = updatedSession.callConfirmedAt ?? null;
     const callDeviceSilent = !confirmedAt ||
       serverTime.getTime() - confirmedAt.getTime() > 2 * this.config.heartbeatIntervalSeconds * 1000;
-    const endsCall = !updatedSession.callDeviceId || heartbeat.deviceId === updatedSession.callDeviceId || callDeviceSilent;
+    const endsCall = !v3Meetings || !updatedSession.callDeviceId || heartbeat.deviceId === updatedSession.callDeviceId || callDeviceSilent;
     if (!heartbeat.inCall && prev === AttendanceState.IN_MEETING && openSeg && !openSeg.endedAt && !openSeg.meetingId && endsCall) {
       const endAt = heartbeat.deviceId !== updatedSession.callDeviceId && confirmedAt && callDeviceSilent ? confirmedAt : serverTime;
       this.closeLastSegment(updatedSession, endAt);

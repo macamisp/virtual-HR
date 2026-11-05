@@ -484,6 +484,28 @@ describe('ADR 049: meeting time is counted once and survives a second device', (
   const sm = new AttendanceStateMachine({
     heartbeatIntervalSeconds: 30, missedHeartbeatTimeoutSeconds: 90, disconnectGraceWindowSeconds: 120,
     idleThresholdSeconds: 300, pauseThresholdSeconds: 900, maxSessionLengthSeconds: 14 * 3600, orgTimezone: 'Asia/Colombo',
+    meetingAccounting: 2,
+  });
+  const v2 = new AttendanceStateMachine({
+    heartbeatIntervalSeconds: 30, missedHeartbeatTimeoutSeconds: 90, disconnectGraceWindowSeconds: 120,
+    idleThresholdSeconds: 300, pauseThresholdSeconds: 900, maxSessionLengthSeconds: 14 * 3600, orgTimezone: 'Asia/Colombo',
+  });
+
+  it('inputs recorded before V3 (no meetingAccounting) replay with the V2 rules: history is never re-counted', () => {
+    const t = new Date('2026-10-13T08:00:00.000Z');
+    const run = (m: AttendanceStateMachine) => {
+      let r = m.handleHeartbeat(null, makeHeartbeat({ deviceId: 'A' }), t, '127.0.0.1');
+      r = m.handleHeartbeat(r.session, makeHeartbeat({ deviceId: 'A', inCall: true }), new Date(t.getTime() + 30_000), '127.0.0.1');
+      r = m.handleHeartbeat(r.session, makeHeartbeat({ deviceId: 'A', inCall: true, activeSeconds: 30 }), new Date(t.getTime() + 60_000), '127.0.0.1');
+      r = m.handleHeartbeat(r.session, makeHeartbeat({ deviceId: 'B', inCall: false }), new Date(t.getTime() + 75_000), '127.0.0.1');
+      return r;
+    };
+    const old = run(v2);
+    assert.equal(old.session.activeSeconds, 120, 'V2: input during the call (and on the second device) counted');
+    assert.equal(old.currentState, AttendanceState.ACTIVE, 'V2: the second device ended the call');
+    const now = run(sm);
+    assert.equal(now.session.activeSeconds, 60);
+    assert.equal(now.currentState, AttendanceState.IN_MEETING);
   });
   const t0 = new Date('2026-10-13T08:00:00.000Z');
   const at = (s: number) => new Date(t0.getTime() + s * 1000);
@@ -532,5 +554,23 @@ describe('ADR 049: meeting time is counted once and survives a second device', (
     r = sm.handleHeartbeat(r.session, makeHeartbeat({ inCall: false }), at(90), ip);
     assert.equal(r.currentState, AttendanceState.ACTIVE);
     assert.equal(r.session.meetingSeconds, 60);
+  });
+});
+
+/** ADR 049: the nightly replay of inputs saved before V3 keeps the V2 numbers (nothing re-counted). */
+describe('ADR 049: replaying stored inputs respects the rules they were recorded with', () => {
+  it('a V2 input history replays to V2 totals; the same history saved under V3 replays to V3 totals', async () => {
+    const { replayAttendanceInputs } = await import('../src/attendance/attendance-replay.ts');
+    const base = { heartbeatIntervalSeconds: 30, missedHeartbeatTimeoutSeconds: 90, disconnectGraceWindowSeconds: 120, idleThresholdSeconds: 300, pauseThresholdSeconds: 900, maxSessionLengthSeconds: 14 * 3600, paidBreakMinutesPerDay: 60, orgTimezone: 'Asia/Colombo' };
+    const t0 = new Date('2026-10-13T08:00:00.000Z');
+    const hb = (s: number, inCall: boolean, active: number) => ({ kind: 'heartbeat' as const, deviceId: 'A', activeSeconds: active, idleSeconds: 30 - active, inCall, tabVisible: true, windowFocused: true, source: 'WEB' as const, _at: s });
+    const history = [hb(0, false, 30), hb(30, true, 30), hb(60, true, 30), hb(90, true, 30), hb(120, false, 30)];
+    const replay = (config: typeof base & { meetingAccounting?: 2 }) =>
+      replayAttendanceInputs(history.map(({ _at, ...input }) => ({ sessionId: 's1', orgId: 'o1', userId: 'u1', at: new Date(t0.getTime() + _at * 1000), config, input }))).get('s1')!;
+    const v2 = replay(base);
+    const v3 = replay({ ...base, meetingAccounting: 2 });
+    assert.equal(v2.meetingSeconds, 90);
+    assert.equal(v2.activeSeconds, 150, 'V2 counted input during the call');
+    assert.equal(v3.activeSeconds, 60, 'V3 counts it once, as meeting time');
   });
 });
