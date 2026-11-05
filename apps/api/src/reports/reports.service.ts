@@ -226,7 +226,9 @@ export class ReportsService {
                 count(tk.id) FILTER (WHERE tk.status <> 'DONE' AND tk.due_date < $${todayIdx}::date)::int AS overdue,
                 COALESCE(sum(tk.estimate_minutes) FILTER (WHERE tk.status <> 'DONE'), 0)::int AS remaining,
                 COALESCE(sum(tk.estimate_minutes) FILTER (WHERE tk.status = 'DONE' AND tk.completed_at::date BETWEEN $${fromIdx}::date AND $${toIdx}::date), 0)::int AS estimate,
-                COALESCE(sum(tk.actual_minutes) FILTER (WHERE tk.status = 'DONE' AND tk.completed_at::date BETWEEN $${fromIdx}::date AND $${toIdx}::date), 0)::int AS actual
+                -- ADR 049 D5: actual time is the task's finished time entries (tasks.actual_minutes is never written).
+                COALESCE(sum((SELECT COALESCE(SUM(x.minutes), 0) FROM time_entries x WHERE x.task_id = tk.id AND x.ended_at IS NOT NULL))
+                  FILTER (WHERE tk.status = 'DONE' AND tk.completed_at::date BETWEEN $${fromIdx}::date AND $${toIdx}::date), 0)::int AS actual
          FROM users u LEFT JOIN teams t ON t.id = u.team_id
          LEFT JOIN tasks tk ON tk.assignee_id = u.id AND tk.deleted_at IS NULL ${projIdx ? `AND tk.project_id = $${projIdx}` : ''}
          WHERE u.status = 'ACTIVE' AND ${who}

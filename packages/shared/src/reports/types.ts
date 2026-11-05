@@ -194,3 +194,72 @@ export const ComplianceRequirementsSchema = z.object({
 export type ComplianceRequirements = z.infer<typeof ComplianceRequirementsSchema>;
 export const ComplianceRequirementsDtoSchema = ComplianceRequirementsSchema.strict();
 export type ComplianceRequirementsDto = z.infer<typeof ComplianceRequirementsDtoSchema>;
+
+/**
+ * ADR 049 §5 (FR-WT-019..021): work-time analytics from server records. Focused task time is task
+ * time minus its overlap with meeting time, so nothing is counted twice. Activity time does not
+ * measure the quality of anyone's work; the insights are planning prompts, not ratings.
+ */
+export const WorkTimeReportQuerySchema = z.object({
+  from: workDate,
+  to: workDate,
+  /** One person (default: the caller), or everyone the caller may report on. */
+  scope: z.enum(['me', 'person', 'team']).default('me'),
+  userId: z.string().uuid().optional(),
+  projectId: z.string().uuid().optional(),
+  format: z.enum(['json', 'csv', 'xlsx']).default('json'),
+}).refine((q) => q.scope !== 'person' || !!q.userId, { message: 'Choose a person', path: ['userId'] });
+export type WorkTimeReportQuery = z.infer<typeof WorkTimeReportQuerySchema>;
+
+const minutes = z.number().int();
+export const WorkTimeTaskRowSchema = z.object({
+  taskId: z.string(),
+  title: z.string(),
+  projectName: z.string().nullable(),
+  status: z.string(),
+  estimateMinutes: minutes.nullable(),
+  minutesInRange: minutes,
+  actualMinutes: minutes,
+  remainingMinutes: minutes.nullable(),
+  /** actual / estimate in percent; null without an estimate. */
+  percentOfEstimate: z.number().int().nullable(),
+});
+export const WorkTimeBucketSchema = z.object({ key: z.string(), label: z.string(), minutes });
+export const WorkTimeTrendSchema = z.object({
+  period: z.string(),
+  attendanceMinutes: minutes,
+  meetingMinutes: minutes,
+  taskMinutes: minutes,
+  focusedTaskMinutes: minutes,
+});
+export const WorkTimeReportSchema = z.object({
+  from: workDate,
+  to: workDate,
+  scope: z.enum(['me', 'person', 'team']),
+  people: z.number().int(),
+  totals: z.object({
+    attendanceMinutes: minutes,
+    meetingMinutes: minutes,
+    taskMinutes: minutes,
+    /** Task time outside meetings. */
+    focusedTaskMinutes: minutes,
+    /** Task time recorded while in a meeting (counted once, shown here). */
+    taskDuringMeetingsMinutes: minutes,
+    manualMinutes: minutes,
+    onsiteMinutes: minutes,
+  }),
+  tasks: z.array(WorkTimeTaskRowSchema),
+  projects: z.array(WorkTimeBucketSchema),
+  categories: z.array(WorkTimeBucketSchema),
+  workTypes: z.array(WorkTimeBucketSchema),
+  weekly: z.array(WorkTimeTrendSchema),
+  monthly: z.array(WorkTimeTrendSchema),
+  overEstimate: z.object({
+    completedTasks: z.number().int(),
+    completedOverEstimate: z.number().int(),
+    tasks: z.array(WorkTimeTaskRowSchema),
+  }),
+  insights: z.array(z.string()),
+});
+export type WorkTimeReport = z.infer<typeof WorkTimeReportSchema>;
+export type WorkTimeTaskRow = z.infer<typeof WorkTimeTaskRowSchema>;

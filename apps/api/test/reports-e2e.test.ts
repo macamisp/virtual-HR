@@ -103,6 +103,11 @@ describe('Dashboard and reports (FR-REP-001..006, 008)', { concurrency: false },
         [ORG, PROJECT, title, status, assignee, U.lead.id, due, completed, est, actual]);
     await task(U.emp.id, 'Fix the fence', 'TODO', plusDays(-3), null, 120, null);
     await task(U.emp.id, 'Paint the gate', 'DONE', '2026-09-20', '2026-09-15T10:00:00Z', 60, 90);
+    // ADR 049 D5: actual time is read from time entries (tasks.actual_minutes is never written by the
+    // app). The 90 minutes sit in an August timesheet, outside RANGE, so hours and cost stay as before.
+    const gate = (await q(`SELECT id FROM tasks WHERE org_id = $1 AND title = 'Paint the gate'`, [ORG])).rows[0].id as string;
+    const aug = (await q(`INSERT INTO timesheets (org_id, user_id, period_start, period_end, status) VALUES ($1, $2, '2026-08-03', '2026-08-09', 'DRAFT') RETURNING id`, [ORG, U.emp.id])).rows[0].id as string;
+    await q(`INSERT INTO time_entries (org_id, user_id, timesheet_id, task_id, work_date, started_at, ended_at, minutes, source) VALUES ($1, $2, $3, $4, '2026-08-04', '2026-08-04T03:30:00Z', '2026-08-04T05:00:00Z', 90, 'TIMER')`, [ORG, U.emp.id, aug, gate]);
     await task(U.far.id, 'Audit the office', 'IN_PROGRESS', plusDays(-1), null, 30, null);
     // Documents: Eva has a valid ID and an expired contract, plus a confidential one expiring soon; Fay's NDA expires in 10 days.
     const doc = (owner: string, title: string, category: string, expires: string | null) =>

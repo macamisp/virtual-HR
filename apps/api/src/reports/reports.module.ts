@@ -3,9 +3,11 @@ import { ComplianceRequirementsController, ReportsController } from './reports.c
 import { DashboardService } from './dashboard.service.ts';
 import { ReportsService } from './reports.service.ts';
 import { ComplianceService } from './compliance.service.ts';
+import { WorkTimeController } from './work-time.controller.ts';
+import { WorkTimeService } from './work-time.service.ts';
 
 @Module({
-  controllers: [ReportsController, ComplianceRequirementsController],
-  providers: [DashboardService, ReportsService, ComplianceService],
+  controllers: [ReportsController, ComplianceRequirementsController, WorkTimeController],
+  providers: [DashboardService, ReportsService, ComplianceService, WorkTimeService],
 })
 export class ReportsModule {}
