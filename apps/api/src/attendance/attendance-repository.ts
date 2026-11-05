@@ -87,7 +87,7 @@ export interface IAttendanceRepository {
   // Corrections (FR-ATT-013)
   createCorrection(correction: AttendanceCorrection): Promise<void>;
   findCorrectionById(orgId: string, id: string): Promise<AttendanceCorrection | null>;
-  updateCorrection(correction: AttendanceCorrection): Promise<void>;
+  updateCorrection(correction: AttendanceCorrection): Promise<boolean>;
   findPendingCorrections(orgId: string): Promise<AttendanceCorrection[]>;
   findCorrectionsByUser(orgId: string, userId: string): Promise<AttendanceCorrection[]>;
 
@@ -668,15 +668,16 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     return this.mapRowToCorrection(res.rows[0]);
   }
 
-  public async updateCorrection(c: AttendanceCorrection): Promise<void> {
-    await this.queryWithRls(
+  /** ADR 049 D3: a decision only replaces a PENDING request; false when someone decided first. */
+  public async updateCorrection(c: AttendanceCorrection): Promise<boolean> {
+    const res = await this.queryWithRls(
       c.orgId,
       `UPDATE attendance_corrections SET
          status = $3,
          reviewer_id = $4,
          reviewed_at = $5,
          review_note = $6
-       WHERE org_id = $1 AND id = $2`,
+       WHERE org_id = $1 AND id = $2 AND status = 'PENDING'`,
       [
         c.orgId,
         c.id,
@@ -686,6 +687,7 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         c.reviewNote || null,
       ],
     );
+    return (res.rowCount ?? 0) > 0;
   }
 
   public async findPendingCorrections(orgId: string): Promise<AttendanceCorrection[]> {

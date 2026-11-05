@@ -1289,8 +1289,8 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
 
       const approvedMissed = await service.reviewCorrection({
         orgId,
-        reviewerId: userMgr,
-        reviewerRole: UserRole.MANAGER,
+        reviewerId: userHr,
+        reviewerRole: UserRole.HR, // ADR 049 D4: the requester has no manager or team, so HR reviews,
         correctionId: missedCorr.id,
         approved: true,
       });
@@ -1471,8 +1471,8 @@ describe('Attendance Hardening & Branch Coverage Suite', () => {
       // 10. Repository: approve freshCorr and query approved correction (hits reviewedAt truthy branch)
       const approvedFresh = await service.reviewCorrection({
         orgId,
-        reviewerId: userMgr,
-        reviewerRole: UserRole.MANAGER,
+        reviewerId: userHr,
+        reviewerRole: UserRole.HR, // ADR 049 D4: the requester has no manager or team, so HR reviews,
         correctionId: freshCorr.id,
         approved: true,
       });

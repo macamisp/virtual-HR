@@ -986,6 +986,8 @@ export class AttendanceService {
     reviewerId: string;
     reviewerRole: string;
     reviewerPermissions?: readonly string[];
+    /** ADR 049 D4: the reviewer's team (a lead or manager of the requester's team may review). */
+    reviewerTeamId?: string | null;
     correctionId: string;
     approved: boolean;
     reviewNote?: string;
@@ -1003,13 +1005,19 @@ export class AttendanceService {
       throw new Error('User cannot approve their own correction');
     }
 
-    // Role check: Only user's manager or HR/Admin may review
+    // ADR 049 D4: the requester's manager, a reviewer of the requester's own team, or HR/Admin.
+    // (Was: any MANAGER in the organisation.)
     const requester = await this.repository.findUserById(params.orgId, correction.userId);
-    const isManager = requester?.managerId === params.reviewerId || params.reviewerRole === UserRole.MANAGER;
-    const isHrOrAdmin = userCan({ role: params.reviewerRole, permissions: params.reviewerPermissions }, Permission.ATTENDANCE_READ_ALL) &&
-      userCan({ role: params.reviewerRole, permissions: params.reviewerPermissions }, Permission.ATTENDANCE_CORRECTIONS_REVIEW);
-    if (!isManager && !isHrOrAdmin) {
+    const canReview = userCan({ role: params.reviewerRole, permissions: params.reviewerPermissions }, Permission.ATTENDANCE_CORRECTIONS_REVIEW);
+    const isManager = requester?.managerId === params.reviewerId;
+    const sameTeam = canReview && !!params.reviewerTeamId && requester?.teamId === params.reviewerTeamId;
+    const isHrOrAdmin = userCan({ role: params.reviewerRole, permissions: params.reviewerPermissions }, Permission.ATTENDANCE_READ_ALL) && canReview;
+    if (!isManager && !sameTeam && !isHrOrAdmin) {
       throw new Error('Unauthorized to review correction: Only manager or HR/Admin may review');
+    }
+    // ADR 049 D3: decided once. The conditional update below settles a race between two reviewers.
+    if (correction.status !== CorrectionStatus.PENDING) {
+      throw new Error('Correction is no longer pending');
     }
 
     const reviewedAt = this.clock.now();
@@ -1020,7 +1028,7 @@ export class AttendanceService {
       correction.reviewerId = params.reviewerId;
       correction.reviewedAt = reviewedAt;
       correction.reviewNote = params.reviewNote || null;
-      await this.repository.updateCorrection(correction);
+      if (!(await this.repository.updateCorrection(correction))) throw new Error('Correction is no longer pending');
 
       let origSession: AttendanceSession | null = null;
       if (correction.sessionId) {
@@ -1091,7 +1099,7 @@ export class AttendanceService {
       correction.reviewerId = params.reviewerId;
       correction.reviewedAt = reviewedAt;
       correction.reviewNote = params.reviewNote || null;
-      await this.repository.updateCorrection(correction);
+      if (!(await this.repository.updateCorrection(correction))) throw new Error('Correction is no longer pending');
 
       await this.repository.recordAuditLog({
         orgId: params.orgId,
@@ -1882,15 +1890,16 @@ export class AttendanceService {
     callerId: string;
     callerRole: string;
     callerPermissions?: readonly string[];
+    callerTeamId?: string | null;
   }): Promise<CorrectionQueueItem[]> {
     if (!this.repository) return [];
-    const orgWide = (userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_READ_ALL) &&
-      userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_CORRECTIONS_REVIEW)) ||
-      params.callerRole === UserRole.MANAGER;
+    // ADR 049 D4: the same scope as reviewCorrection (was: every MANAGER saw the whole organisation).
+    const orgWide = userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_READ_ALL) &&
+      userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_CORRECTIONS_REVIEW);
     const pending = await this.repository.findPendingCorrectionsWithRequester(params.orgId);
     return pending
       .filter((c) => c.userId !== params.callerId)
-      .filter((c) => orgWide || c.requesterManagerId === params.callerId)
+      .filter((c) => orgWide || c.requesterManagerId === params.callerId || (!!params.callerTeamId && c.requesterTeamId === params.callerTeamId))
       .map((c) => ({
         id: c.id,
         userId: c.userId,

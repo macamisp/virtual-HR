@@ -40,3 +40,10 @@ The attendance engine, corrections, live board, exports and safeguards are cover
 | FR-WT-004 the call ends on leaving, on failed evidence, logout, timeout | state machine (unchanged ADR 048 closing) + evidence | attendance-state-machine ADR 048 + 049 suites |
 | FR-WT-005 meeting intervals for the person and, without titles, the manager in scope | `attendance/meeting-time.service.ts`, `GET /attendance/me/meetings`, `GET /attendance/users/:id/meetings`; My attendance "Meetings" card | meeting-time-e2e: own list with titles, manager without titles, other team 404, peer 403, RLS |
 | FR-WT-006 meeting time in timesheets, reports, exports, live board | `timesheet_days`/`timesheets.meeting_minutes`, report and export columns (appended), `todayMeetingSeconds` | meeting-time-e2e (timesheet, report, CSV, live board); timesheets-e2e export column order |
+
+## Corrections are decided once, by reviewers in scope (ADR 049 D3, D4)
+
+| Requirement | Implementation | Tests |
+| --- | --- | --- |
+| FR-ATT-013 a correction is decided once (409 after; a race between two reviewers has one winner; one CORRECTION session) | `attendance.service.ts` `reviewCorrection` PENDING check; `attendance-repository.ts` `updateCorrection` updates only `status = 'PENDING'` rows | correction-review-e2e "D3" (2) |
+| FR-ATT-013 reviewers are the requester's manager, a reviewer of the requester's team, or HR (was: any MANAGER) | `reviewCorrection`, `getCorrectionQueue` (`callerTeamId`) | correction-review-e2e "D4"; attendance-self-service-e2e (lead of another team 403) |
