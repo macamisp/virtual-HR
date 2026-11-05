@@ -170,7 +170,7 @@ function AddWorkCard() {
   const valid = (v.title.trim().length >= 2 || !!v.taskId) && reason.trim().length >= 3 && (mode === 'duration' ? Number(minutes) > 0 : end > start);
 
   return (
-    <Card>
+    <Card data-testid="add-work">
       <CardHeader>
         <CardTitle className="text-base">Add work</CardTitle>
         <CardDescription>
@@ -298,7 +298,7 @@ export default function WorkTimePage() {
         <WorkTimeNav />
         <ActivityNote />
       </div>
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
         <div className="space-y-6">
           <TimerCard />
           <AddWorkCard />

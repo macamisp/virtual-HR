@@ -163,7 +163,7 @@ export default function WorkTimeReportPage() {
             </CardHeader>
             <CardContent>{r.tasks.length ? <TaskTable rows={r.tasks} testId="wt-tasks" /> : <EmptyState title="No task time in this range" />}</CardContent>
           </Card>
-          <div className="grid gap-6 lg:grid-cols-3">
+          <div className="grid gap-6 lg:grid-cols-3 [&>*]:min-w-0">
             <Buckets title="By project" rows={r.projects} />
             <Buckets title="By kind of work" rows={r.categories} />
             <Buckets title="By place" rows={r.workTypes} />
@@ -179,7 +179,7 @@ export default function WorkTimeReportPage() {
             </CardHeader>
             <CardContent>{r.overEstimate.tasks.length ? <TaskTable rows={r.overEstimate.tasks} testId="wt-over" /> : <p className="text-sm text-muted-foreground">No task is over its estimate.</p>}</CardContent>
           </Card>
-          <div className="grid gap-6 lg:grid-cols-2">
+          <div className="grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
             {([['Weekly', r.weekly, 'Week of '], ['Monthly', r.monthly, '']] as const).map(([title, rows, prefix]) => (
               <Card key={title}>
                 <CardHeader><CardTitle className="text-base">{title} trend</CardTitle></CardHeader>

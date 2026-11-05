@@ -39,7 +39,7 @@ export default function ReviewRequestsPage() {
           </NativeSelect>
         </div>
       </div>
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Overtime requests</CardTitle>

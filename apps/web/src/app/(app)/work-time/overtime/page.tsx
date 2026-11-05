@@ -114,7 +114,7 @@ export default function OvertimePage() {
         </p>
         <ActivityNote />
       </div>
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-2 [&>*]:min-w-0">
         <RequestForm />
         <Card>
           <CardHeader><CardTitle className="text-base">My requests</CardTitle></CardHeader>

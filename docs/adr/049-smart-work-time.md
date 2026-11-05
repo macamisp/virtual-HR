@@ -225,3 +225,27 @@ tables.
 - Meetings need LiveKit's server API reachable from the API (already true for recording and
   moderation).
 - Overtime approval affects pay only when an organisation turns it on.
+
+## Implementation notes (2026-11-05, branch `feat/smart-work-time-2026-11-05`)
+
+What was built, and where it differs from the plan above:
+
+- **Migrations:** `20261107000000_meeting_call_evidence` (§1), `20261107000100_work_entries` (§3, §4;
+  the snapshot backfill disables the user triggers of `time_entries` inside the migration only),
+  `20261107000200_overtime_onsite` (§2, §7). `schema.prisma` matches (`prisma migrate diff` is empty).
+- **§1b meeting id:** the heartbeat's existing signed `meetingId` field names the meeting of a call;
+  the validator now refuses a non-string or over-long value. Evidence lives in
+  `apps/api/src/media/call-evidence.service.ts`, registered on `AttendanceService` at start-up; without
+  a registered check (unit tests only) the client's claim is used as before.
+- **§1g:** meeting titles are shown only to the person; managers see kind, times and durations.
+  Export columns are appended (`meeting_hours`, `Meetings (h)`), never inserted.
+- **§3 project totals:** no separate `GET /projects/:id/time`; project totals are the project
+  breakdown of the work-time report (§5), computed from the same entries.
+- **§7 cancel:** the owner cancels a pending onsite request. Approved onsite work has no withdraw
+  action yet: its ONSITE entry cannot be deleted by the owner (409), and HR returns or reopens the
+  timesheet if it must change. Tracked as a known limit.
+- **§6:** built in a separate commit (`calendar.service.ts` `upcoming()`); a 401 with a token not
+  refreshed in this request earns one refresh and retry before `ERROR`.
+- **§8:** the Upcoming meetings card is on `/work-time`, the manager dashboard and `/account/calendar`.
+- **Defects:** D1-D6 fixed with tests (state machine, correction-review-e2e, work-time-report-e2e,
+  calendar-upcoming-e2e).
