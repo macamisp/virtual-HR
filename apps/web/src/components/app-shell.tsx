@@ -185,9 +185,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span className="hidden text-sm text-muted-foreground sm:inline" data-testid="current-user">
             {user.displayName ?? user.email} · {access.data?.customRoleName ?? ROLE_LABEL[user.role as keyof typeof ROLE_LABEL] ?? user.role}
           </span>
-          <Button variant="outline" size="sm" onClick={() => void signOut()}>
+          <Button variant="outline" size="sm" aria-label="Sign out" onClick={() => void signOut()}>
             <LogOut aria-hidden="true" />
-            Sign out
+            <span className="hidden sm:inline">Sign out</span>
           </Button>
         </div>
       </header>

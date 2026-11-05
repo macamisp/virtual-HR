@@ -76,6 +76,37 @@ the arrow keys on its handle; its position is remembered per browser and clamped
 on resize, so it stays on screen on a phone. Its status line is `aria-live="polite"`. The default
 corner is bottom-right, and the incoming-call alerts move up above it so a ring is never hidden.
 
+### 3b. Office call toolbar (2026-11-04)
+
+On `/office` the controls are one toolbar above the map (`components/media/office-toolbar.tsx`)
+instead of the buttons under the tiles in the side card: a status line (`role="status"`,
+`aria-live`: *Audio and video off*, *Connecting…*, *Connected · Meeting room A · 2 in call*,
+*Reconnecting…*, *Open in another tab*, *Nobody to talk to here*) and the toggles microphone,
+camera, **speakers**, share screen, raise hand, audio only, and Leave call. Before media is on its
+main action is **Turn on audio and video**, which opens the same device check (PreJoin) as before;
+in another tab it offers **Take over**. It drives the tab's one controller and `MediaSession`
+(the same as the dock), so it never opens a second session or a second set of tracks. Every button
+has an accessible name, a tooltip (`title`) and `aria-pressed`; labels show from `md` up, icons
+below. It is sticky under the header from `md` up and in the flow on a phone, so it never covers
+the map there. The card keeps the tiles, the shared-screen viewer and the mute-on-leave setting.
+Meeting pages keep `CallView`'s own controls.
+
+**Speakers** (`MediaSession.speakerMuted`) mute what the user hears only: the remote `<audio>`
+elements are muted (re-applied after every render and on `volumechange`, because LiveKit unmutes
+attached elements in `attach()` and `startAudio()`); the microphone, the subscriptions and the call
+stay. The setting is kept across room changes and pages (the dock has the same switch). When the
+browser blocks playback (autoplay rules), **Allow sound** calls `room.startAudio()` from the click;
+unmuting the speakers does the same.
+
+**The user's microphone and camera choice is kept across calls** (bug found while testing the
+toolbar, 2026-11-04). Every office route change (walking into another room, up to a colleague)
+connected with the device check's choice, so a muted person was unmuted by walking into a room.
+`MediaSession` now remembers the last choice (`wantMic`, `wantCam`) and applies it to the next
+call of the tab; a new device check (turning media on, joining a meeting) resets it. All microphone
+and camera changes run through one queue (`sync()`), so a click during a room switch cannot race
+the new room's publish. Spec 39 reproduced the bug first (mic "on" after the room change), then
+passes.
+
 ### 4. One tab owns the call
 
 Like the heartbeat leader, the call owner holds the Web Lock `hrvo-call-owner`. A tab that wants

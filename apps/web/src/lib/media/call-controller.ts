@@ -135,6 +135,7 @@ export class CallController {
 
   enableOfficeMedia(prefs: DevicePrefs): void {
     this.prefs = prefs;
+    this.session.resetChoices();
     this.officeMediaEnabled = true;
     writeEnabled(true);
     this.notice = null;
@@ -204,6 +205,7 @@ export class CallController {
   /** Joins a meeting with the token the join flow got; an office call in progress is replaced. */
   async joinMeeting(meeting: { id: string; title: string }, token: MediaToken, prefs: DevicePrefs): Promise<'joined' | 'elsewhere'> {
     this.prefs = prefs;
+    this.session.resetChoices();
     this.notice = null;
     if (!(await this.acquire())) return 'elsewhere';
     this.stopVolumes();

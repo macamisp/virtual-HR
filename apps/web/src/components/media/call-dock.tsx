@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeftRight, GripHorizontal, Hand, Mic, MicOff, MonitorUp, PhoneOff, PictureInPicture2, Video, VideoOff } from 'lucide-react';
+import { ArrowLeftRight, GripHorizontal, Hand, Mic, MicOff, MonitorUp, PhoneOff, PictureInPicture2, Video, VideoOff, Volume2, VolumeX } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useDockStore } from '@/lib/media/dock-store';
 import { cn } from '@/lib/utils';
@@ -27,9 +27,19 @@ function readPos(): { x: number; y: number } | null {
 }
 function writePos(p: { x: number; y: number }): void { try { window.localStorage.setItem(POS_KEY, JSON.stringify(p)); } catch { /* storage unavailable */ } }
 
+/**
+ * The layout viewport a fixed box is placed in. Not innerWidth/innerHeight: on a phone, content wider
+ * than the screen widens those beyond what is visible, which put the dock off screen.
+ */
+function viewport(win: Window): { w: number; h: number } {
+  const el = win.document.documentElement;
+  return { w: el.clientWidth || win.innerWidth, h: el.clientHeight || win.innerHeight };
+}
+
 /** Keeps the whole box inside the window. */
 function clamp(p: { x: number; y: number }, w: number, h: number, win: Window): { x: number; y: number } {
-  return { x: Math.min(Math.max(MARGIN, p.x), Math.max(MARGIN, win.innerWidth - w - MARGIN)), y: Math.min(Math.max(MARGIN, p.y), Math.max(MARGIN, win.innerHeight - h - MARGIN)) };
+  const v = viewport(win);
+  return { x: Math.min(Math.max(MARGIN, p.x), Math.max(MARGIN, v.w - w - MARGIN)), y: Math.min(Math.max(MARGIN, p.y), Math.max(MARGIN, v.h - h - MARGIN)) };
 }
 
 export function canDocumentPip(): boolean {
@@ -100,7 +110,8 @@ function DockBody({ floating, onFloat, onUnfloat }: { floating: boolean; onFloat
     const el = box.current;
     if (!el) return;
     const w = el.offsetWidth; const h = el.offsetHeight;
-    const next = clamp(p ?? readPos() ?? { x: window.innerWidth - w - MARGIN, y: window.innerHeight - h - MARGIN }, w, h, window);
+    const v = viewport(window);
+    const next = clamp(p ?? readPos() ?? { x: v.w - w - MARGIN, y: v.h - h - MARGIN }, w, h, window);
     setPos(next);
     writePos(next);
     setDock({ visible: true, height: h });
@@ -145,6 +156,7 @@ function DockBody({ floating, onFloat, onUnfloat }: { floating: boolean; onFloat
       data-testid="call-dock"
       data-status={session.status}
       data-mic={session.micOn ? 'on' : 'off'}
+      data-speaker={session.speakerMuted ? 'off' : 'on'}
       data-cam={session.camOn ? 'on' : 'off'}
       className={cn('z-40 w-72 rounded-lg border bg-background p-2 text-foreground shadow-xl', floating ? 'relative m-2' : 'fixed max-w-[calc(100vw-2rem)]', !floating && !pos && 'invisible')}
       style={!floating && pos ? { left: pos.x, top: pos.y } : undefined}
@@ -169,6 +181,7 @@ function DockBody({ floating, onFloat, onUnfloat }: { floating: boolean; onFloat
       </div>
       <div role="toolbar" aria-label="Call controls" className="mt-1 flex flex-wrap items-center gap-1">
         <Button size="sm" variant={session.micOn ? 'default' : 'outline'} aria-pressed={session.micOn} aria-label={session.micOn ? 'Mute' : 'Unmute'} title={session.micOn ? 'Mute' : 'Unmute'} onClick={() => void session.toggleMic()}>{session.micOn ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />}</Button>
+        <Button size="sm" variant={session.speakerMuted ? 'outline' : 'default'} aria-pressed={!session.speakerMuted} aria-label={session.speakerMuted ? 'Unmute speakers' : 'Mute speakers'} title={session.speakerMuted ? 'Unmute speakers' : 'Mute speakers'} onClick={() => void session.setSpeakerMuted(!session.speakerMuted)}>{session.speakerMuted ? <VolumeX aria-hidden="true" /> : <Volume2 aria-hidden="true" />}</Button>
         <Button size="sm" variant={session.camOn ? 'default' : 'outline'} aria-pressed={session.camOn} aria-label="Camera" title="Camera" onClick={() => void session.toggleCam()}>{session.camOn ? <Video aria-hidden="true" /> : <VideoOff aria-hidden="true" />}</Button>
         <Button size="sm" variant={session.sharing ? 'default' : 'outline'} aria-pressed={session.sharing} aria-label={session.sharing ? 'Stop sharing' : 'Share screen'} title={session.sharing ? 'Stop sharing' : 'Share screen'} onClick={() => void session.toggleShare()}><MonitorUp aria-hidden="true" /></Button>
         <Button size="sm" variant={handUp ? 'default' : 'outline'} aria-pressed={handUp} aria-label={handUp ? 'Lower hand' : 'Raise hand'} title={handUp ? 'Lower hand' : 'Raise hand'} onClick={() => void session.raiseHand(!handUp)}><Hand aria-hidden="true" /></Button>

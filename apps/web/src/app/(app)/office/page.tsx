@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { NativeSelect } from '@/components/ui/select';
 import { OfficeMedia } from '@/components/media/office-media';
+import { OfficeToolbar } from '@/components/media/office-toolbar';
 import { AvatarActions } from '@/components/office/avatar-actions';
 import { CallPerson } from '@/components/call-person';
 import type { OfficeClient } from '@/lib/office/office-client';
@@ -104,7 +105,7 @@ function MapView({ client }: { client: OfficeClient }) {
     return () => { window.removeEventListener('blur', release); document.removeEventListener('visibilitychange', release); };
   }, [client]);
   return (
-    <div className="relative h-[calc(100vh-12rem)] min-h-[420px] overflow-hidden rounded border bg-slate-50">
+    <div className="relative h-[calc(100vh-12rem)] min-h-[420px] min-w-0 overflow-hidden rounded border bg-slate-50">
       <div
         ref={host}
         data-testid="office-canvas"
@@ -312,6 +313,7 @@ export default function OfficePage() {
   const choose = (v: View) => { setView(v); try { window.localStorage.setItem(VIEW_KEY, v); } catch { /* storage unavailable */ } };
   const client = useClient(snapshot.data, view);
   const [passwordRoom, setPasswordRoom] = useState<string | null>(null);
+  const [mediaSetup, setMediaSetup] = useState(false);
   if (client) client.onPasswordNeeded = setPasswordRoom;
   if (!allowed) return <AccessDenied what="The virtual office" />;
   const pwRoom = passwordRoom ? snapshot.data?.rooms.find((r) => r.id === passwordRoom) : null;
@@ -329,6 +331,7 @@ export default function OfficePage() {
       {snapshot.isError ? <ErrorState error={snapshot.error} onRetry={() => void snapshot.refetch()} /> : null}
       {client && snapshot.data ? (
         <>
+          <OfficeToolbar client={client} setup={mediaSetup} onSetup={setMediaSetup} />
           <div aria-live="polite" className="space-y-2">
             {!client.connected ? <Alert><AlertDescription>Connecting to the office…</AlertDescription></Alert> : null}
             {client.notice ? (
@@ -355,7 +358,8 @@ export default function OfficePage() {
             {view === 'map' ? <MapView client={client} /> : (
               <Card><CardHeader><CardTitle className="text-base">Rooms</CardTitle></CardHeader><CardContent><Rooms client={client} snapshot={snapshot.data} /></CardContent></Card>
             )}
-            <div className="space-y-3">
+            {/* min-w-0: a long name or status truncates instead of widening the page on a phone. */}
+            <div className="min-w-0 space-y-3">
               <Card><CardHeader><CardTitle className="text-base">Me</CardTitle></CardHeader><CardContent><MyPanel client={client} snapshot={snapshot.data} /></CardContent></Card>
               <Card><CardHeader><CardTitle className="text-base">Audio and video</CardTitle></CardHeader><CardContent><OfficeMedia client={client} snapshot={snapshot.data} /></CardContent></Card>
               {view === 'map' ? <Card><CardHeader><CardTitle className="text-base">Rooms</CardTitle></CardHeader><CardContent><Rooms client={client} snapshot={snapshot.data} /></CardContent></Card> : null}

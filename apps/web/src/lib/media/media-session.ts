@@ -42,7 +42,17 @@ export class MediaSession {
   endedReason: string | null = null;
   token: MediaToken | null = null;
   audioOnly = false;
+  /** Incoming sound off (the speakers), not the microphone; kept across room changes. */
+  speakerMuted = false;
   hands = new Set<string>();
+  /**
+   * The user's own microphone/camera choice, kept for the next call of this tab (walking into
+   * another room must not unmute anybody); null = use the device check's choice. Every change runs
+   * through one queue, so a click during a room switch cannot race the new room's publish.
+   */
+  private wantMic: boolean | null = null;
+  private wantCam: boolean | null = null;
+  private ops: Promise<void> = Promise.resolve();
   private counted = false;
   private poorSince: ReturnType<typeof setTimeout> | null = null;
   private version = 0;
@@ -80,6 +90,7 @@ export class MediaSession {
       .on(RoomEvent.LocalTrackPublished, refresh)
       .on(RoomEvent.LocalTrackUnpublished, refresh)
       .on(RoomEvent.ActiveSpeakersChanged, refresh)
+      .on(RoomEvent.AudioPlaybackStatusChanged, refresh)
       .on(RoomEvent.ConnectionQualityChanged, (q: ConnectionQuality, p: Participant) => {
         // Audio-only after the connection has been poor for a while, not on one bad report
         // (the first reports after connecting are noisy; a user who just turned the camera on
@@ -115,8 +126,9 @@ export class MediaSession {
       await room.connect(followPageHost(token.url, window.location), token.token);
       this.status = 'connected';
       this.count();
-      await room.localParticipant.setMicrophoneEnabled(prefs.micOn).catch((e: unknown) => this.fail(e, 'The microphone could not be started'));
-      if (prefs.camOn) await room.localParticipant.setCameraEnabled(true).catch((e: unknown) => this.fail(e, 'The camera could not be started'));
+      this.wantMic ??= prefs.micOn;
+      this.wantCam ??= prefs.camOn;
+      await this.sync();
     } catch (err) {
       this.status = 'error';
       this.error = err instanceof Error ? err.message : 'Could not connect to the call';
@@ -166,21 +178,53 @@ export class MediaSession {
   get camOn(): boolean { return !!this.room?.localParticipant.isCameraEnabled; }
   get sharing(): boolean { return !!this.room?.localParticipant.isScreenShareEnabled; }
 
-  async toggleMic(): Promise<void> { await this.room?.localParticipant.setMicrophoneEnabled(!this.micOn).catch((e: unknown) => this.fail(e)); this.changed(); }
+  /** A new device check (turning media on, joining a meeting): its choice applies again. */
+  resetChoices(): void { this.wantMic = null; this.wantCam = null; }
+
+  /** Brings the room's microphone and camera to the wanted state, one change at a time. A click flips what the user sees. */
+  private sync(): Promise<void> {
+    const room = this.room;
+    const run = async () => {
+      if (!room || this.room !== room) return;
+      const lp = room.localParticipant;
+      if (this.wantMic !== null && lp.isMicrophoneEnabled !== this.wantMic) await lp.setMicrophoneEnabled(this.wantMic).catch((e: unknown) => this.fail(e, 'The microphone could not be started'));
+      if (this.wantCam !== null && lp.isCameraEnabled !== this.wantCam) await lp.setCameraEnabled(this.wantCam).catch((e: unknown) => this.fail(e, 'The camera could not be started'));
+      this.changed();
+    };
+    this.ops = this.ops.then(run, run);
+    return this.ops;
+  }
+
+  async toggleMic(): Promise<void> { if (!this.room) return; this.wantMic = !this.micOn; this.changed(); await this.sync(); }
   async toggleCam(): Promise<void> {
-    if (!this.camOn && this.audioOnly) this.audioOnly = false;
-    await this.room?.localParticipant.setCameraEnabled(!this.camOn).catch((e: unknown) => this.fail(e));
+    if (!this.room) return;
+    const on = !this.camOn;
+    if (on && this.audioOnly) this.audioOnly = false;
+    this.wantCam = on;
     this.changed();
+    await this.sync();
   }
   /** FR-VO-009: screen share inside any room or meeting. */
   async toggleShare(): Promise<void> { await this.room?.localParticipant.setScreenShareEnabled(!this.sharing, { audio: true }, { videoCodec: 'vp8', backupCodec: false }).catch((e: unknown) => this.fail(e)); this.changed(); }
+
+  /** The browser blocked sound until the user interacts with the page (autoplay rules). */
+  get audioBlocked(): boolean { return !!this.room && !this.room.canPlaybackAudio; }
+  /** Called from a click, so the browser allows playback. */
+  async allowAudio(): Promise<void> { await this.room?.startAudio().catch(() => undefined); this.changed(); }
+
+  /** Mutes or unmutes what the user hears; the microphone and the call are untouched. */
+  async setSpeakerMuted(muted: boolean): Promise<void> {
+    this.speakerMuted = muted;
+    this.changed();
+    if (!muted && this.audioBlocked) await this.allowAudio();
+  }
 
   /** FR-MEET-010: audio-only fallback (automatic on a poor connection, or by choice). */
   async setAudioOnly(on: boolean): Promise<void> {
     this.audioOnly = on;
     const room = this.room;
     if (!room) return;
-    if (on && room.localParticipant.isCameraEnabled) await room.localParticipant.setCameraEnabled(false).catch(() => undefined);
+    if (on && (this.wantCam ?? room.localParticipant.isCameraEnabled)) { this.wantCam = false; await this.sync(); }
     for (const p of room.remoteParticipants.values()) {
       for (const pubn of p.trackPublications.values()) if (pubn.kind === Track.Kind.Video && pubn.source === Track.Source.Camera) pubn.setEnabled(!on);
     }
