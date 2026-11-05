@@ -336,7 +336,7 @@ describe('Timesheets API (FR-TS-001..006, 009, 011)', { concurrency: false }, ()
   describe('Org settings (FR-TS-002, 004, 005)', { concurrency: false }, () => {
     it('HR changes the period and limits; validated; employees cannot', async () => {
       const s = await ok(await api('hr', '/timesheets/settings'), 200, TimesheetSettingsSchema);
-      assert.deepEqual(s, { period: 'WEEKLY', periodAnchor: '2026-01-05', manualLimitMinutes: 120, variancePct: 15, submitDueDays: 1 });
+      assert.deepEqual(s, { period: 'WEEKLY', periodAnchor: '2026-01-05', manualLimitMinutes: 120, variancePct: 15, submitDueDays: 1, overtimeRequiresApproval: false }); // ADR 049: off by default
       assert.equal((await api('emp', '/timesheets/settings', { method: 'PUT', body: s })).status, 403);
       assert.equal((await api('hr', '/timesheets/settings', { method: 'PUT', body: { ...s, periodAnchor: '2026-01-06' } })).status, 400);
       assert.equal((await api('hr', '/timesheets/settings', { method: 'PUT', body: { ...s, variancePct: 60 } })).status, 400);

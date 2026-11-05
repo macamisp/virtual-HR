@@ -336,6 +336,8 @@ export class TimeEntriesService implements OnModuleInit {
   async remove(user: AuthenticatedUser, entryId: string): Promise<{ deleted: true }> {
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const e = await this.ownEditableEntry(db, user, entryId);
+      // ADR 049 §7: approved onsite work stays tied to its reviewed request.
+      if (e.source === 'ONSITE') throw new ConflictException('Approved onsite work cannot be deleted here: ask your manager or HR');
       await db.query(`DELETE FROM time_entries WHERE id = $1`, [entryId]);
       if (e.source === 'MANUAL') await this.auditEntry(db, user, 'TIME_ENTRY_MANUAL_DELETED', entryId, { workDate: e.work_date, minutes: e.minutes });
       await refreshDay(db, user.orgId, user.id, e.work_date);

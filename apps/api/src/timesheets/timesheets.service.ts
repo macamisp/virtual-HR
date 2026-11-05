@@ -21,6 +21,7 @@ import type {
   TimesheetStatus,
   TimesheetSummary,
 } from '../../../../packages/shared/src/timesheets/types.ts';
+import type { OvertimeSummary } from '../../../../packages/shared/src/timesheets/work-requests.ts';
 import { toIso, userRef } from '../tasks/tasks.sql.ts';
 import { computePayable, parseMoney, payableEntryRange } from './money.ts';
 import type { RateType } from './money.ts';
@@ -314,6 +315,15 @@ export class TimesheetsService {
        WHERE user_id = $1 AND work_date BETWEEN $2::date AND $3::date AND ended_at IS NOT NULL`,
       [row.user_id, range.from, range.to],
     );
+    // ADR 049 §2 (FR-WT-011): with the organisation's approval rule on, only approved overtime
+    // gets the multiplier. Off: no approvals are passed and ADR 008 applies unchanged.
+    const requiresApproval = (await orgSettings(db, orgId)).overtimeRequiresApproval;
+    const approvedOvertime = requiresApproval
+      ? new Map((await db.query<{ work_date: string; m: number }>(
+          `SELECT to_char(work_date, 'YYYY-MM-DD') AS work_date, SUM(approved_minutes)::int AS m FROM overtime_requests
+           WHERE user_id = $1 AND status = 'APPROVED' AND work_date BETWEEN $2::date AND $3::date GROUP BY work_date`,
+          [row.user_id, range.from, range.to])).rows.map((r) => [r.work_date, r.m] as const))
+      : undefined;
     const capMinutes = profile.weekly_hours_cap
       ? Number((parseMoney(profile.weekly_hours_cap) * 60n) / 100n)
       : capacityFromSchedule(await this.planning.scheduleDays(db, orgId, row.user_id, row.period_start));
@@ -326,6 +336,7 @@ export class TimesheetsService {
       periodStart: row.period_start,
       periodEnd: row.period_end,
       entries: entries.rows.map((e) => ({ id: e.id, workDate: e.work_date, startedAt: e.started_at, projectId: e.project_id, minutes: e.minutes })),
+      ...(approvedOvertime ? { approvedOvertime } : {}),
     });
     const ids = result.lines.map((l) => l.projectId).filter((x): x is string => x !== null);
     const names = ids.length
@@ -337,6 +348,7 @@ export class TimesheetsService {
       amount: result.amount,
       regularMinutes: result.regularMinutes,
       overtimeMinutes: result.overtimeMinutes,
+      unapprovedOvertimeMinutes: result.unapprovedOvertimeMinutes,
       days: result.days,
       lines: result.lines.map((l) => ({ ...l, projectName: l.projectId ? (names.get(l.projectId) ?? null) : null })),
       final,
@@ -382,8 +394,8 @@ export class TimesheetsService {
   }
 
   private async build(db: Db, user: AuthenticatedUser, row: SheetRow, settings: OrgTimesheetSettings): Promise<TimesheetDetail> {
-    const dayRows = await db.query<{ date: string; attendance_minutes: number; meeting_minutes: number; logged_minutes: number; manual_minutes: number; variance_minutes: number; variance_pct: number | null; flags: TimesheetDay['flags'] }>(
-      `SELECT to_char(work_date, 'YYYY-MM-DD') AS date, attendance_minutes, meeting_minutes, logged_minutes, manual_minutes, variance_minutes, variance_pct, flags
+    const dayRows = await db.query<{ date: string; attendance_minutes: number; meeting_minutes: number; onsite_minutes: number; logged_minutes: number; manual_minutes: number; variance_minutes: number; variance_pct: number | null; flags: TimesheetDay['flags'] }>(
+      `SELECT to_char(work_date, 'YYYY-MM-DD') AS date, attendance_minutes, meeting_minutes, onsite_minutes, logged_minutes, manual_minutes, variance_minutes, variance_pct, flags
        FROM timesheet_days WHERE timesheet_id = $1`,
       [row.id],
     );
@@ -394,6 +406,7 @@ export class TimesheetsService {
         date,
         attendanceMinutes: d?.attendance_minutes ?? 0,
         meetingMinutes: d?.meeting_minutes ?? 0,
+        onsiteMinutes: d?.onsite_minutes ?? 0,
         loggedMinutes: d?.logged_minutes ?? 0,
         manualMinutes: d?.manual_minutes ?? 0,
         varianceMinutes: d?.variance_minutes ?? 0,
@@ -434,6 +447,27 @@ export class TimesheetsService {
       payableNote,
       permissions: this.perms(user, row),
       settings: { variancePct: settings.variancePct, manualLimitMinutes: settings.manualLimitMinutes },
+      overtime: await this.overtimeSummary(db, row, settings),
+    };
+  }
+
+  /** ADR 049 §2 (FR-WT-011): worked, requested and approved overtime of the period, never merged. */
+  private async overtimeSummary(db: Db, row: { user_id: string; period_start: string; period_end: string }, settings: OrgTimesheetSettings): Promise<OvertimeSummary> {
+    const worked = await db.query<{ m: number }>(
+      `SELECT COALESCE(SUM(overtime_minutes), 0)::int AS m FROM attendance_daily WHERE user_id = $1 AND work_date BETWEEN $2 AND $3`,
+      [row.user_id, row.period_start, row.period_end],
+    );
+    const reqs = await db.query<{ requested: number; approved: number }>(
+      `SELECT COALESCE(SUM(requested_minutes) FILTER (WHERE status IN ('PENDING', 'APPROVED')), 0)::int AS requested,
+              COALESCE(SUM(approved_minutes) FILTER (WHERE status = 'APPROVED'), 0)::int AS approved
+       FROM overtime_requests WHERE user_id = $1 AND work_date BETWEEN $2::date AND $3::date`,
+      [row.user_id, row.period_start, row.period_end],
+    );
+    return {
+      requiresApproval: settings.overtimeRequiresApproval,
+      workedMinutes: worked.rows[0]?.m ?? 0,
+      requestedMinutes: reqs.rows[0]?.requested ?? 0,
+      approvedMinutes: reqs.rows[0]?.approved ?? 0,
     };
   }
 }

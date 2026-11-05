@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { UserRefSchema } from '../tasks/types.ts';
+import { OvertimeSummarySchema } from './work-requests.ts';
 
 const workDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
 const isoDate = z.string().datetime({ offset: true });
@@ -15,7 +16,8 @@ export type TimesheetStatus = (typeof TIMESHEET_STATUSES)[number];
 /** The owner may change entries only while the timesheet is in one of these states. */
 export const EDITABLE_TIMESHEET_STATUSES: readonly TimesheetStatus[] = ['DRAFT', 'REJECTED'];
 
-export const ENTRY_SOURCES = ['TIMER', 'MANUAL', 'AUTO_FROM_ATTENDANCE'] as const;
+/** ADR 049 §7: ONSITE = approved onsite work (a work log, never attendance). */
+export const ENTRY_SOURCES = ['TIMER', 'MANUAL', 'AUTO_FROM_ATTENDANCE', 'ONSITE'] as const;
 export type EntrySource = (typeof ENTRY_SOURCES)[number];
 
 /** ADR 049 §3-4: where the work was done, and what kind of work it was (fixed lists). */
@@ -147,6 +149,8 @@ export const TimesheetSettingsDtoSchema = z.object({
   manualLimitMinutes: z.number().int().min(0).max(8 * 60),
   variancePct: z.number().int().min(5).max(50),
   submitDueDays: z.number().int().min(0).max(14),
+  /** ADR 049 §2: only approved overtime gets the multiplier. Omitted = unchanged. */
+  overtimeRequiresApproval: z.boolean().optional(),
 });
 export type TimesheetSettingsDto = z.infer<typeof TimesheetSettingsDtoSchema>;
 
@@ -210,6 +214,8 @@ export const TimesheetDaySchema = z.object({
   attendanceMinutes: z.number(),
   /** ADR 049: the part of attendance spent in verified calls. */
   meetingMinutes: z.number(),
+  /** ADR 049 §7: approved onsite work (covers attendance in the variance check, never attendance). */
+  onsiteMinutes: z.number(),
   loggedMinutes: z.number(),
   manualMinutes: z.number(),
   varianceMinutes: z.number(),
@@ -224,6 +230,8 @@ export const PayableLineSchema = z.object({
   rate: z.string(),
   regularMinutes: z.number(),
   overtimeMinutes: z.number(),
+  /** ADR 049: overtime without approval, paid at the base rate (stored payables before ADR 049: 0). */
+  unapprovedOvertimeMinutes: z.number().default(0),
   amount: z.string(),
 });
 
@@ -233,6 +241,7 @@ export const PayableSchema = z.object({
   amount: z.string(),
   regularMinutes: z.number(),
   overtimeMinutes: z.number(),
+  unapprovedOvertimeMinutes: z.number().default(0),
   days: z.number(),
   lines: z.array(PayableLineSchema),
   /** true once approved (stored); false = live estimate from the current entries. */
@@ -295,6 +304,8 @@ export const TimesheetDetailSchema = TimesheetSummarySchema.extend({
   payableNote: z.string().nullable(),
   permissions: TimesheetPermissionsSchema,
   settings: z.object({ variancePct: z.number(), manualLimitMinutes: z.number() }),
+  /** ADR 049 §2: worked, requested and approved overtime of the period, shown separately. */
+  overtime: OvertimeSummarySchema,
 });
 export type TimesheetDetail = z.infer<typeof TimesheetDetailSchema>;
 
@@ -315,7 +326,7 @@ export const RatesListSchema = z.object({
 });
 export type RatesList = z.infer<typeof RatesListSchema>;
 
-export const TimesheetSettingsSchema = TimesheetSettingsDtoSchema;
+export const TimesheetSettingsSchema = TimesheetSettingsDtoSchema.extend({ overtimeRequiresApproval: z.boolean() });
 export type TimesheetSettings = z.infer<typeof TimesheetSettingsSchema>;
 
 export const ReportRowSchema = z.object({

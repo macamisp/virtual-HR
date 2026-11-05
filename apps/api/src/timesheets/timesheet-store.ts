@@ -20,6 +20,8 @@ export interface OrgTimesheetSettings {
   manualLimitMinutes: number;
   variancePct: number;
   submitDueDays: number;
+  /** ADR 049 §2: only approved overtime gets the multiplier. */
+  overtimeRequiresApproval: boolean;
 }
 
 export interface TimesheetRow {
@@ -41,9 +43,9 @@ export class TimesheetLockedError extends Error {
 }
 
 export async function orgSettings(db: Db, orgId: string): Promise<OrgTimesheetSettings> {
-  const res = await db.query<{ timezone: string; timesheet_period: PeriodKind; anchor: string; manual_time_limit_minutes: number; timesheet_variance_pct: number; timesheet_submit_due_days: number }>(
+  const res = await db.query<{ timezone: string; timesheet_period: PeriodKind; anchor: string; manual_time_limit_minutes: number; timesheet_variance_pct: number; timesheet_submit_due_days: number; overtime_requires_approval: boolean }>(
     `SELECT timezone, timesheet_period, to_char(timesheet_period_anchor, 'YYYY-MM-DD') AS anchor,
-            manual_time_limit_minutes, timesheet_variance_pct, timesheet_submit_due_days
+            manual_time_limit_minutes, timesheet_variance_pct, timesheet_submit_due_days, overtime_requires_approval
      FROM organizations WHERE id = $1`,
     [orgId],
   );
@@ -56,6 +58,7 @@ export async function orgSettings(db: Db, orgId: string): Promise<OrgTimesheetSe
     manualLimitMinutes: r.manual_time_limit_minutes,
     variancePct: r.timesheet_variance_pct,
     submitDueDays: r.timesheet_submit_due_days,
+    overtimeRequiresApproval: r.overtime_requires_approval,
   };
 }
 
@@ -126,6 +129,8 @@ export async function refreshDay(db: Db, orgId: string, userId: string, date: st
   const attendanceMinutes = Math.floor(Number(att.rows[0]?.seconds ?? 0) / 60);
   // ADR 049 §1g: the part of attendance spent in verified calls (shown, never added to attendance).
   const meetingMinutes = Math.min(attendanceMinutes, Math.floor(Number(att.rows[0]?.meeting ?? 0) / 60));
+  // ADR 049 §7: approved onsite work covers attendance in the variance check (it stays out of
+  // attendance itself and out of the manual-time limit).
   const entries = await db.query<{ id: string; minutes: number; source: string; flag_reason: string | null }>(
     `SELECT id, minutes, source, flag_reason FROM time_entries
      WHERE org_id = $1 AND user_id = $2 AND work_date = $3::date AND ended_at IS NOT NULL
@@ -134,10 +139,12 @@ export async function refreshDay(db: Db, orgId: string, userId: string, date: st
   );
   let logged = 0;
   let manual = 0;
+  let onsite = 0;
   const overLimit: string[] = [];
   const withinLimit: string[] = [];
   for (const e of entries.rows) {
     logged += e.minutes;
+    if (e.source === 'ONSITE') onsite += e.minutes;
     if (e.source !== 'MANUAL') continue;
     manual += e.minutes;
     if (manual > s.manualLimitMinutes) {
@@ -154,14 +161,15 @@ export async function refreshDay(db: Db, orgId: string, userId: string, date: st
     await db.query(`UPDATE time_entries SET flagged = false, flag_reason = NULL, updated_at = now() WHERE id = ANY($1::uuid[])`, [withinLimit]);
   }
 
-  const r = reconcileDay({ attendanceMinutes, loggedMinutes: logged, manualMinutes: manual, manualLimitMinutes: s.manualLimitMinutes, variancePct: s.variancePct });
+  const r = reconcileDay({ attendanceMinutes: attendanceMinutes + onsite, loggedMinutes: logged, manualMinutes: manual, manualLimitMinutes: s.manualLimitMinutes, variancePct: s.variancePct });
   await db.query(
-    `INSERT INTO timesheet_days (org_id, user_id, work_date, timesheet_id, attendance_minutes, logged_minutes, manual_minutes, variance_minutes, variance_pct, flags, meeting_minutes, updated_at)
-     VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10::text[], $11, now())
+    `INSERT INTO timesheet_days (org_id, user_id, work_date, timesheet_id, attendance_minutes, logged_minutes, manual_minutes, variance_minutes, variance_pct, flags, meeting_minutes, onsite_minutes, updated_at)
+     VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10::text[], $11, $12, now())
      ON CONFLICT (org_id, user_id, work_date) DO UPDATE SET
        timesheet_id = EXCLUDED.timesheet_id,
        attendance_minutes = EXCLUDED.attendance_minutes,
        meeting_minutes = EXCLUDED.meeting_minutes,
+       onsite_minutes = EXCLUDED.onsite_minutes,
        logged_minutes = EXCLUDED.logged_minutes,
        manual_minutes = EXCLUDED.manual_minutes,
        variance_minutes = EXCLUDED.variance_minutes,
@@ -170,7 +178,7 @@ export async function refreshDay(db: Db, orgId: string, userId: string, date: st
        -- A day that becomes flagged again later deserves a fresh alert.
        alerted_at = CASE WHEN EXCLUDED.flags = '{}' THEN NULL ELSE timesheet_days.alerted_at END,
        updated_at = now()`,
-    [orgId, userId, date, sheet.id, attendanceMinutes, logged, manual, r.varianceMinutes, r.variancePct, r.flags, meetingMinutes],
+    [orgId, userId, date, sheet.id, attendanceMinutes, logged, manual, r.varianceMinutes, r.variancePct, r.flags, meetingMinutes, onsite],
   );
   if (sheet.status !== 'APPROVED' && sheet.status !== 'LOCKED' && sheet.status !== 'PAID') await refreshTotals(db, sheet.id);
 }
