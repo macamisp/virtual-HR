@@ -118,12 +118,14 @@ export function isEditable(status: TimesheetStatus): boolean {
 export async function refreshDay(db: Db, orgId: string, userId: string, date: string, settings?: OrgTimesheetSettings): Promise<void> {
   const s = settings ?? (await orgSettings(db, orgId));
   const sheet = await ensureTimesheet(db, orgId, userId, date, s);
-  const att = await db.query<{ seconds: string }>(
-    `SELECT COALESCE(SUM(net_seconds), 0) AS seconds FROM attendance_sessions
+  const att = await db.query<{ seconds: string; meeting: string }>(
+    `SELECT COALESCE(SUM(net_seconds), 0) AS seconds, COALESCE(SUM(meeting_seconds), 0) AS meeting FROM attendance_sessions
      WHERE org_id = $1 AND user_id = $2 AND work_date = $3 AND status NOT IN ('CANCELLED', 'ADJUSTED')`,
     [orgId, userId, date],
   );
   const attendanceMinutes = Math.floor(Number(att.rows[0]?.seconds ?? 0) / 60);
+  // ADR 049 §1g: the part of attendance spent in verified calls (shown, never added to attendance).
+  const meetingMinutes = Math.min(attendanceMinutes, Math.floor(Number(att.rows[0]?.meeting ?? 0) / 60));
   const entries = await db.query<{ id: string; minutes: number; source: string; flag_reason: string | null }>(
     `SELECT id, minutes, source, flag_reason FROM time_entries
      WHERE org_id = $1 AND user_id = $2 AND work_date = $3::date AND ended_at IS NOT NULL
@@ -154,11 +156,12 @@ export async function refreshDay(db: Db, orgId: string, userId: string, date: st
 
   const r = reconcileDay({ attendanceMinutes, loggedMinutes: logged, manualMinutes: manual, manualLimitMinutes: s.manualLimitMinutes, variancePct: s.variancePct });
   await db.query(
-    `INSERT INTO timesheet_days (org_id, user_id, work_date, timesheet_id, attendance_minutes, logged_minutes, manual_minutes, variance_minutes, variance_pct, flags, updated_at)
-     VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10::text[], now())
+    `INSERT INTO timesheet_days (org_id, user_id, work_date, timesheet_id, attendance_minutes, logged_minutes, manual_minutes, variance_minutes, variance_pct, flags, meeting_minutes, updated_at)
+     VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10::text[], $11, now())
      ON CONFLICT (org_id, user_id, work_date) DO UPDATE SET
        timesheet_id = EXCLUDED.timesheet_id,
        attendance_minutes = EXCLUDED.attendance_minutes,
+       meeting_minutes = EXCLUDED.meeting_minutes,
        logged_minutes = EXCLUDED.logged_minutes,
        manual_minutes = EXCLUDED.manual_minutes,
        variance_minutes = EXCLUDED.variance_minutes,
@@ -167,7 +170,7 @@ export async function refreshDay(db: Db, orgId: string, userId: string, date: st
        -- A day that becomes flagged again later deserves a fresh alert.
        alerted_at = CASE WHEN EXCLUDED.flags = '{}' THEN NULL ELSE timesheet_days.alerted_at END,
        updated_at = now()`,
-    [orgId, userId, date, sheet.id, attendanceMinutes, logged, manual, r.varianceMinutes, r.variancePct, r.flags],
+    [orgId, userId, date, sheet.id, attendanceMinutes, logged, manual, r.varianceMinutes, r.variancePct, r.flags, meetingMinutes],
   );
   if (sheet.status !== 'APPROVED' && sheet.status !== 'LOCKED' && sheet.status !== 'PAID') await refreshTotals(db, sheet.id);
 }
@@ -177,6 +180,7 @@ export async function refreshTotals(db: Db, timesheetId: string): Promise<void> 
   await db.query(
     `UPDATE timesheets t SET
        attendance_minutes = COALESCE(d.att, 0),
+       meeting_minutes = COALESCE(d.meeting, 0),
        logged_minutes = COALESCE(e.logged, 0),
        billable_minutes = COALESCE(e.billable, 0),
        variance_minutes = COALESCE(e.logged, 0) - COALESCE(d.att, 0),
@@ -184,7 +188,7 @@ export async function refreshTotals(db: Db, timesheetId: string): Promise<void> 
        updated_at = now()
      FROM (SELECT $1::uuid AS id) k
      LEFT JOIN (
-       SELECT timesheet_id, SUM(attendance_minutes)::int AS att, COUNT(*) FILTER (WHERE flags <> '{}')::int AS flagged
+       SELECT timesheet_id, SUM(attendance_minutes)::int AS att, SUM(meeting_minutes)::int AS meeting, COUNT(*) FILTER (WHERE flags <> '{}')::int AS flagged
        FROM timesheet_days WHERE timesheet_id = $1 GROUP BY timesheet_id
      ) d ON d.timesheet_id = k.id
      LEFT JOIN (

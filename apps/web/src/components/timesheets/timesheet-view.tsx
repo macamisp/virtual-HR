@@ -71,8 +71,9 @@ export function TimesheetView({ sheet, heading }: { sheet: TimesheetDetail; head
         <Alert><AlertTitle>Reopened</AlertTitle><AlertDescription>{sheet.reopenReason}</AlertDescription></Alert>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" data-testid="timesheet-totals">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5" data-testid="timesheet-totals">
         <Stat label="Attendance (net)" value={minutesLabel(sheet.attendanceMinutes)} />
+        <Stat label="of which in meetings" value={minutesLabel(sheet.meetingMinutes)} />
         <Stat label="Logged on tasks" value={minutesLabel(sheet.loggedMinutes)} />
         <Stat label="Variance" value={signed(sheet.varianceMinutes)} />
         <Stat label="Flagged days" value={String(sheet.flaggedDays)} warn={sheet.flaggedDays > 0} />
@@ -186,6 +187,7 @@ function DaysCard({ sheet }: { sheet: TimesheetDetail }) {
             <TableRow>
               <TableHead>Day</TableHead>
               <TableHead className="text-right">Attendance</TableHead>
+              <TableHead className="text-right">Meetings</TableHead>
               <TableHead className="text-right">Logged</TableHead>
               <TableHead className="text-right">Variance</TableHead>
               <TableHead>Flags</TableHead>
@@ -196,6 +198,7 @@ function DaysCard({ sheet }: { sheet: TimesheetDetail }) {
               <TableRow key={d.date} data-testid={`day-${d.date}`}>
                 <TableCell>{formatWorkDate(d.date)}</TableCell>
                 <TableCell className="text-right tabular-nums">{minutesLabel(d.attendanceMinutes)}</TableCell>
+                <TableCell className="text-right tabular-nums" data-testid={`day-meeting-${d.date}`}>{minutesLabel(d.meetingMinutes)}</TableCell>
                 <TableCell className="text-right tabular-nums">{minutesLabel(d.loggedMinutes)}</TableCell>
                 <TableCell className="text-right tabular-nums">{signed(d.varianceMinutes)}{d.variancePct !== null && d.varianceMinutes !== 0 ? ` (${d.variancePct}%)` : ''}</TableCell>
                 <TableCell>

@@ -25,6 +25,7 @@ interface SheetFact {
   period_end: string;
   status: TimesheetStatus;
   attendance_minutes: number;
+  meeting_minutes: number;
   logged_minutes: number;
   variance_minutes: number;
   flagged_days: number;
@@ -39,6 +40,7 @@ interface Acc {
   label: string;
   sheets: Set<string>;
   attendance: number;
+  meeting: number;
   logged: number;
   approved: number;
   variance: number;
@@ -48,7 +50,7 @@ interface Acc {
 }
 
 function acc(key: string, label: string): Acc {
-  return { key, label, sheets: new Set(), attendance: 0, logged: 0, approved: 0, variance: 0, flagged: 0, cost: new Map(), approvalHours: [] };
+  return { key, label, sheets: new Set(), attendance: 0, meeting: 0, logged: 0, approved: 0, variance: 0, flagged: 0, cost: new Map(), approvalHours: [] };
 }
 
 function addCost(a: Acc, currency: string | null, amount: string | null): void {
@@ -90,7 +92,7 @@ export class TimesheetReportsService {
       const sheets = await db.query<SheetFact>(
         `SELECT t.id, t.user_id, u.display_name, u.email, u.team_id, tm.name AS team_name,
                 to_char(t.period_start, 'YYYY-MM-DD') AS period_start, to_char(t.period_end, 'YYYY-MM-DD') AS period_end,
-                t.status, t.attendance_minutes, t.logged_minutes, t.variance_minutes, t.flagged_days,
+                t.status, t.attendance_minutes, t.meeting_minutes, t.logged_minutes, t.variance_minutes, t.flagged_days,
                 t.amount::text AS amount, t.currency, t.payable,
                 (EXTRACT(EPOCH FROM (t.approved_at - t.submitted_at)) / 3600)::numeric(10,2)::text AS approval_hours
          FROM timesheets t JOIN users u ON u.id = t.user_id LEFT JOIN teams tm ON tm.id = u.team_id
@@ -139,6 +141,7 @@ export class TimesheetReportsService {
             : group(s.period_start, `${s.period_start} – ${s.period_end}`);
           a.sheets.add(s.id);
           a.attendance += s.attendance_minutes;
+          a.meeting += s.meeting_minutes;
           a.logged += s.logged_minutes;
           a.variance += s.variance_minutes;
           a.flagged += s.flagged_days;
@@ -157,6 +160,7 @@ export class TimesheetReportsService {
           label: a.label,
           timesheets: a.sheets.size,
           attendanceMinutes: a.attendance,
+          meetingMinutes: q.groupBy === 'project' ? null : a.meeting,
           loggedMinutes: a.logged,
           approvedMinutes: a.approved,
           varianceMinutes: a.variance,
@@ -177,6 +181,8 @@ export class TimesheetReportsService {
       'Timesheets', 'Attendance (h)', 'Logged (h)', 'Approved (h)', 'Variance (h)', 'Flagged days',
       ...currencies.map((c) => `Cost ${c}`),
       'Avg approval (h)',
+      // ADR 049: appended last so existing column positions do not move.
+      'Meetings (h)',
     ];
     const rows: Cell[][] = r.rows.map((row) => [
       row.label, row.timesheets, hours(row.attendanceMinutes), hours(row.loggedMinutes), hours(row.approvedMinutes),
@@ -184,6 +190,7 @@ export class TimesheetReportsService {
       // Money is exact text until here; the spreadsheet cell is a display number.
       ...currencies.map((c) => (row.cost[c] !== undefined ? Number(row.cost[c]) : null)),
       row.avgApprovalHours,
+      row.meetingMinutes === null ? null : hours(row.meetingMinutes),
     ]);
     const base = `timesheets-by-${r.groupBy}-${r.from}-to-${r.to}`;
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {

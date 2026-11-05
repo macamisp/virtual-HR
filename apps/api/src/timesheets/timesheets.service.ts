@@ -38,7 +38,7 @@ type PendingEvent = { [K in keyof TimesheetEventMap]: { name: K; payload: Timesh
 
 const SUMMARY_SELECT = `
   SELECT t.id, t.user_id, to_char(t.period_start, 'YYYY-MM-DD') AS period_start, to_char(t.period_end, 'YYYY-MM-DD') AS period_end,
-         t.status, t.attendance_minutes, t.logged_minutes, t.billable_minutes, t.variance_minutes, t.flagged_days,
+         t.status, t.attendance_minutes, t.meeting_minutes, t.logged_minutes, t.billable_minutes, t.variance_minutes, t.flagged_days,
          t.amount::text AS amount, t.currency, t.submitted_at, t.approved_at, t.version,
          t.notes, t.rejection_reason, t.reopen_reason, t.payable, t.approved_by,
          u.display_name, u.email, u.role, u.manager_id, u.team_id,
@@ -54,6 +54,7 @@ interface SheetRow {
   period_end: string;
   status: TimesheetStatus;
   attendance_minutes: number;
+  meeting_minutes: number;
   logged_minutes: number;
   billable_minutes: number;
   variance_minutes: number;
@@ -86,6 +87,7 @@ function mapSummary(r: SheetRow): TimesheetSummary {
     periodEnd: r.period_end,
     status: r.status,
     attendanceMinutes: r.attendance_minutes,
+    meetingMinutes: r.meeting_minutes,
     loggedMinutes: r.logged_minutes,
     billableMinutes: r.billable_minutes,
     varianceMinutes: r.variance_minutes,
@@ -380,8 +382,8 @@ export class TimesheetsService {
   }
 
   private async build(db: Db, user: AuthenticatedUser, row: SheetRow, settings: OrgTimesheetSettings): Promise<TimesheetDetail> {
-    const dayRows = await db.query<{ date: string; attendance_minutes: number; logged_minutes: number; manual_minutes: number; variance_minutes: number; variance_pct: number | null; flags: TimesheetDay['flags'] }>(
-      `SELECT to_char(work_date, 'YYYY-MM-DD') AS date, attendance_minutes, logged_minutes, manual_minutes, variance_minutes, variance_pct, flags
+    const dayRows = await db.query<{ date: string; attendance_minutes: number; meeting_minutes: number; logged_minutes: number; manual_minutes: number; variance_minutes: number; variance_pct: number | null; flags: TimesheetDay['flags'] }>(
+      `SELECT to_char(work_date, 'YYYY-MM-DD') AS date, attendance_minutes, meeting_minutes, logged_minutes, manual_minutes, variance_minutes, variance_pct, flags
        FROM timesheet_days WHERE timesheet_id = $1`,
       [row.id],
     );
@@ -391,6 +393,7 @@ export class TimesheetsService {
       return {
         date,
         attendanceMinutes: d?.attendance_minutes ?? 0,
+        meetingMinutes: d?.meeting_minutes ?? 0,
         loggedMinutes: d?.logged_minutes ?? 0,
         manualMinutes: d?.manual_minutes ?? 0,
         varianceMinutes: d?.variance_minutes ?? 0,

@@ -160,6 +160,8 @@ export type TimerState = z.infer<typeof TimerStateSchema>;
 export const TimesheetDaySchema = z.object({
   date: workDate,
   attendanceMinutes: z.number(),
+  /** ADR 049: the part of attendance spent in verified calls. */
+  meetingMinutes: z.number(),
   loggedMinutes: z.number(),
   manualMinutes: z.number(),
   varianceMinutes: z.number(),
@@ -215,6 +217,8 @@ export const TimesheetSummarySchema = z.object({
   periodEnd: workDate,
   status: z.enum(TIMESHEET_STATUSES),
   attendanceMinutes: z.number(),
+  /** ADR 049: the part of attendance spent in verified calls. */
+  meetingMinutes: z.number(),
   loggedMinutes: z.number(),
   billableMinutes: z.number(),
   varianceMinutes: z.number(),
@@ -271,6 +275,8 @@ export const ReportRowSchema = z.object({
   label: z.string(),
   timesheets: z.number(),
   attendanceMinutes: z.number(),
+  /** ADR 049: meeting part of attendance; null when grouped by project (calls have no project). */
+  meetingMinutes: z.number().nullable(),
   loggedMinutes: z.number(),
   approvedMinutes: z.number(),
   varianceMinutes: z.number(),

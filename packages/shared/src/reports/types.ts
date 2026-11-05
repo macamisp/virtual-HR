@@ -80,6 +80,8 @@ export const AttendanceReportRowSchema = z.object({
   netMinutes: z.number().int(),
   expectedMinutes: z.number().int(),
   overtimeMinutes: z.number().int(),
+  /** ADR 049: time in verified calls (part of net). */
+  meetingMinutes: z.number().int(),
 });
 export type AttendanceReportRow = z.infer<typeof AttendanceReportRowSchema>;
 

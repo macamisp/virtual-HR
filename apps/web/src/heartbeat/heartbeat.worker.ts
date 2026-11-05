@@ -19,6 +19,8 @@ let creds: Credentials | null = null;
 let ids: { orgId: string; userId: string; deviceId: string } | null = null;
 let intervalMs = 30_000;
 let inCall = false;
+/** ADR 049: the meeting of the call (signed with the heartbeat; the server verifies it). */
+let callMeetingId: string | null = null;
 let timer: ReturnType<typeof setInterval> | null = null;
 let leader = false;
 let lastInputAt: number | null = null;
@@ -61,6 +63,7 @@ async function sendHeartbeat(): Promise<void> {
         tabVisible: visible,
         windowFocused: focused,
         inCall,
+        ...(inCall && callMeetingId ? { meetingId: callMeetingId } : {}),
       },
       creds!.sessionSecret,
     );
@@ -190,8 +193,9 @@ self.onmessage = (event: MessageEvent<MainToWorker>) => {
       lastInputAt = msg.at;
       break;
     case 'inCall':
-      if (inCall !== msg.inCall) {
+      if (inCall !== msg.inCall || callMeetingId !== (msg.meetingId ?? null)) {
         inCall = msg.inCall;
+        callMeetingId = msg.inCall ? msg.meetingId ?? null : null;
         // Report the change now so the attendance state follows the call within a second.
         void sendHeartbeat();
       }

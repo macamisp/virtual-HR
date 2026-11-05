@@ -630,7 +630,9 @@ describe('Timesheets API (FR-TS-001..006, 009, 011)', { concurrency: false }, ()
         assert.ok(csv.includes(`"'=HYPERLINK(""http://evil.test"",""x"")"`), 'the formula is quoted and prefixed');
         assert.ok(!/(^|,)=HYPERLINK/m.test(csv));
         const subLine = csv.split('\r\n').find((l) => l.startsWith('sub,'))!;
-        assert.match(subLine, /^sub,\d+,8,[\d.]+,10\.17,[\d.-]+,\d+,270\.5,[\d.]+$/, 'hours as numbers, 2 decimals; cost as a plain amount');
+        // ADR 049: "Meetings (h)" is appended after the existing columns.
+        assert.match(subLine, /^sub,\d+,8,[\d.]+,10\.17,[\d.-]+,\d+,270\.5,[\d.]+,[\d.]+$/, 'hours as numbers, 2 decimals; cost as a plain amount');
+        assert.ok(csv.split('\r\n')[0]!.endsWith(',Avg approval (h),Meetings (h)'), 'the meeting column comes last');
         assert.ok(!csv.split('\r\n').some((l) => l.startsWith('aud,')), 'no timesheets for the read-only auditor');
 
         const xlsx = await api('aud', `/timesheets/reports?groupBy=user&format=xlsx&${range()}`);

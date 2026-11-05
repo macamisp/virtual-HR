@@ -210,10 +210,13 @@ phone width without horizontal scroll.
 
 ## 9. Migration and compatibility
 
-One migration pair `20261107000000_smart_work_time` and `..._rls`: new columns are nullable or have
-defaults, snapshots are backfilled, the `time_entries.source` CHECK gains `ONSITE`, the new tables
-get forced RLS and grants like ADR 027. No existing row changes meaning; with the setting off,
-payable amounts are identical (tested). Rollback: the V2 images ignore the new columns and tables.
+One migration per slice, from `20261107000000_meeting_call_evidence` (§1: call columns on sessions
+and segments, `meeting_minutes` on timesheet days and periods, backfilled for display only). New
+columns are nullable or have defaults, snapshots are backfilled, the `time_entries.source` CHECK
+gains `ONSITE`, the new tables get forced RLS and grants like ADR 027. No existing row changes
+meaning; with the setting off, payable amounts are identical (tested). Export columns are only ever
+appended, so existing column positions stay. Rollback: the V2 images ignore the new columns and
+tables.
 
 ## Consequences
 

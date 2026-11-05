@@ -314,9 +314,10 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         clock_in_source, clock_out_source, active_seconds, idle_seconds, break_seconds,
         meeting_seconds, net_seconds, last_heartbeat_at, ip_in, ip_out, flags,
         status, current_state, previous_state, grace_timer_expires_at, consecutive_idle_seconds,
-        agent_device_id, agent_last_seen_at, web_in_call_at, country_in, country_out, challenge_id, challenge_issued_at, updated_at
+        agent_device_id, agent_last_seen_at, web_in_call_at, country_in, country_out, challenge_id, challenge_issued_at,
+        call_device_id, call_confirmed_at, updated_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, CURRENT_TIMESTAMP
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, CURRENT_TIMESTAMP
       )
       ON CONFLICT (id) DO UPDATE SET
         clock_out_at = EXCLUDED.clock_out_at,
@@ -340,6 +341,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         country_out = EXCLUDED.country_out,
         challenge_id = EXCLUDED.challenge_id,
         challenge_issued_at = EXCLUDED.challenge_issued_at,
+        call_device_id = EXCLUDED.call_device_id,
+        call_confirmed_at = EXCLUDED.call_confirmed_at,
         updated_at = CURRENT_TIMESTAMP`,
       [
         session.id,
@@ -372,6 +375,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         session.countryOut ?? null,
         session.challengeId ?? null,
         session.challengeIssuedAt ?? null,
+        session.callDeviceId ?? null,
+        session.callConfirmedAt ?? null,
       ],
     );
 
@@ -394,8 +399,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     const query = (sql: string, params: unknown[]) => client ? client.query(sql, params) : this.queryWithRls(orgId, sql, params);
     await query(
       `INSERT INTO attendance_segments (
-        id, org_id, session_id, state, started_at, ended_at, duration_seconds, meeting_id, flags
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        id, org_id, session_id, state, started_at, ended_at, duration_seconds, meeting_id, flags, call_kind, call_meeting_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       ON CONFLICT (id) DO UPDATE SET
         ended_at = EXCLUDED.ended_at,
         duration_seconds = EXCLUDED.duration_seconds,
@@ -410,6 +415,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
         seg.durationSeconds,
         seg.meetingId || null,
         seg.flags,
+        seg.callKind ?? null,
+        seg.callMeetingId ?? null,
       ],
     );
   }
@@ -430,6 +437,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       endedAt: r.ended_at ? new Date(r.ended_at) : null,
       durationSeconds: r.duration_seconds,
       meetingId: r.meeting_id || null,
+      callKind: r.call_kind ?? null,
+      callMeetingId: r.call_meeting_id ?? null,
       flags: r.flags,
     }));
   }
@@ -1328,6 +1337,8 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
       countryOut: row.country_out ?? null,
       challengeId: row.challenge_id ?? null,
       challengeIssuedAt: row.challenge_issued_at ? new Date(row.challenge_issued_at) : null,
+      callDeviceId: row.call_device_id ?? null,
+      callConfirmedAt: row.call_confirmed_at ? new Date(row.call_confirmed_at) : null,
     };
   }
 }

@@ -329,6 +329,8 @@ model AttendanceSession {
   agentDeviceId          String?   @map("agent_device_id") @db.VarChar(100)
   agentLastSeenAt        DateTime? @map("agent_last_seen_at") @db.Timestamptz()
   webInCallAt            DateTime? @map("web_in_call_at") @db.Timestamptz()
+  callDeviceId           String?   @map("call_device_id") @db.VarChar(100)
+  callConfirmedAt        DateTime? @map("call_confirmed_at") @db.Timestamptz()
   /// FR-ATT-018: coarse location (country) where the session started and last reported.
   countryIn              String?   @map("country_in") @db.VarChar(2)
   countryOut             String?   @map("country_out") @db.VarChar(2)
@@ -357,6 +359,8 @@ model AttendanceSegment {
   endedAt         DateTime? @map("ended_at") @db.Timestamptz()
   durationSeconds Int       @default(0) @map("duration_seconds")
   meetingId       String?   @map("meeting_id") @db.VarChar(100)
+  callKind        String?   @map("call_kind") @db.VarChar(20)
+  callMeetingId   String?   @map("call_meeting_id") @db.Uuid
   flags           String[]  @default([])
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 

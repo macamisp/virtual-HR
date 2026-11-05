@@ -33,7 +33,9 @@ export type SessionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting'
 let active = 0;
 /** FR-MEET-010: how long the connection must stay poor before the automatic audio-only fallback. */
 const POOR_FOR_MS = 5000;
-const setInCall = () => usePresenceStore.getState().setInCall(active > 0);
+/** ADR 049: the meeting of the connected call (null for office calls), reported with inCall. */
+let liveMeetingId: string | null = null;
+const setInCall = () => usePresenceStore.getState().setInCall(active > 0, active > 0 ? liveMeetingId : null);
 
 export class MediaSession {
   room: Room | null = null;
@@ -136,7 +138,7 @@ export class MediaSession {
     this.changed();
   }
 
-  private count(): void { if (!this.counted) { this.counted = true; active += 1; setInCall(); } }
+  private count(): void { if (!this.counted) { this.counted = true; active += 1; liveMeetingId = this.token?.meetingId ?? null; setInCall(); } }
   private uncount(): void { if (this.counted) { this.counted = false; active -= 1; setInCall(); } }
 
   private clearPoor(): void { if (this.poorSince) clearTimeout(this.poorSince); this.poorSince = null; }

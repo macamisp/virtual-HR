@@ -475,3 +475,62 @@ describe('ADR 048: a call reported by the heartbeat', () => {
     assert.equal(split.splitSession?.currentState, AttendanceState.IN_MEETING, 'the call continues into the new day');
   });
 });
+
+/**
+ * ADR 049 §1 (FR-WT-003, FR-WT-005): a call is counted once, a second device does not end it, and
+ * the segment records which kind of call it was.
+ */
+describe('ADR 049: meeting time is counted once and survives a second device', () => {
+  const sm = new AttendanceStateMachine({
+    heartbeatIntervalSeconds: 30, missedHeartbeatTimeoutSeconds: 90, disconnectGraceWindowSeconds: 120,
+    idleThresholdSeconds: 300, pauseThresholdSeconds: 900, maxSessionLengthSeconds: 14 * 3600, orgTimezone: 'Asia/Colombo',
+  });
+  const t0 = new Date('2026-10-13T08:00:00.000Z');
+  const at = (s: number) => new Date(t0.getTime() + s * 1000);
+  const ip = '192.168.1.100';
+
+  it('D1: typing during a call is not added to active time on top of the meeting time', () => {
+    let r = sm.handleHeartbeat(null, makeHeartbeat(), t0, ip); // 30 s of input before t0
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ inCall: true }), at(30), ip); // covers t0..30, opens the call
+    for (let i = 2; i <= 21; i += 1) r = sm.handleHeartbeat(r.session, makeHeartbeat({ inCall: true, activeSeconds: 30, idleSeconds: 0 }), at(i * 30), ip);
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ inCall: false, activeSeconds: 30, idleSeconds: 0 }), at(660), ip); // leaves
+    assert.equal(r.currentState, AttendanceState.ACTIVE);
+    assert.equal(r.session.meetingSeconds, 630, '00:30 to 11:00 in the call');
+    assert.equal(r.session.activeSeconds, 60, 'only the input outside the call');
+    assert.equal(r.session.netSeconds, 690, 'never more than the wall clock (plus the first interval)');
+  });
+
+  it('a heartbeat without a call from another device does not end the call', () => {
+    let r = sm.handleHeartbeat(null, makeHeartbeat({ deviceId: 'A' }), t0, ip);
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ deviceId: 'A', inCall: true }), at(30), ip);
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ deviceId: 'B', inCall: false }), at(45), ip);
+    assert.equal(r.currentState, AttendanceState.IN_MEETING, 'device B is not in the call');
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ deviceId: 'A', inCall: true }), at(60), ip);
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ deviceId: 'A', inCall: false }), at(90), ip);
+    assert.equal(r.currentState, AttendanceState.ACTIVE, 'the device in the call ends it');
+    assert.equal(r.session.meetingSeconds, 60);
+  });
+
+  it('when the device in the call stops confirming it, another device ends it at the last confirmation', () => {
+    let r = sm.handleHeartbeat(null, makeHeartbeat({ deviceId: 'A' }), t0, ip);
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ deviceId: 'A', inCall: true }), at(30), ip);
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ deviceId: 'A', inCall: true }), at(60), ip);
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ deviceId: 'B', inCall: false }), at(105), ip);
+    assert.equal(r.currentState, AttendanceState.IN_MEETING, '45 s since A confirmed: within two intervals');
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ deviceId: 'B', inCall: false }), at(135), ip);
+    assert.equal(r.currentState, AttendanceState.ACTIVE);
+    assert.equal(r.session.meetingSeconds, 30, 'ended at A\'s last confirmation (01:00)');
+  });
+
+  it('the meeting segment records the kind of call and the meeting it belongs to, and stays closable by heartbeats', () => {
+    let r = sm.handleHeartbeat(null, makeHeartbeat(), t0, ip);
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ inCall: true, callKind: 'MEETING', meetingId: 'meeting-9' }), at(30), ip);
+    const seg = r.session.segments[r.session.segments.length - 1]!;
+    assert.equal(seg.callKind, 'MEETING');
+    assert.equal(seg.callMeetingId, 'meeting-9');
+    assert.equal(seg.meetingId, null, 'not a hook-owned segment');
+    r = sm.handleHeartbeat(r.session, makeHeartbeat({ inCall: false }), at(90), ip);
+    assert.equal(r.currentState, AttendanceState.ACTIVE);
+    assert.equal(r.session.meetingSeconds, 60);
+  });
+});

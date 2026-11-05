@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { LiveBoardEntry } from '@hrvo/shared';
+import { CALL_SHARE_CHANNEL, CALL_SHARE_REPEAT_MS, effectiveCall, type LiveBoardEntry, type TabCallState } from '@hrvo/shared';
 import { randomUUID } from '@/lib/uuid';
 import { API_URL, HEARTBEAT_INTERVAL_MS } from '@/lib/env';
 import { useAuthStore } from '@/lib/auth-store';
@@ -210,10 +210,42 @@ export function useHeartbeat(enabled: boolean): void {
 
   // Hand refreshed credentials to the worker (token refresh, FR-AUTH-003)
   // ADR 016: forward the call state to the worker (the heartbeat's inCall counter).
+  // ADR 049 §1d: every tab broadcasts its own call; the leader reports a call when its own tab or a
+  // fresh broadcast from another tab says so (the call owner and the leader may be different tabs).
   const inCall = usePresenceStore((st) => st.inCall);
+  const callMeetingId = usePresenceStore((st) => st.callMeetingId);
+  const remoteCalls = useRef(new Map<string, TabCallState>());
+  const tabId = useRef<string | null>(null);
   useEffect(() => {
-    workerRef.current?.postMessage({ type: 'inCall', inCall } satisfies MainToWorker);
-  }, [inCall]);
+    tabId.current ??= randomUUID();
+    const local = { inCall, meetingId: callMeetingId };
+    const post = () => {
+      const eff = effectiveCall(local, remoteCalls.current.values(), Date.now());
+      workerRef.current?.postMessage({ type: 'inCall', inCall: eff.inCall, meetingId: eff.meetingId } satisfies MainToWorker);
+    };
+    const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(CALL_SHARE_CHANNEL);
+    const announce = () => channel?.postMessage({ tab: tabId.current, inCall: local.inCall, meetingId: local.meetingId, at: Date.now() });
+    if (channel) {
+      channel.onmessage = (e: MessageEvent<{ tab?: unknown; inCall?: unknown; meetingId?: unknown; at?: unknown }>) => {
+        const d = e.data;
+        if (typeof d?.tab !== 'string' || d.tab === tabId.current || typeof d.inCall !== 'boolean' || typeof d.at !== 'number') return;
+        remoteCalls.current.set(d.tab, { inCall: d.inCall, meetingId: typeof d.meetingId === 'string' ? d.meetingId : null, at: d.at });
+        post();
+      };
+    }
+    announce();
+    post();
+    // Repeat while in a call (so the leader knows it is still live) and re-evaluate stale tabs.
+    const timer = setInterval(() => { if (local.inCall) announce(); post(); }, CALL_SHARE_REPEAT_MS);
+    const bye = () => channel?.postMessage({ tab: tabId.current, inCall: false, meetingId: null, at: Date.now() });
+    window.addEventListener('pagehide', bye);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('pagehide', bye);
+      if (local.inCall) bye();
+      channel?.close();
+    };
+  }, [inCall, callMeetingId]);
 
   useEffect(() => {
     if (!workerRef.current || !accessToken || !sessionId || !sessionSecret) return;

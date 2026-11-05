@@ -170,9 +170,17 @@ export class AttendanceStateMachine {
       updatedSession.flags.push('MULTI_DEVICE');
     }
 
-    // Accumulate total counters
-    updatedSession.activeSeconds += heartbeat.activeSeconds;
-    updatedSession.idleSeconds += heartbeat.idleSeconds;
+    // Accumulate total counters. ADR 049 §1a (D1): a heartbeat that arrives during a meeting covers
+    // time the wall-clock meeting segment already credits, so its input is not counted again.
+    if (prev !== AttendanceState.IN_MEETING) {
+      updatedSession.activeSeconds += heartbeat.activeSeconds;
+      updatedSession.idleSeconds += heartbeat.idleSeconds;
+    }
+    // ADR 049 §1e: remember which device reports the call.
+    if (heartbeat.inCall) {
+      updatedSession.callDeviceId = heartbeat.deviceId;
+      updatedSession.callConfirmedAt = serverTime;
+    }
 
     // FR-ATT-023: an open challenge. Input clears it; silence past the window pauses from the
     // moment it was asked; silence inside the window keeps the session IDLE.
@@ -198,14 +206,26 @@ export class AttendanceStateMachine {
       this.closeLastSegment(updatedSession, serverTime, prev === AttendanceState.PAUSED ? ['LONG_IDLE'] : []);
       if (prev === AttendanceState.PAUSED && !updatedSession.flags.includes('LONG_IDLE')) updatedSession.flags.push('LONG_IDLE');
       this.openSegment(updatedSession, AttendanceState.IN_MEETING, serverTime);
+      const opened = updatedSession.segments[updatedSession.segments.length - 1]!;
+      opened.callKind = heartbeat.callKind ?? null;
+      opened.callMeetingId = heartbeat.callKind === 'MEETING' ? heartbeat.meetingId ?? null : null;
       updatedSession.currentState = AttendanceState.IN_MEETING;
       updatedSession.previousState = prev;
       this.recomputeNetSeconds(updatedSession, serverTime);
       return { session: updatedSession, previousState: prev, currentState: AttendanceState.IN_MEETING, actionTaken: 'Join call: open meeting segment; count as active' };
     }
-    if (!heartbeat.inCall && prev === AttendanceState.IN_MEETING && openSeg && !openSeg.endedAt && !openSeg.meetingId) {
-      this.closeLastSegment(updatedSession, serverTime);
-      this.openSegment(updatedSession, AttendanceState.ACTIVE, serverTime);
+    // ADR 049 §1e: only the device in the call ends it, or any heartbeat once that device has not
+    // confirmed the call for two intervals (then it ends at the last confirmation).
+    const confirmedAt = updatedSession.callConfirmedAt ?? null;
+    const callDeviceSilent = !confirmedAt ||
+      serverTime.getTime() - confirmedAt.getTime() > 2 * this.config.heartbeatIntervalSeconds * 1000;
+    const endsCall = !updatedSession.callDeviceId || heartbeat.deviceId === updatedSession.callDeviceId || callDeviceSilent;
+    if (!heartbeat.inCall && prev === AttendanceState.IN_MEETING && openSeg && !openSeg.endedAt && !openSeg.meetingId && endsCall) {
+      const endAt = heartbeat.deviceId !== updatedSession.callDeviceId && confirmedAt && callDeviceSilent ? confirmedAt : serverTime;
+      this.closeLastSegment(updatedSession, endAt);
+      updatedSession.callDeviceId = null;
+      updatedSession.callConfirmedAt = null;
+      this.openSegment(updatedSession, AttendanceState.ACTIVE, endAt);
       updatedSession.currentState = AttendanceState.ACTIVE;
       updatedSession.previousState = AttendanceState.IN_MEETING;
       updatedSession.consecutiveIdleSeconds = heartbeat.idleSeconds;

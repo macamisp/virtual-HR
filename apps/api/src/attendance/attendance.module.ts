@@ -5,6 +5,8 @@ import { AttendanceService } from './attendance.service.ts';
 import { PostgresAttendanceRepository } from './attendance-repository.ts';
 import { AttendanceFlagsService } from './attendance-flags.service.ts';
 import { AttendanceFlagsController } from './attendance-flags.controller.ts';
+import { MeetingTimeController } from './meeting-time.controller.ts';
+import { MeetingTimeService } from './meeting-time.service.ts';
 import { PrismaService } from '../common/prisma.service.ts';
 import { loadAttendancePolicy } from '../admin/policy-store.ts';
 import { SystemClock } from '../../../../packages/shared/src/index.ts';
@@ -13,7 +15,7 @@ import { RedisLock } from '../common/redis-lock.ts';
 import { PgHolidayProvider, PgLeaveProvider } from './leave-providers.ts';
 
 @Module({
-  controllers: [AttendanceController, AttendanceFlagsController],
+  controllers: [AttendanceController, AttendanceFlagsController, MeetingTimeController],
   providers: [
     {
       provide: PostgresAttendanceRepository,
@@ -37,6 +39,7 @@ import { PgHolidayProvider, PgLeaveProvider } from './leave-providers.ts';
       inject: [PostgresAttendanceRepository, PrismaService, AttendanceFlagsService, PgHolidayProvider, PgLeaveProvider],
     },
     AttendanceFlagsService,
+    MeetingTimeService,
     AttendanceGateway,
     PgHolidayProvider,
     PgLeaveProvider,

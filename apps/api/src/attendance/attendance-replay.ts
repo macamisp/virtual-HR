@@ -1,10 +1,10 @@
 import { planOfflineSync, type OfflineInterval } from '../agent/offline-sync.ts';
 /** NFR-ACC-004: replay accepted inputs; never read materialised session counters. */
 import { AttendanceStateMachine } from './attendance-state-machine.ts';
-import { AttendanceState, SessionStatus, type AttendanceConfig, type AttendanceSession, type HeartbeatPayload, type HeartbeatSource } from '../../../../packages/shared/src/index.ts';
+import { AttendanceState, SessionStatus, type AttendanceConfig, type AttendanceSession, type HeartbeatPayload, type HeartbeatSource, type CallKind } from '../../../../packages/shared/src/index.ts';
 
 export type AttendanceInput =
-  | { kind: 'heartbeat'; deviceId: string; activeSeconds: number; idleSeconds: number; inCall: boolean; tabVisible: boolean; windowFocused: boolean; source: HeartbeatSource }
+  | { kind: 'heartbeat'; deviceId: string; activeSeconds: number; idleSeconds: number; inCall: boolean; tabVisible: boolean; windowFocused: boolean; source: HeartbeatSource; callKind?: CallKind; meetingId?: string }
   | { kind: 'disconnect' | 'reconnect' | 'logout' | 'break-start' | 'break-end' | 'meeting-end' | 'grace-expired' | 'timeout' | 'max-length' | 'challenge-expired' | 'challenge-confirmed' }
   | { kind: 'meeting-start'; meetingId: string }
   | { kind: 'midnight'; splitSessionId: string }

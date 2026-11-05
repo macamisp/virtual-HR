@@ -30,3 +30,13 @@ The attendance engine, corrections, live board, exports and safeguards are cover
 | Requirement | Implementation | Tests |
 | --- | --- | --- |
 | FR-ATT-006 / SRS 6.2 rows 6–7 from the heartbeat: `inCall` while ACTIVE, IDLE or PAUSED opens an `IN_MEETING` segment (no input needed, never idle); a heartbeat without `inCall` closes it, credits `meeting_seconds` and returns to ACTIVE; a hook-opened meeting (with a meeting id) is untouched; a session closed mid-call (logout, timeout, midnight, maximum length) keeps the meeting time | `attendance-state-machine.ts` `handleHeartbeat` (before the activity rows), `closeLastSegment` (credit) | attendance-state-machine "ADR 048: a call reported by the heartbeat" (5 cases), agent-companion "a call in the browser keeps the session in the call…", attendance-replay; Playwright 36 |
+
+## Verified meeting time (ADR 049 §1)
+
+| Requirement | Implementation | Tests |
+| --- | --- | --- |
+| FR-WT-001, FR-WT-002 a call counts only with someone else in it (room: another avatar; proximity: group of 2+; meeting: LiveKit lists this person and another) | `media/call-evidence.service.ts` `ServerCallEvidence`, wired by `CallEvidenceRegistrar`; `AttendanceService.ingestHeartbeat` processes unverified calls as ordinary heartbeats | call-evidence (10): alone in a room, two in a room, proximity, meetings, forged ids, 30 s cache, 90 s grace then fail closed, forged `callKind` ignored; meeting-time-e2e "the real server check refuses a call nobody else is in" |
+| FR-WT-003 no double counting (input during a call, a second device, two tabs) | `attendance-state-machine.ts` (counters skipped while `IN_MEETING`; `call_device_id`/`call_confirmed_at`); `call-share.ts` + `use-heartbeat.ts` BroadcastChannel | attendance-state-machine "ADR 049" (4); call-share (4) |
+| FR-WT-004 the call ends on leaving, on failed evidence, logout, timeout | state machine (unchanged ADR 048 closing) + evidence | attendance-state-machine ADR 048 + 049 suites |
+| FR-WT-005 meeting intervals for the person and, without titles, the manager in scope | `attendance/meeting-time.service.ts`, `GET /attendance/me/meetings`, `GET /attendance/users/:id/meetings`; My attendance "Meetings" card | meeting-time-e2e: own list with titles, manager without titles, other team 404, peer 403, RLS |
+| FR-WT-006 meeting time in timesheets, reports, exports, live board | `timesheet_days`/`timesheets.meeting_minutes`, report and export columns (appended), `todayMeetingSeconds` | meeting-time-e2e (timesheet, report, CSV, live board); timesheets-e2e export column order |

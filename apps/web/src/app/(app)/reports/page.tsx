@@ -107,11 +107,11 @@ function AttendanceTab({ f, allowed }: { f: ReportFilters; allowed: boolean }) {
   if (r.isPending) return <LoadingState label="Loading attendance report" rows={4} />;
   if (r.isError) return <ErrorState error={r.error} onRetry={() => void r.refetch()} />;
   if (r.data.rows.length === 0) return <EmptyState title="No attendance in this range" />;
-  const cells = (x: typeof r.data.totals) => [x.people, x.daysPresent, x.daysLate, x.lateMinutes, x.daysEarlyLeave, x.daysAbsent, x.daysOnLeave, h(x.netMinutes), h(x.expectedMinutes), x.overtimeMinutes];
+  const cells = (x: typeof r.data.totals) => [x.people, x.daysPresent, x.daysLate, x.lateMinutes, x.daysEarlyLeave, x.daysAbsent, x.daysOnLeave, h(x.netMinutes), h(x.expectedMinutes), x.overtimeMinutes, h(x.meetingMinutes)];
   return (
     <Card><CardContent className="overflow-x-auto p-0">
       <Table data-testid="report-table">
-        <TableHeader><TableRow>{[GROUPS.attendance.find((g) => g[0] === f.groupBy)?.[1] ?? 'Person', 'People', 'Present', 'Late', 'Late (min)', 'Early leaves', 'Absent', 'On leave', 'Net (h)', 'Expected (h)', 'Overtime (min)'].map((c) => <TableHead key={c} className={c === 'Person' || c === 'Team' || c === 'Day' || c === 'Week' || c === 'Month' ? '' : 'text-right'}>{c}</TableHead>)}</TableRow></TableHeader>
+        <TableHeader><TableRow>{[GROUPS.attendance.find((g) => g[0] === f.groupBy)?.[1] ?? 'Person', 'People', 'Present', 'Late', 'Late (min)', 'Early leaves', 'Absent', 'On leave', 'Net (h)', 'Expected (h)', 'Overtime (min)', 'Meetings (h)'].map((c) => <TableHead key={c} className={c === 'Person' || c === 'Team' || c === 'Day' || c === 'Week' || c === 'Month' ? '' : 'text-right'}>{c}</TableHead>)}</TableRow></TableHeader>
         <TableBody>
           {r.data.rows.map((x) => <TableRow key={x.key}><TableCell>{x.label}</TableCell>{cells(x).map((v, i) => <TableCell key={i} className="text-right tabular-nums">{v}</TableCell>)}</TableRow>)}
           <TableRow className="font-medium"><TableCell>Total</TableCell>{cells(r.data.totals).map((v, i) => <TableCell key={i} className="text-right tabular-nums">{v}</TableCell>)}</TableRow>
