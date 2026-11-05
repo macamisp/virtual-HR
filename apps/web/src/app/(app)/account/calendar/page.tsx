@@ -5,6 +5,7 @@ import { Suspense } from 'react';
 import { CalendarCheck, RefreshCw } from 'lucide-react';
 import { CALENDAR_PROVIDER_LABEL } from '@hrvo/shared';
 import { AccessDenied, ErrorState, LoadingState } from '@/components/state-views';
+import { UpcomingMeetings } from '@/components/calendar/upcoming-meetings';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -65,6 +66,7 @@ function CalendarPage() {
       ) : null}
       {connect.isError ? <p role="alert" className="text-sm text-destructive">{connect.error.message}</p> : null}
       {sync.isError ? <p role="alert" className="text-sm text-destructive">{sync.error.message}</p> : null}
+      {list.data?.items.some((c) => c.connected) ? <UpcomingMeetings /> : null}
     </div>
   );
 }

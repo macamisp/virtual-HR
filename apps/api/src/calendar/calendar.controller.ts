@@ -8,8 +8,8 @@ import { Public } from '../common/decorators/public.decorator.ts';
 import { RequirePermissions } from '../common/decorators/permissions.decorator.ts';
 import { RateLimit } from '../common/rate-limit.ts';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.ts';
-import { BusyQuerySchema, CALENDAR_PROVIDERS, Permission } from '../../../../packages/shared/src/index.ts';
-import type { AuthenticatedUser, CalendarProvider } from '../../../../packages/shared/src/index.ts';
+import { BusyQuerySchema, CALENDAR_PROVIDERS, Permission, UpcomingQuerySchema } from '../../../../packages/shared/src/index.ts';
+import type { AuthenticatedUser, CalendarProvider, UpcomingQuery } from '../../../../packages/shared/src/index.ts';
 import { CalendarService } from './calendar.service.ts';
 
 const meta = (req: Request) => ({ ip: req.ip || req.socket.remoteAddress || null, userAgent: req.headers['user-agent'] ?? null });
@@ -19,7 +19,7 @@ function provider(p: string): CalendarProvider {
   return v as CalendarProvider;
 }
 
-/** FR-MEET-006 (ADR 023). */
+/** FR-MEET-006 (ADR 023); upcoming events FR-WT-022 (ADR 049 §6). */
 @Controller('calendar')
 @UseGuards(ThrottlerGuard, JwtAuthGuard, PermissionsGuard)
 export class CalendarController {
@@ -55,6 +55,13 @@ export class CalendarController {
   @RequirePermissions(Permission.MEETINGS_USE)
   busy(@CurrentUser() user: AuthenticatedUser, @Query(new ZodValidationPipe(BusyQuerySchema)) q: { userIds: string[]; from: string; to: string }) {
     return this.calendar.busy(user, q.userIds, new Date(q.from), new Date(q.to));
+  }
+
+  /** FR-WT-022 (ADR 049 §6): the signed-in person's own upcoming events; read on demand, never stored. */
+  @Get('upcoming')
+  @RequirePermissions(Permission.MEETINGS_USE)
+  upcoming(@CurrentUser() user: AuthenticatedUser, @Query(new ZodValidationPipe(UpcomingQuerySchema)) q: UpcomingQuery) {
+    return this.calendar.upcoming(user, q.days);
   }
 
   /** The provider redirects the browser here (no session); the one-time state identifies the person. */

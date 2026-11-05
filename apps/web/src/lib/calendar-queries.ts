@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
-import { BusyListSchema, CalendarConnectionListSchema, CalendarConnectStartSchema } from '@hrvo/shared';
+import { BusyListSchema, CalendarConnectionListSchema, CalendarConnectStartSchema, UpcomingListSchema } from '@hrvo/shared';
 import type { CalendarProvider } from '@hrvo/shared';
 import { apiFetch } from './api';
 import { useAuthStore } from './auth-store';
@@ -24,7 +24,7 @@ export function useConnectCalendar() {
 
 export function useDisconnectCalendar() {
   const qc = useQueryClient();
-  return useMutation({ mutationFn: (p: CalendarProvider) => apiFetch(`/calendar/${p.toLowerCase()}`, { method: 'DELETE', schema: z.object({ ok: z.literal(true) }) }), onSuccess: () => void qc.invalidateQueries({ queryKey: KEY }) });
+  return useMutation({ mutationFn: (p: CalendarProvider) => apiFetch(`/calendar/${p.toLowerCase()}`, { method: 'DELETE', schema: z.object({ ok: z.literal(true) }) }), onSuccess: () => void qc.invalidateQueries({ queryKey: ['calendar'] }) });
 }
 
 export function useSyncCalendar() {
@@ -36,4 +36,14 @@ export function useSyncCalendar() {
 export function useBusy(userIds: string[], from: string | null, to: string | null) {
   const q = userIds.length && from && to ? `userIds=${userIds.join(',')}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` : '';
   return useQuery({ queryKey: ['calendar', 'busy', q], queryFn: () => apiFetch(`/calendar/busy?${q}`, { schema: BusyListSchema }), enabled: useSignedIn() && !!q, staleTime: 60_000 });
+}
+
+/** FR-WT-022 (ADR 049 §6): the person's own upcoming events from their connected calendars. */
+export function useUpcomingCalendar(days = 7, enabled = true) {
+  return useQuery({
+    queryKey: ['calendar', 'upcoming', days],
+    queryFn: () => apiFetch(`/calendar/upcoming?days=${days}`, { schema: UpcomingListSchema }),
+    enabled: useSignedIn() && enabled,
+    staleTime: 60_000,
+  });
 }
