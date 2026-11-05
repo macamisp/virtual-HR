@@ -90,6 +90,7 @@ export function mapSummary(row: Row, actualMinutes: number | null = null): TaskS
     plannedDate: row.planned_date ?? null,
     estimateMinutes: row.estimate_minutes ?? null,
     actualMinutes: actualMinutes ?? row.actual_minutes ?? null,
+    remainingMinutes: row.estimate_minutes == null ? null : Math.max(0, row.estimate_minutes - (actualMinutes ?? row.actual_minutes ?? 0)),
     labels: row.labels ?? [],
     checklistDone: row.checklist_done ?? 0,
     checklistTotal: row.checklist_total ?? 0,

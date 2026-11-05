@@ -190,6 +190,8 @@ export const TaskSummarySchema = z.object({
   plannedDate: workDate.nullable(),
   estimateMinutes: z.number().nullable(),
   actualMinutes: z.number().nullable(),
+  /** ADR 049 §3 (FR-WT-014): max(0, estimate - actual); null without an estimate. */
+  remainingMinutes: z.number().nullable(),
   labels: z.array(z.string()),
   checklistDone: z.number(),
   checklistTotal: z.number(),

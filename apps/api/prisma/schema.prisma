@@ -1143,6 +1143,12 @@ model TimeEntry {
   flagged      Boolean   @default(false)
   flagReason   String?   @map("flag_reason") @db.VarChar(40)
   autoStopped  Boolean   @default(false) @map("auto_stopped")
+  /// ADR 049 §3-4: own title, work type, category, and the names when the time was recorded.
+  title        String?   @db.VarChar(200)
+  workType     String?   @map("work_type") @db.VarChar(10)
+  category     String?   @db.VarChar(20)
+  taskTitle    String?   @map("task_title") @db.VarChar(300)
+  projectName  String?   @map("project_name") @db.VarChar(200)
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
 
