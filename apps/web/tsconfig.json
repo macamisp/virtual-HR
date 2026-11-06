@@ -34,6 +34,8 @@
     ".next-e2e/types/**/*.ts",
     ".next/types/**/*.ts",
     "e2e/**/*.ts",
+    "e2e-capture/**/*.ts",
+    "playwright.landing-shots.config.ts",
     "next-env.d.ts",
     "playwright.config.ts",
     "src/**/*.ts",
