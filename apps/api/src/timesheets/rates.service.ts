@@ -89,7 +89,7 @@ export class RatesService {
   async settings(user: AuthenticatedUser): Promise<TimesheetSettings> {
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const s = await orgSettings(db, user.orgId);
-      return { period: s.period, periodAnchor: s.periodAnchor, manualLimitMinutes: s.manualLimitMinutes, variancePct: s.variancePct, submitDueDays: s.submitDueDays };
+      return { period: s.period, periodAnchor: s.periodAnchor, manualLimitMinutes: s.manualLimitMinutes, variancePct: s.variancePct, submitDueDays: s.submitDueDays, overtimeRequiresApproval: s.overtimeRequiresApproval };
     });
   }
 
@@ -101,8 +101,9 @@ export class RatesService {
     await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       await db.query(
         `UPDATE organizations SET timesheet_period = $2, timesheet_period_anchor = $3::date, manual_time_limit_minutes = $4,
-           timesheet_variance_pct = $5, timesheet_submit_due_days = $6 WHERE id = $1`,
-        [user.orgId, dto.period, dto.periodAnchor, dto.manualLimitMinutes, dto.variancePct, dto.submitDueDays],
+           timesheet_variance_pct = $5, timesheet_submit_due_days = $6,
+           overtime_requires_approval = COALESCE($7, overtime_requires_approval) WHERE id = $1`,
+        [user.orgId, dto.period, dto.periodAnchor, dto.manualLimitMinutes, dto.variancePct, dto.submitDueDays, dto.overtimeRequiresApproval ?? null],
       );
       await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action: 'TIMESHEET_SETTINGS_UPDATED', entityType: 'ORGANIZATION', entityId: user.orgId, before, after: dto });
     });

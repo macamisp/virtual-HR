@@ -4,7 +4,7 @@
  * event content are never logged.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import type { CalendarProvider } from '../../../../packages/shared/src/calendar/types.ts';
+import type { CalendarProvider, UpcomingResponse } from '../../../../packages/shared/src/calendar/types.ts';
 
 export interface Tokens { accessToken: string; refreshToken: string | null; expiresAt: Date; accountEmail: string | null }
 export interface CalendarEvent {
@@ -20,6 +20,19 @@ export interface CalendarEvent {
 }
 export type ExternalResponse = 'ACCEPTED' | 'DECLINED' | 'NEEDS_ACTION';
 export interface Busy { start: Date; end: Date }
+/** One event of the person's own calendar, read on demand for FR-WT-022 (never stored or logged). */
+export interface UpcomingEvent {
+  id: string;
+  title: string | null;
+  start: Date;
+  end: Date;
+  allDay: boolean;
+  /** iCal UID (Google iCalUID; Graph iCalUId or our transactionId), to recognise our meetings. */
+  uids: string[];
+  response: UpcomingResponse | null;
+  /** Candidate links in order of preference; the service keeps the first https one. */
+  links: Array<string | null | undefined>;
+}
 
 export interface ProviderAdapter {
   readonly provider: CalendarProvider;
@@ -33,12 +46,67 @@ export interface ProviderAdapter {
   /** The person's response as seen in their calendar; null = the event is gone. */
   response(accessToken: string, externalId: string, selfEmail: string): Promise<ExternalResponse | null>;
   busy(accessToken: string, from: Date, to: Date): Promise<Busy[]>;
+  /** The person's events between from and to (at most 50, ordered by start, no deleted ones). */
+  upcoming(accessToken: string, from: Date, to: Date): Promise<UpcomingEvent[]>;
   /** Best effort: tell the provider we no longer hold the grant. */
   revoke(token: string): Promise<void>;
 }
 
+/**
+ * `stage` says whether the token endpoint or the calendar API refused; `reason` is the provider's
+ * machine-readable error code only (e.g. `invalid_grant`, `rateLimitExceeded`), never its body.
+ */
 export class ProviderError extends Error {
-  constructor(readonly status: number, message: string) { super(message); this.name = 'ProviderError'; }
+  constructor(readonly status: number, message: string, readonly stage: 'token' | 'api' = 'api', readonly reason: string | null = null) {
+    super(message);
+    this.name = 'ProviderError';
+  }
+}
+
+const RATE_LIMIT_REASONS = new Set(['ratelimitexceeded', 'userratelimitexceeded', 'quotaexceeded', 'rate_limit_exceeded']);
+
+/**
+ * D6 (ADR 049 §6): only a refused refresh (`invalid_grant`) or a 401 from the API after a fresh
+ * token means the person must connect again. 429 and 403 rate-limit reasons are temporary.
+ */
+export type ProviderFailure = 'RECONNECT' | 'RATE_LIMITED' | 'TEMPORARY';
+export function classifyFailure(err: unknown): ProviderFailure {
+  if (!(err instanceof ProviderError)) return 'TEMPORARY';
+  if (err.stage === 'token') return err.reason === 'invalid_grant' ? 'RECONNECT' : 'TEMPORARY';
+  if (err.status === 401) return 'RECONNECT';
+  if (err.status === 429) return 'RATE_LIMITED';
+  if (err.status === 403 && err.reason && RATE_LIMIT_REASONS.has(err.reason.toLowerCase())) return 'RATE_LIMITED';
+  return 'TEMPORARY';
+}
+export const FAILURE_MESSAGE: Record<ProviderFailure, string> = {
+  RECONNECT: 'Access was revoked or expired. Connect the calendar again.',
+  RATE_LIMITED: 'Calendar provider is rate limiting; will retry.',
+  TEMPORARY: 'Sync failed; it will be retried.',
+};
+
+/** Keeps only an error code from a provider error body (Google, Graph or OAuth shape). */
+function errorReason(body: unknown): string | null {
+  const code = (v: unknown) => (typeof v === 'string' && /^[A-Za-z_]{1,64}$/.test(v) ? v : null);
+  if (!body || typeof body !== 'object') return null;
+  const e = (body as { error?: unknown }).error;
+  if (typeof e === 'string') return code(e);
+  if (!e || typeof e !== 'object') return null;
+  const o = e as { errors?: Array<{ reason?: unknown }>; details?: Array<{ reason?: unknown }>; code?: unknown };
+  for (const x of [...(Array.isArray(o.errors) ? o.errors : []), ...(Array.isArray(o.details) ? o.details : [])]) {
+    const r = code(x?.reason);
+    if (r) return r;
+  }
+  return code(o.code);
+}
+
+/** Only https links leave the API (no javascript:, data: or plain http). */
+export function httpsOnly(u: string | null | undefined): string | null {
+  if (typeof u !== 'string' || u.length > 2048) return null;
+  try {
+    return new URL(u).protocol === 'https:' ? u : null;
+  } catch {
+    return null;
+  }
 }
 
 export function pkcePair(): { verifier: string; challenge: string } {
@@ -55,10 +123,12 @@ function base(env: Env, name: string, fallback: string): string {
   return (v || fallback).replace(/\/$/, '');
 }
 
-async function json<T>(res: Response, what: string): Promise<T> {
+async function json<T>(res: Response, what: string, stage: 'token' | 'api' = 'api'): Promise<T> {
   if (!res.ok) {
-    // Only the status reaches logs and the UI; provider bodies can echo tokens or event data.
-    throw new ProviderError(res.status, `${what} failed (${res.status})`);
+    // Only the status reaches logs and the UI; provider bodies can echo tokens or event data, so
+    // nothing but an error code is kept from them.
+    const reason = [400, 401, 403, 429].includes(res.status) ? errorReason(await res.json().catch(() => null)) : null;
+    throw new ProviderError(res.status, `${what} failed (${res.status})`, stage, reason);
   }
   return (res.status === 204 ? {} : await res.json()) as T;
 }
@@ -88,6 +158,13 @@ const toTokens = (t: TokenResponse, previousRefresh: string | null = null): Toke
 
 // ------------------------------------------------------------------ Google
 
+interface GoogleEvent {
+  id?: unknown; status?: string; eventType?: string; summary?: unknown; iCalUID?: unknown; htmlLink?: string; hangoutLink?: string;
+  start?: { date?: string; dateTime?: string }; end?: { date?: string; dateTime?: string };
+  attendees?: Array<{ self?: boolean; responseStatus?: string }>;
+  conferenceData?: { entryPoints?: Array<{ entryPointType?: string; uri?: string }> };
+}
+
 export class GoogleAdapter implements ProviderAdapter {
   readonly provider = 'GOOGLE' as const;
   private readonly auth: string;
@@ -116,13 +193,13 @@ export class GoogleAdapter implements ProviderAdapter {
     return toTokens(await json<TokenResponse>(await fetch(this.token, form({
       grant_type: 'authorization_code', code, code_verifier: verifier, redirect_uri: this.redirectUri,
       client_id: this.env.GOOGLE_OAUTH_CLIENT_ID!, client_secret: this.env.GOOGLE_OAUTH_CLIENT_SECRET!,
-    })), 'Google token exchange'));
+    })), 'Google token exchange', 'token'));
   }
 
   async refresh(refreshToken: string): Promise<Tokens> {
     return toTokens(await json<TokenResponse>(await fetch(this.token, form({
       grant_type: 'refresh_token', refresh_token: refreshToken, client_id: this.env.GOOGLE_OAUTH_CLIENT_ID!, client_secret: this.env.GOOGLE_OAUTH_CLIENT_SECRET!,
-    })), 'Google token refresh'), refreshToken);
+    })), 'Google token refresh', 'token'), refreshToken);
   }
 
   /** events.import keeps our iCalUID, with the host as organizer: the person can RSVP in Google, and no e-mails are sent. */
@@ -165,12 +242,40 @@ export class GoogleAdapter implements ProviderAdapter {
     return (r.calendars?.primary?.busy ?? []).map((b) => ({ start: new Date(b.start), end: new Date(b.end) }));
   }
 
+  async upcoming(token: string, from: Date, to: Date): Promise<UpcomingEvent[]> {
+    const q = new URLSearchParams({ timeMin: from.toISOString(), timeMax: to.toISOString(), singleEvents: 'true', orderBy: 'startTime', maxResults: '50', showDeleted: 'false' });
+    const r = await json<{ items?: GoogleEvent[] }>(await fetch(`${this.api}/calendars/primary/events?${q.toString()}`, authed(token)), 'Google events list');
+    const out: UpcomingEvent[] = [];
+    for (const e of r.items ?? []) {
+      if (typeof e.id !== 'string' || e.status === 'cancelled' || e.eventType === 'workingLocation') continue;
+      const allDay = !e.start?.dateTime && !!e.start?.date;
+      const start = new Date(allDay ? `${e.start?.date}T00:00:00Z` : e.start?.dateTime ?? '');
+      const end = new Date(allDay ? `${e.end?.date ?? e.start?.date}T00:00:00Z` : e.end?.dateTime ?? '');
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) continue;
+      const self = e.attendees?.find((a) => a.self)?.responseStatus;
+      const video = e.conferenceData?.entryPoints?.find((p) => p.entryPointType === 'video')?.uri;
+      out.push({
+        id: e.id, title: typeof e.summary === 'string' ? e.summary : null, start, end, allDay,
+        uids: typeof e.iCalUID === 'string' ? [e.iCalUID] : [],
+        response: self === 'accepted' ? 'ACCEPTED' : self === 'declined' ? 'DECLINED' : self === 'tentative' ? 'TENTATIVE' : self === 'needsAction' ? 'NEEDS_ACTION' : null,
+        links: [e.hangoutLink, video, ...(e.conferenceData?.entryPoints ?? []).map((p) => p.uri), e.htmlLink],
+      });
+    }
+    return out;
+  }
+
   async revoke(token: string): Promise<void> {
     await fetch(this.revokeUrl, form({ token })).catch(() => undefined);
   }
 }
 
 // ------------------------------------------------------------------ Microsoft Graph
+
+interface GraphEvent {
+  id?: unknown; subject?: unknown; isAllDay?: boolean; isCancelled?: boolean; iCalUId?: unknown; transactionId?: unknown; webLink?: string;
+  start?: { dateTime?: string }; end?: { dateTime?: string };
+  responseStatus?: { response?: string }; onlineMeeting?: { joinUrl?: string } | null;
+}
 
 export class MicrosoftAdapter implements ProviderAdapter {
   readonly provider = 'MICROSOFT' as const;
@@ -193,7 +298,7 @@ export class MicrosoftAdapter implements ProviderAdapter {
 
   private tokenRequest(body: Record<string, string>): Promise<TokenResponse> {
     return fetch(`${this.login}/token`, form({ ...body, client_id: this.env.MICROSOFT_OAUTH_CLIENT_ID!, client_secret: this.env.MICROSOFT_OAUTH_CLIENT_SECRET!, scope: 'openid email offline_access Calendars.ReadWrite' }))
-      .then((r) => json<TokenResponse>(r, 'Microsoft token request'));
+      .then((r) => json<TokenResponse>(r, 'Microsoft token request', 'token'));
   }
 
   async exchangeCode(code: string, verifier: string): Promise<Tokens> {
@@ -242,6 +347,31 @@ export class MicrosoftAdapter implements ProviderAdapter {
       await fetch(`${this.graph}/me/calendarView?${q.toString()}`, authed(token, { headers: { Prefer: 'outlook.timezone="UTC"' } })), 'Microsoft calendar view');
     return (r.value ?? []).filter((v) => !v.isCancelled && v.showAs !== 'free')
       .map((v) => ({ start: new Date(`${v.start.dateTime.replace(/Z$/, '')}Z`), end: new Date(`${v.end.dateTime.replace(/Z$/, '')}Z`) }));
+  }
+
+  async upcoming(token: string, from: Date, to: Date): Promise<UpcomingEvent[]> {
+    const q = new URLSearchParams({
+      startDateTime: from.toISOString(), endDateTime: to.toISOString(), $top: '50', $orderby: 'start/dateTime',
+      $select: 'id,subject,start,end,isAllDay,isCancelled,iCalUId,transactionId,responseStatus,onlineMeeting,webLink',
+    });
+    const r = await json<{ value?: GraphEvent[] }>(
+      await fetch(`${this.graph}/me/calendarView?${q.toString()}`, authed(token, { headers: { Prefer: 'outlook.timezone="UTC"' } })), 'Microsoft calendar view');
+    const utc = (d: string | undefined) => new Date(`${(d ?? '').replace(/Z$/, '')}Z`);
+    const out: UpcomingEvent[] = [];
+    for (const e of r.value ?? []) {
+      if (typeof e.id !== 'string' || e.isCancelled) continue;
+      const start = utc(e.start?.dateTime);
+      const end = utc(e.end?.dateTime);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) continue;
+      const a = e.responseStatus?.response;
+      out.push({
+        id: e.id, title: typeof e.subject === 'string' ? e.subject : null, start, end, allDay: e.isAllDay === true,
+        uids: [e.iCalUId, e.transactionId].filter((u): u is string => typeof u === 'string'),
+        response: a === 'accepted' ? 'ACCEPTED' : a === 'declined' ? 'DECLINED' : a === 'tentativelyAccepted' ? 'TENTATIVE' : a === 'notResponded' ? 'NEEDS_ACTION' : null,
+        links: [e.onlineMeeting?.joinUrl, e.webLink],
+      });
+    }
+    return out;
   }
 
   async revoke(): Promise<void> {

@@ -13,10 +13,10 @@ import { PrismaService } from '../common/prisma.service.ts';
 import { appendAuditEntry } from '../common/audit-chain.ts';
 import { KEY_PROVIDER, generateDek, openSmall, sealSmall } from '../documents/crypto.ts';
 import type { KeyProvider } from '../documents/crypto.ts';
-import { ProviderError, adaptersFromEnv, pkcePair } from './providers.ts';
-import type { ProviderAdapter, Tokens } from './providers.ts';
+import { FAILURE_MESSAGE, ProviderError, adaptersFromEnv, classifyFailure, httpsOnly, pkcePair } from './providers.ts';
+import type { ProviderAdapter, Tokens, UpcomingEvent } from './providers.ts';
 import { CALENDAR_PROVIDERS } from '../../../../packages/shared/src/calendar/types.ts';
-import type { BusyList, CalendarConnection, CalendarProvider } from '../../../../packages/shared/src/calendar/types.ts';
+import type { BusyList, CalendarConnection, CalendarProvider, UpcomingItem, UpcomingList } from '../../../../packages/shared/src/calendar/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 
 export interface RequestMeta { ip: string | null; userAgent: string | null }
@@ -28,6 +28,9 @@ interface ConnRow {
 interface SealedTokens { accessToken: string; refreshToken: string | null }
 
 const HORIZON_DAYS = 60;
+const UPCOMING_TTL_MS = 60_000;
+const UPCOMING_SOURCE: Record<CalendarProvider, string> = { GOOGLE: 'Google Calendar (primary)', MICROSOFT: 'Outlook calendar' };
+const HRVO_UID = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@hrvo$/i;
 const BUSY_DAYS = 14;
 const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
 const webUrl = () => (process.env.APP_WEB_URL || 'http://localhost:3000').replace(/\/$/, '');
@@ -35,6 +38,8 @@ const webUrl = () => (process.env.APP_WEB_URL || 'http://localhost:3000').replac
 @Injectable()
 export class CalendarService {
   private readonly adapters: Record<CalendarProvider, ProviderAdapter>;
+  /** FR-WT-022: per person, 60 s, in memory only (events are never stored). */
+  private readonly upcomingCache = new Map<string, { expires: number; value: Promise<UpcomingList> }>();
 
   constructor(private readonly prisma: PrismaService, @Inject(KEY_PROVIDER) private readonly keys: KeyProvider) {
     this.adapters = adaptersFromEnv();
@@ -127,6 +132,7 @@ export class CalendarService {
       await appendAuditEntry(db, { orgId: s.org_id, actorId: s.user_id, action: 'CALENDAR_CONNECTED', entityType: 'CALENDAR_CONNECTION', entityId: id,
         after: { provider: s.provider, accountEmail: tokens.accountEmail }, ip: meta.ip ?? undefined, userAgent: meta.userAgent ?? undefined });
     });
+    this.clearUpcomingCache(s.org_id, s.user_id);
     return back(`connected=${s.provider}`);
   }
 
@@ -134,6 +140,7 @@ export class CalendarService {
     const c = await this.prisma.runWithTenantContext(user.orgId, async (db) =>
       (await db.query<ConnRow>(`SELECT * FROM calendar_connections WHERE user_id = $1 AND provider = $2`, [user.id, provider])).rows[0]);
     if (!c) throw new NotFoundException('Not connected');
+    this.clearUpcomingCache(user.orgId, user.id);
     // Best effort: take our upcoming meetings out of their calendar and release the grant.
     try {
       const token = await this.accessToken(c);
@@ -155,17 +162,46 @@ export class CalendarService {
 
   // ------------------------------------------------------------------ sync
 
-  /** A valid access token, refreshed (and re-sealed) when it is about to expire. */
-  private async accessToken(c: ConnRow): Promise<string> {
+  /** A valid access token, refreshed (and re-sealed) when it is about to expire or `force`d. */
+  private async accessToken(c: ConnRow, force = false): Promise<string> {
     const t = await this.open(c);
-    if (c.expires_at.getTime() > Date.now() + 60_000) return t.accessToken;
-    if (!t.refreshToken) throw new ProviderError(401, 'No refresh token');
+    if (!force && !this.expiring(c)) return t.accessToken;
+    if (!t.refreshToken) throw new ProviderError(401, 'No refresh token', 'token', 'invalid_grant');
     const fresh = await this.adapters[c.provider].refresh(t.refreshToken);
     const sealed = await this.seal(c.org_id, c.id, { accessToken: fresh.accessToken, refreshToken: fresh.refreshToken });
     await this.prisma.runWithTenantContext(c.org_id, (db) => db.query(
       `UPDATE calendar_connections SET tokens_enc = $2, key_wrapped = $3, key_id = $4, expires_at = $5, updated_at = now() WHERE id = $1`,
       [c.id, sealed.tokens_enc, sealed.key_wrapped, sealed.key_id, fresh.expiresAt]));
     return fresh.accessToken;
+  }
+
+  private expiring(c: ConnRow): boolean {
+    return c.expires_at.getTime() <= Date.now() + 60_000;
+  }
+
+  /**
+   * Runs `fn` with a valid token. A 401 with a token we did not just refresh earns one refresh and
+   * retry, so a 401 that escapes always came after a successful refresh (D6, ADR 049 §6).
+   */
+  private async withToken<T>(c: ConnRow, fn: (token: string) => Promise<T>): Promise<T> {
+    const refreshed = this.expiring(c);
+    const token = await this.accessToken(c);
+    try {
+      return await fn(token);
+    } catch (err) {
+      if (refreshed || !(err instanceof ProviderError) || err.stage !== 'api' || err.status !== 401) throw err;
+      return await fn(await this.accessToken(c, true));
+    }
+  }
+
+  /** D6: only "connect again" failures mark the connection ERROR; the rest keep its status. */
+  private async recordFailure(c: ConnRow, err: unknown, temporary: string = FAILURE_MESSAGE.TEMPORARY): Promise<{ status: 'ACTIVE' | 'ERROR'; lastError: string }> {
+    const kind = classifyFailure(err);
+    const status = kind === 'RECONNECT' ? 'ERROR' : c.status;
+    const lastError = kind === 'TEMPORARY' ? temporary : FAILURE_MESSAGE[kind];
+    await this.prisma.runWithTenantContext(c.org_id, (db) => db.query(
+      `UPDATE calendar_connections SET status = $2, last_error = $3, updated_at = now() WHERE id = $1`, [c.id, status, lastError]));
+    return { status, lastError };
   }
 
   async syncUser(user: AuthenticatedUser): Promise<{ items: CalendarConnection[] }> {
@@ -189,20 +225,16 @@ export class CalendarService {
     const a = this.adapters[c.provider];
     if (!a.configured) return;
     try {
-      const token = await this.accessToken(c);
-      await this.prisma.runWithTenantContext(c.org_id, async (db) => {
+      await this.withToken(c, (token) => this.prisma.runWithTenantContext(c.org_id, async (db) => {
         const me = (await db.query<{ email: string }>(`SELECT email FROM users WHERE id = $1`, [c.user_id])).rows[0]!;
         const selfEmail = c.account_email ?? me.email;
         await this.pushMeetings(db, c, a, token, selfEmail);
         await this.pullResponses(db, c, a, token, selfEmail);
         await this.pullBusy(db, c, a, token);
         await db.query(`UPDATE calendar_connections SET last_sync_at = now(), status = 'ACTIVE', last_error = NULL WHERE id = $1`, [c.id]);
-      });
+      }));
     } catch (err) {
-      const reconnect = err instanceof ProviderError && (err.status === 400 || err.status === 401 || err.status === 403);
-      const message = reconnect ? 'Access was revoked or expired. Connect the calendar again.' : 'Sync failed; it will be retried.';
-      await this.prisma.runWithTenantContext(c.org_id, (db) => db.query(
-        `UPDATE calendar_connections SET status = $2, last_error = $3, updated_at = now() WHERE id = $1`, [c.id, reconnect ? 'ERROR' : c.status, message]));
+      await this.recordFailure(c, err);
     }
   }
 
@@ -264,6 +296,72 @@ export class CalendarService {
     for (const b of blocks) {
       await db.query(`INSERT INTO calendar_busy (org_id, user_id, provider, start_at, end_at) VALUES ($1, $2, $3, $4, $5)`, [c.org_id, c.user_id, c.provider, b.start, b.end]);
     }
+  }
+
+  // ------------------------------------------------------------------ upcoming (FR-WT-022)
+
+  clearUpcomingCache(orgId?: string, userId?: string): void {
+    if (!orgId) { this.upcomingCache.clear(); return; }
+    const prefix = `${orgId}:${userId ?? ''}`;
+    for (const k of [...this.upcomingCache.keys()]) if (k.startsWith(prefix)) this.upcomingCache.delete(k);
+  }
+
+  /**
+   * The person's own upcoming events, read from their connected calendars on demand (ADR 049 §6).
+   * Nothing is stored; a provider outage only marks that provider in the answer.
+   */
+  async upcoming(user: AuthenticatedUser, days: number): Promise<UpcomingList> {
+    const key = `${user.orgId}:${user.id}:${days}`;
+    const now = Date.now();
+    const hit = this.upcomingCache.get(key);
+    if (hit && hit.expires > now) return await hit.value;
+    if (this.upcomingCache.size > 5000) for (const [k, v] of this.upcomingCache) if (v.expires <= now) this.upcomingCache.delete(k);
+    const value = this.loadUpcoming(user, days);
+    const entry = { expires: now + UPCOMING_TTL_MS, value };
+    this.upcomingCache.set(key, entry);
+    value.catch(() => { if (this.upcomingCache.get(key) === entry) this.upcomingCache.delete(key); });
+    return await value;
+  }
+
+  private async loadUpcoming(user: AuthenticatedUser, days: number): Promise<UpcomingList> {
+    const rows = await this.prisma.runWithTenantContext(user.orgId, async (db) =>
+      (await db.query<ConnRow>(`SELECT * FROM calendar_connections WHERE user_id = $1 ORDER BY provider`, [user.id])).rows);
+    const from = new Date();
+    const to = new Date(from.getTime() + days * 86_400_000);
+    const results = await Promise.all(rows.map(async (c) => {
+      const a = this.adapters[c.provider];
+      const status = { provider: c.provider, status: c.status, lastError: c.last_error };
+      if (c.status !== 'ACTIVE' || !a.configured) return { status, events: [] as UpcomingEvent[] };
+      try {
+        return { status, events: await this.withToken(c, (token) => a.upcoming(token, from, to)) };
+      } catch (err) {
+        return { status: { provider: c.provider, ...(await this.recordFailure(c, err, 'Calendar provider is unavailable; will retry.')) }, events: [] as UpcomingEvent[] };
+      }
+    }));
+    const ours = (e: UpcomingEvent) => e.uids.map((u) => HRVO_UID.exec(u)?.[1]?.toLowerCase()).find((u): u is string => !!u) ?? null;
+    const candidates = [...new Set(results.flatMap((r) => r.events.map(ours)).filter((u): u is string => !!u))];
+    const known = new Set(candidates.length === 0 ? [] : await this.prisma.runWithTenantContext(user.orgId, async (db) =>
+      (await db.query<{ id: string }>(`SELECT id FROM meetings WHERE id = ANY($1::uuid[])`, [candidates])).rows.map((r) => r.id)));
+    const seen = new Set<string>();
+    const items: UpcomingItem[] = [];
+    for (const r of results) {
+      for (const e of r.events) {
+        const uid = ours(e);
+        const hrvoMeetingId = uid && known.has(uid) ? uid : null;
+        const dedupe = hrvoMeetingId ? `hrvo:${hrvoMeetingId}` : e.uids[0] ? `uid:${e.uids[0]}|${e.start.toISOString()}` : `${r.status.provider}:${e.id}`;
+        if (seen.has(dedupe)) continue;
+        seen.add(dedupe);
+        items.push({
+          id: e.id, provider: r.status.provider, title: (e.title ?? '').trim().slice(0, 300) || '(No title)',
+          start: e.start.toISOString(), end: e.end.toISOString(), allDay: e.allDay, source: UPCOMING_SOURCE[r.status.provider],
+          hrvoMeetingId, response: e.response,
+          openUrl: hrvoMeetingId ? `${webUrl()}/meetings/${hrvoMeetingId}` : e.links.map(httpsOnly).find((u): u is string => !!u) ?? null,
+        });
+      }
+    }
+    items.sort((x, y) => x.start.localeCompare(y.start) || x.title.localeCompare(y.title));
+    const order = (p: CalendarProvider) => CALENDAR_PROVIDERS.indexOf(p);
+    return { connected: rows.length > 0, providers: results.map((r) => r.status).sort((x, y) => order(x.provider) - order(y.provider)), items };
   }
 
   /** Busy blocks of colleagues for the scheduling form: times only, never what they are. */

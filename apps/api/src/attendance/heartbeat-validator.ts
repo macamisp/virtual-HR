@@ -61,6 +61,11 @@ export class HeartbeatValidator {
     }
 
     // 2. Interval bounds validation
+    // ADR 049: the meeting a call belongs to is an id, never anything else.
+    if (hb.meetingId !== undefined && hb.meetingId !== null && (typeof hb.meetingId !== 'string' || hb.meetingId.length > 64)) {
+      return { valid: false, reason: 'Invalid meetingId' };
+    }
+
     if (hb.activeSeconds < 0 || hb.idleSeconds < 0) {
       return { valid: false, reason: 'Invalid counter values: cannot be negative' };
     }

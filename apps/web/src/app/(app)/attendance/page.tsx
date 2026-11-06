@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Coffee, Play } from 'lucide-react';
 import { FLAG_META } from '@hrvo/shared';
-import type { MyDay, MyToday } from '@hrvo/shared';
+import type { MeetingInterval, MyDay, MyToday } from '@hrvo/shared';
 import { FlagCard } from '@/components/flags/flag-card';
 import { useFlags } from '@/lib/flag-queries';
 import { Button } from '@/components/ui/button';
@@ -15,7 +15,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { FormField } from '@/components/form-field';
 import { EmptyState, ErrorState, LoadingState } from '@/components/state-views';
-import { useBreak, useDays, useMyCorrections, useRequestCorrection, useToday } from '@/lib/queries';
+import { useBreak, useDays, useMyCorrections, useMyMeetings, useRequestCorrection, useToday } from '@/lib/queries';
 import { addDays, formatClock, formatClockSeconds, formatDateTime, formatDuration, formatWorkDate, startOfWeek, toWorkDate } from '@/lib/format';
 
 const STATE_LABEL: Record<MyToday['state'], string> = {
@@ -121,8 +121,7 @@ function TodayCard() {
   );
 }
 
-function WeekList() {
-  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
+function WeekList({ weekStart, setWeekStart }: { weekStart: Date; setWeekStart: (f: (w: Date) => Date) => void }) {
   const from = toWorkDate(weekStart);
   const to = toWorkDate(addDays(weekStart, 6));
   const days = useDays(from, to);
@@ -348,13 +347,81 @@ function MyFlags() {
   );
 }
 
+const KIND_LABEL: Record<NonNullable<MeetingInterval['kind']>, string> = {
+  ROOM: 'Office room call',
+  PROXIMITY: 'Conversation nearby',
+  MEETING: 'Meeting',
+};
+
+/**
+ * ADR 049 (FR-WT-005): each interval counted as meeting time, as the server recorded it. Only calls
+ * with at least one other person count, so time alone in a room never appears here.
+ */
+function MeetingList({ weekStart }: { weekStart: Date }) {
+  const from = toWorkDate(weekStart);
+  const to = toWorkDate(addDays(weekStart, 6));
+  const meetings = useMyMeetings(from, to);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Meetings</CardTitle>
+        <CardDescription>
+          Calls with at least one other person count as working time without keyboard or mouse input. Being alone in a room does not.
+          Scheduled calendar events count only when you actually join the call.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {meetings.isPending ? <LoadingState label="Loading meetings" rows={2} /> : null}
+        {meetings.isError ? <ErrorState error={meetings.error} onRetry={() => void meetings.refetch()} /> : null}
+        {meetings.data && meetings.data.intervals.length === 0 ? (
+          <EmptyState title="No meeting time this week" description="Calls you join with other people appear here with their start and end times." />
+        ) : null}
+        {meetings.data && meetings.data.intervals.length > 0 ? (
+          <div className="overflow-x-auto">
+            <Table data-testid="meetings-table">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Day</TableHead>
+                  <TableHead>Call</TableHead>
+                  <TableHead>Start</TableHead>
+                  <TableHead>End</TableHead>
+                  <TableHead className="text-right">Duration</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {meetings.data.intervals.map((m) => (
+                  <TableRow key={m.id}>
+                    <TableCell className="font-medium">{formatWorkDate(m.workDate)}</TableCell>
+                    <TableCell>{m.title ?? (m.kind ? KIND_LABEL[m.kind] : 'Meeting')}{m.title && m.kind ? <span className="ml-2 text-xs text-muted-foreground">{KIND_LABEL[m.kind]}</span> : null}</TableCell>
+                    <TableCell>{formatClock(m.startedAt)}</TableCell>
+                    <TableCell>{m.endedAt ? formatClock(m.endedAt) : <Badge variant="success">In progress</Badge>}</TableCell>
+                    <TableCell className="text-right tabular-nums">{formatDuration(m.durationSeconds)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+              <TableFooter>
+                <TableRow>
+                  <TableCell colSpan={4}>Total</TableCell>
+                  <TableCell className="text-right tabular-nums" data-testid="meetings-total">{formatDuration(meetings.data.totalSeconds)}</TableCell>
+                </TableRow>
+              </TableFooter>
+            </Table>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function MyAttendancePage() {
+  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold">My attendance</h1>
       <TodayCard />
       <MyFlags />
-      <WeekList />
+      <WeekList weekStart={weekStart} setWeekStart={setWeekStart} />
+      <MeetingList weekStart={weekStart} />
       <div className="grid gap-6 lg:grid-cols-2">
         <CorrectionForm />
         <MyCorrections />

@@ -271,3 +271,61 @@ describe('Timers across midnight (FR-TS-003)', () => {
     assert.equal(splitAtMidnight(new Date('2026-10-14T04:00:00Z'), new Date('2026-10-14T05:00:00Z'), 'Asia/Colombo').length, 1);
   });
 });
+
+/**
+ * ADR 049 §2 (FR-WT-011): when the organisation requires overtime approval, only approved overtime
+ * minutes get the multiplier; calculated overtime beyond the approval is paid at the base rate.
+ * Without the setting (no approvals passed), payroll is exactly ADR 008.
+ */
+describe('Payable with overtime approval (ADR 049)', () => {
+  const fiveNines = () => [e('2026-10-12', 540), e('2026-10-13', 540), e('2026-10-14', 540), e('2026-10-15', 540), e('2026-10-16', 540)];
+
+  it('no approvals passed: unchanged ADR 008 result', () => {
+    const r = computePayable({ ...base, ...WEEK, entries: fiveNines() });
+    assert.equal(r.amount, '1211.25');
+    assert.equal(r.overtimeMinutes, 300);
+    assert.equal(r.unapprovedOvertimeMinutes, 0);
+  });
+
+  it('nothing approved: every minute at the base rate, overtime shown as unapproved', () => {
+    const r = computePayable({ ...base, ...WEEK, entries: fiveNines(), approvedOvertime: new Map() });
+    assert.equal(r.amount, '1147.50', '45 h x 25.50');
+    assert.equal(r.overtimeMinutes, 0);
+    assert.equal(r.unapprovedOvertimeMinutes, 300);
+    assert.equal(r.regularMinutes + r.overtimeMinutes + r.unapprovedOvertimeMinutes, 2700, 'no minute lost');
+  });
+
+  it('2 h approved of 5 h worked: 2 h at the multiplier, 3 h at the base rate', () => {
+    const r = computePayable({ ...base, ...WEEK, entries: fiveNines(), approvedOvertime: new Map([['2026-10-16', 120]]) });
+    // 40 h x 25.50 = 1020.00; 3 h x 25.50 = 76.50; 2 h x 25.50 x 1.5 = 76.50
+    assert.equal(r.amount, '1173.00');
+    assert.equal(r.overtimeMinutes, 120);
+    assert.equal(r.unapprovedOvertimeMinutes, 180);
+  });
+
+  it('approval above the calculated overtime never pays more than was worked', () => {
+    const r = computePayable({ ...base, ...WEEK, entries: fiveNines(), approvedOvertime: new Map([['2026-10-12', 600]]) });
+    assert.equal(r.amount, '1211.25');
+    assert.equal(r.overtimeMinutes, 300);
+  });
+
+  it('an approval in another ISO week does not count for this week', () => {
+    const r = computePayable({ ...base, ...WEEK, entries: fiveNines(), approvedOvertime: new Map([['2026-10-19', 300]]) });
+    assert.equal(r.amount, '1147.50');
+  });
+
+  it('DAILY: the premium beyond 8 h/day only for approved minutes of that day', () => {
+    const entries = () => [e('2026-10-12', 480), e('2026-10-13', 600)];
+    assert.equal(computePayable({ ...base, rateType: 'DAILY', rate: '200.00', ...WEEK, entries: entries() }).amount, '475.00', 'ADR 008: 400 + 2 h x 25 x 1.5');
+    const none = computePayable({ ...base, rateType: 'DAILY', rate: '200.00', ...WEEK, entries: entries(), approvedOvertime: new Map() });
+    assert.equal(none.amount, '400.00');
+    assert.equal(none.unapprovedOvertimeMinutes, 120);
+    assert.equal(computePayable({ ...base, rateType: 'DAILY', rate: '200.00', ...WEEK, entries: entries(), approvedOvertime: new Map([['2026-10-13', 60]]) }).amount, '437.50');
+  });
+
+  it('FIXED: no overtime either way', () => {
+    const r = computePayable({ ...base, rateType: 'FIXED', rate: '900.00', ...WEEK, entries: fiveNines(), approvedOvertime: new Map() });
+    assert.equal(r.amount, '900.00');
+    assert.equal(r.unapprovedOvertimeMinutes, 0);
+  });
+});

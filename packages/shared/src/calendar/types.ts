@@ -31,3 +31,35 @@ export const BusyQuerySchema = z.object({
 /** Busy blocks only (never titles or details of other events). */
 export const BusyListSchema = z.object({ items: z.array(z.object({ userId: z.string(), start: z.string(), end: z.string() })) });
 export type BusyList = z.infer<typeof BusyListSchema>;
+
+/**
+ * Upcoming events from the person's own connected calendars (FR-WT-022; ADR 049 §6). Read on
+ * demand, never stored; an event never counts as worked time (only joining the call does).
+ */
+export const UpcomingQuerySchema = z.object({ days: z.coerce.number().int().min(1).max(14).default(7) });
+export type UpcomingQuery = z.infer<typeof UpcomingQuerySchema>;
+export const UPCOMING_RESPONSES = ['ACCEPTED', 'DECLINED', 'TENTATIVE', 'NEEDS_ACTION'] as const;
+export type UpcomingResponse = (typeof UPCOMING_RESPONSES)[number];
+export const UpcomingItemSchema = z.object({
+  id: z.string(),
+  provider: z.enum(CALENDAR_PROVIDERS),
+  title: z.string(),
+  start: z.string(),
+  end: z.string(),
+  allDay: z.boolean(),
+  source: z.string(),
+  /** Set when the event is one of our meetings (iCal UID `<uuid>@hrvo`) in this organisation. */
+  hrvoMeetingId: z.string().uuid().nullable(),
+  /** The person's own answer, where the provider reports it. */
+  response: z.enum(UPCOMING_RESPONSES).nullable(),
+  /** Our meeting page, else the provider's join or event link; external links are https only. */
+  openUrl: z.string().nullable(),
+});
+export type UpcomingItem = z.infer<typeof UpcomingItemSchema>;
+export const UpcomingProviderStatusSchema = z.object({ provider: z.enum(CALENDAR_PROVIDERS), status: z.enum(['ACTIVE', 'ERROR']), lastError: z.string().nullable() });
+export const UpcomingListSchema = z.object({
+  connected: z.boolean(),
+  providers: z.array(UpcomingProviderStatusSchema),
+  items: z.array(UpcomingItemSchema),
+});
+export type UpcomingList = z.infer<typeof UpcomingListSchema>;

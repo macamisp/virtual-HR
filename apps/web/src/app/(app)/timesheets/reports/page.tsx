@@ -102,6 +102,7 @@ export default function TimesheetReportsPage() {
                   <TableHead>{GROUP_LABEL[f.groupBy]}</TableHead>
                   <TableHead className="text-right">Timesheets</TableHead>
                   {f.groupBy !== 'project' ? <TableHead className="text-right">Attendance</TableHead> : null}
+                  {f.groupBy !== 'project' ? <TableHead className="text-right">Meetings</TableHead> : null}
                   <TableHead className="text-right">Logged</TableHead>
                   <TableHead className="text-right">Approved</TableHead>
                   {f.groupBy !== 'project' ? <TableHead className="text-right">Variance</TableHead> : null}
@@ -116,6 +117,7 @@ export default function TimesheetReportsPage() {
                     <TableCell>{r.label}</TableCell>
                     <TableCell className="text-right tabular-nums">{r.timesheets}</TableCell>
                     {f.groupBy !== 'project' ? <TableCell className="text-right tabular-nums">{minutesLabel(r.attendanceMinutes)}</TableCell> : null}
+                    {f.groupBy !== 'project' ? <TableCell className="text-right tabular-nums">{minutesLabel(r.meetingMinutes ?? 0)}</TableCell> : null}
                     <TableCell className="text-right tabular-nums">{minutesLabel(r.loggedMinutes)}</TableCell>
                     <TableCell className="text-right tabular-nums">{minutesLabel(r.approvedMinutes)}</TableCell>
                     {f.groupBy !== 'project' ? <TableCell className="text-right tabular-nums">{signed(r.varianceMinutes)}</TableCell> : null}

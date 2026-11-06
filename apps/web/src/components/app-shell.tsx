@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Archive, BadgeDollarSign, Building2, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, PenLine, ScrollText, CalendarClock, CalendarOff, ClipboardCheck, Clock, Eye, FolderKanban, CalendarCheck, Laptop, ListChecks, ShieldAlert, LogOut, Menu, MessagesSquare, Network, IdCard, BriefcaseBusiness, UserCog, Video, Timer, Users } from 'lucide-react';
+import { Archive, BadgeDollarSign, Building2, BellRing, FileLock2, ShieldCheck, LayoutDashboard, PieChart, BarChart3, History, KeyRound, Settings2, UserCheck, CheckSquare, FileText, PenLine, ScrollText, CalendarClock, CalendarOff, ClipboardCheck, Clock, Eye, FolderKanban, CalendarCheck, Laptop, ListChecks, ShieldAlert, LogOut, Menu, MessagesSquare, Network, IdCard, BriefcaseBusiness, UserCog, Video, Timer, Users, Hourglass } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TrackingBadge } from '@/components/tracking-badge';
 import { NotificationBell } from '@/components/notification-bell';
@@ -280,6 +280,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {canDocuments && canAudit ? (
               <li>
                 <NavLink href="/documents/access-log" icon={ScrollText}>Document access log</NavLink>
+              </li>
+            ) : null}
+            {canTimesheets ? (
+              <li>
+                <NavLink href="/work-time" icon={Hourglass}>My work time</NavLink>
               </li>
             ) : null}
             {canTimesheets ? (

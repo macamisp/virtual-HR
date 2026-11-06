@@ -21,6 +21,8 @@ model Organization {
   timesheetPeriodAnchor         DateTime                   @default(dbgenerated("'2026-01-05'::date")) @map("timesheet_period_anchor") @db.Date
   /// FR-TS-004 / SRS 6.4: manual time per day before entries are flagged (0..480).
   manualTimeLimitMinutes        Int                        @default(120) @map("manual_time_limit_minutes")
+  /// ADR 049 §2: only approved overtime gets the multiplier when on (off = ADR 008).
+  overtimeRequiresApproval      Boolean                    @default(false) @map("overtime_requires_approval")
   /// FR-TS-005 / SRS 6.4: variance alert threshold in percent (5..50).
   timesheetVariancePct          Int                        @default(15) @map("timesheet_variance_pct")
   /// FR-TS-012: days after the period end by which a timesheet should be submitted.
@@ -84,6 +86,8 @@ model Organization {
   timesheets                    Timesheet[]
   timesheetDays                 TimesheetDay[]
   timeEntries                   TimeEntry[]
+  overtimeRequests              OvertimeRequest[]
+  onsiteRequests                OnsiteWorkRequest[]
   timesheetApprovals            TimesheetApproval[]
   documentFolders               DocumentFolder[]
   documents                     Document[]
@@ -129,12 +133,12 @@ model Organization {
   calendarEventLinks  CalendarEventLink[]
   calendarBusy        CalendarBusy[]
 
-  signatureRequests SignatureRequest[]
-  signatureSigners  SignatureSigner[]
-  meetingRecordings MeetingRecording[]
-  recordingConsents RecordingConsent[]
-  leaveRequests     LeaveRequest[]
-  publicHolidays    PublicHoliday[]
+  signatureRequests       SignatureRequest[]
+  signatureSigners        SignatureSigner[]
+  meetingRecordings       MeetingRecording[]
+  recordingConsents       RecordingConsent[]
+  leaveRequests           LeaveRequest[]
+  publicHolidays          PublicHoliday[]
   emailVerificationTokens EmailVerificationToken[]
   oauthIdentities         OauthIdentity[]
   ownershipTransfers      OwnershipTransfer[]
@@ -221,6 +225,11 @@ model User {
   timesheets              Timesheet[]
   timesheetDays           TimesheetDay[]
   timeEntries             TimeEntry[]
+  overtimeRequests        OvertimeRequest[]        @relation("OvertimeRequester")
+  overtimeDecisions       OvertimeRequest[]        @relation("OvertimeDecider")
+  overtimeCancellations   OvertimeRequest[]        @relation("OvertimeCanceller")
+  onsiteRequests          OnsiteWorkRequest[]      @relation("OnsiteRequester")
+  onsiteDecisions         OnsiteWorkRequest[]      @relation("OnsiteDecider")
   timesheetApprovals      TimesheetApproval[]
   ownedDocuments          Document[]               @relation("DocumentOwner")
   linkedDocuments         Document[]               @relation("DocumentLinkedUser")
@@ -228,8 +237,8 @@ model User {
   contracts               Contract[]               @relation("UserContracts")
   roomInvites             RoomInvite[]
   desk                    Desk?
-  callsMade               MeetingCall[] @relation("CallCaller")
-  callsReceived           MeetingCall[] @relation("CallCallee")
+  callsMade               MeetingCall[]            @relation("CallCaller")
+  callsReceived           MeetingCall[]            @relation("CallCallee")
   hostedMeetings          Meeting[]                @relation("MeetingHost")
   meetingAttendance       MeetingAttendee[]
   meetingSessions         MeetingParticipant[]
@@ -249,17 +258,17 @@ model User {
   calendarEventLinks  CalendarEventLink[]
   calendarBusy        CalendarBusy[]
 
-  signatureRequests SignatureRequest[] @relation("SignatureRequester")
-  signatureSigners  SignatureSigner[]
-  meetingRecordings MeetingRecording[] @relation("RecordingStarter")
-  recordingConsents RecordingConsent[]
-  leaveRequests     LeaveRequest[]     @relation("LeaveRequester")
-  leaveDecisions    LeaveRequest[]     @relation("LeaveDecider")
-  holidaysCreated   PublicHoliday[]
-  emailVerificationTokens EmailVerificationToken[]
-  oauthIdentities         OauthIdentity[]
-  ownershipTransfersSent  OwnershipTransfer[] @relation("OwnershipFrom")
-  ownershipTransfersReceived OwnershipTransfer[] @relation("OwnershipTo")
+  signatureRequests          SignatureRequest[]       @relation("SignatureRequester")
+  signatureSigners           SignatureSigner[]
+  meetingRecordings          MeetingRecording[]       @relation("RecordingStarter")
+  recordingConsents          RecordingConsent[]
+  leaveRequests              LeaveRequest[]           @relation("LeaveRequester")
+  leaveDecisions             LeaveRequest[]           @relation("LeaveDecider")
+  holidaysCreated            PublicHoliday[]
+  emailVerificationTokens    EmailVerificationToken[]
+  oauthIdentities            OauthIdentity[]
+  ownershipTransfersSent     OwnershipTransfer[]      @relation("OwnershipFrom")
+  ownershipTransfersReceived OwnershipTransfer[]      @relation("OwnershipTo")
 
   @@map("users")
 }
@@ -281,18 +290,18 @@ model Team {
 }
 
 model WorkSchedule {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId         String    @map("org_id") @db.Uuid
-  userId        String?   @map("user_id") @db.Uuid
-  teamId        String?   @map("team_id") @db.Uuid
-  days          Json
-  flexible      Boolean   @default(false)
-  graceMinutes  Int       @default(10) @map("grace_minutes")
-  earlyLeaveGraceMinutes Int? @map("early_leave_grace_minutes")
-  breakAllowanceMinutes  Int? @map("break_allowance_minutes")
-  effectiveFrom DateTime  @map("effective_from") @db.Date
-  effectiveTo   DateTime? @map("effective_to") @db.Date
-  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId                  String    @map("org_id") @db.Uuid
+  userId                 String?   @map("user_id") @db.Uuid
+  teamId                 String?   @map("team_id") @db.Uuid
+  days                   Json
+  flexible               Boolean   @default(false)
+  graceMinutes           Int       @default(10) @map("grace_minutes")
+  earlyLeaveGraceMinutes Int?      @map("early_leave_grace_minutes")
+  breakAllowanceMinutes  Int?      @map("break_allowance_minutes")
+  effectiveFrom          DateTime  @map("effective_from") @db.Date
+  effectiveTo            DateTime? @map("effective_to") @db.Date
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -329,6 +338,8 @@ model AttendanceSession {
   agentDeviceId          String?   @map("agent_device_id") @db.VarChar(100)
   agentLastSeenAt        DateTime? @map("agent_last_seen_at") @db.Timestamptz()
   webInCallAt            DateTime? @map("web_in_call_at") @db.Timestamptz()
+  callDeviceId           String?   @map("call_device_id") @db.VarChar(100)
+  callConfirmedAt        DateTime? @map("call_confirmed_at") @db.Timestamptz()
   /// FR-ATT-018: coarse location (country) where the session started and last reported.
   countryIn              String?   @map("country_in") @db.VarChar(2)
   countryOut             String?   @map("country_out") @db.VarChar(2)
@@ -357,6 +368,8 @@ model AttendanceSegment {
   endedAt         DateTime? @map("ended_at") @db.Timestamptz()
   durationSeconds Int       @default(0) @map("duration_seconds")
   meetingId       String?   @map("meeting_id") @db.VarChar(100)
+  callKind        String?   @map("call_kind") @db.VarChar(20)
+  callMeetingId   String?   @map("call_meeting_id") @db.Uuid
   flags           String[]  @default([])
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
@@ -394,10 +407,10 @@ model DeviceSequence {
 }
 
 model SessionSecret {
-  sessionId String   @id @map("session_id") @db.VarChar(128)
-  orgId     String   @map("org_id") @db.Uuid
-  secret    String   @db.VarChar(256)
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  sessionId  String    @id @map("session_id") @db.VarChar(128)
+  orgId      String    @map("org_id") @db.Uuid
+  secret     String    @db.VarChar(256)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz()
   /// ADR 025: when this login last sent a valid heartbeat (decides whether another login keeps a person clocked in).
   lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz()
 
@@ -430,24 +443,24 @@ model AttendanceCorrection {
 }
 
 model AttendanceDaily {
-  orgId             String    @map("org_id") @db.Uuid
-  userId            String    @map("user_id") @db.Uuid
-  workDate          String    @map("work_date") @db.VarChar(10)
-  firstIn           DateTime? @map("first_in") @db.Timestamptz()
-  lastOut           DateTime? @map("last_out") @db.Timestamptz()
-  activeSeconds     Int       @default(0) @map("active_seconds")
-  idleSeconds       Int       @default(0) @map("idle_seconds")
-  breakSeconds      Int       @default(0) @map("break_seconds")
-  meetingSeconds    Int       @default(0) @map("meeting_seconds")
-  netSeconds        Int       @default(0) @map("net_seconds")
-  expectedSeconds   Int       @default(0) @map("expected_seconds")
-  lateMinutes       Int       @default(0) @map("late_minutes")
-  earlyLeaveMinutes Int       @default(0) @map("early_leave_minutes")
-  overtimeMinutes   Int       @default(0) @map("overtime_minutes")
-  excessBreakMinutes Int      @default(0) @map("excess_break_minutes")
-  dayStatus         String    @default("PRESENT") @map("day_status") @db.VarChar(20)
-  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+  orgId              String    @map("org_id") @db.Uuid
+  userId             String    @map("user_id") @db.Uuid
+  workDate           String    @map("work_date") @db.VarChar(10)
+  firstIn            DateTime? @map("first_in") @db.Timestamptz()
+  lastOut            DateTime? @map("last_out") @db.Timestamptz()
+  activeSeconds      Int       @default(0) @map("active_seconds")
+  idleSeconds        Int       @default(0) @map("idle_seconds")
+  breakSeconds       Int       @default(0) @map("break_seconds")
+  meetingSeconds     Int       @default(0) @map("meeting_seconds")
+  netSeconds         Int       @default(0) @map("net_seconds")
+  expectedSeconds    Int       @default(0) @map("expected_seconds")
+  lateMinutes        Int       @default(0) @map("late_minutes")
+  earlyLeaveMinutes  Int       @default(0) @map("early_leave_minutes")
+  overtimeMinutes    Int       @default(0) @map("overtime_minutes")
+  excessBreakMinutes Int       @default(0) @map("excess_break_minutes")
+  dayStatus          String    @default("PRESENT") @map("day_status") @db.VarChar(20)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -627,7 +640,7 @@ model AuthSession {
   userAgent        String?  @map("user_agent") @db.Text
   expiresAt        DateTime @map("expires_at") @db.Timestamptz()
   /// ADR 037: PASSWORD, GOOGLE or AGENT; the 2FA-after-Google setting applies to GOOGLE sessions.
-  loginMethod      String    @default("PASSWORD") @map("login_method") @db.VarChar(10)
+  loginMethod      String   @default("PASSWORD") @map("login_method") @db.VarChar(10)
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz()
 
@@ -675,12 +688,14 @@ model Project {
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
 
-  organization Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  manager      User?           @relation("ProjectManager", fields: [managerId], references: [id], onDelete: SetNull)
-  members      ProjectMember[]
-  tasks        Task[]
-  timeEntries  TimeEntry[]
-  documents    Document[]
+  organization     Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  manager          User?               @relation("ProjectManager", fields: [managerId], references: [id], onDelete: SetNull)
+  members          ProjectMember[]
+  tasks            Task[]
+  timeEntries      TimeEntry[]
+  overtimeRequests OvertimeRequest[]
+  onsiteRequests   OnsiteWorkRequest[]
+  documents        Document[]
 
   @@unique([orgId, code])
   @@map("projects")
@@ -734,18 +749,20 @@ model Task {
   updatedAt             DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
   deletedAt             DateTime? @map("deleted_at") @db.Timestamptz()
 
-  organization Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  project      Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  parent       Task?               @relation("Subtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
-  subtasks     Task[]              @relation("Subtasks")
-  assignee     User?               @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
-  reporter     User                @relation("TaskReporter", fields: [reporterId], references: [id], onDelete: Cascade)
-  checklist    TaskChecklistItem[]
-  comments     TaskComment[]
-  attachments  TaskAttachment[]
-  activity     TaskActivity[]
-  timeEntries  TimeEntry[]
-  planItems    DailyPlanItem[]
+  organization     Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  project          Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  parent           Task?               @relation("Subtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks         Task[]              @relation("Subtasks")
+  assignee         User?               @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  reporter         User                @relation("TaskReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  checklist        TaskChecklistItem[]
+  comments         TaskComment[]
+  attachments      TaskAttachment[]
+  activity         TaskActivity[]
+  timeEntries      TimeEntry[]
+  overtimeRequests OvertimeRequest[]
+  onsiteRequests   OnsiteWorkRequest[]
+  planItems        DailyPlanItem[]
 
   @@index([orgId, assigneeId, status])
   @@index([orgId, reporterId])
@@ -1062,6 +1079,7 @@ model Timesheet {
   periodEnd         DateTime  @map("period_end") @db.Date
   status            String    @default("DRAFT") @db.VarChar(12)
   attendanceMinutes Int       @default(0) @map("attendance_minutes")
+  meetingMinutes    Int       @default(0) @map("meeting_minutes")
   loggedMinutes     Int       @default(0) @map("logged_minutes")
   billableMinutes   Int       @default(0) @map("billable_minutes")
   varianceMinutes   Int       @default(0) @map("variance_minutes")
@@ -1105,6 +1123,8 @@ model TimesheetDay {
   attendanceMinutes Int       @default(0) @map("attendance_minutes")
   loggedMinutes     Int       @default(0) @map("logged_minutes")
   manualMinutes     Int       @default(0) @map("manual_minutes")
+  meetingMinutes    Int       @default(0) @map("meeting_minutes")
+  onsiteMinutes     Int       @default(0) @map("onsite_minutes")
   varianceMinutes   Int       @default(0) @map("variance_minutes")
   variancePct       Int?      @map("variance_pct")
   flags             String[]  @default([])
@@ -1139,14 +1159,21 @@ model TimeEntry {
   flagged      Boolean   @default(false)
   flagReason   String?   @map("flag_reason") @db.VarChar(40)
   autoStopped  Boolean   @default(false) @map("auto_stopped")
+  /// ADR 049 §3-4: own title, work type, category, and the names when the time was recorded.
+  title        String?   @db.VarChar(200)
+  workType     String?   @map("work_type") @db.VarChar(10)
+  category     String?   @db.VarChar(20)
+  taskTitle    String?   @map("task_title") @db.VarChar(300)
+  projectName  String?   @map("project_name") @db.VarChar(200)
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
 
-  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  timesheet    Timesheet    @relation(fields: [timesheetId], references: [id], onDelete: Cascade)
-  project      Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  task         Task?        @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  organization  Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  timesheet     Timesheet           @relation(fields: [timesheetId], references: [id], onDelete: Cascade)
+  project       Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  task          Task?               @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  onsiteRequest OnsiteWorkRequest[]
 
   @@index([userId, startedAt])
   @@index([orgId, userId, workDate])
@@ -1648,8 +1675,8 @@ model MeetingActionItem {
 
 /// FR-MEET-012 / SRS 7.4 (ADR 017). DMs have dm_key = the two user ids, sorted, so one per pair.
 model Channel {
-  meetingId String? @unique @map("meeting_id") @db.Uuid
-  meeting Meeting? @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  meetingId  String?   @unique @map("meeting_id") @db.Uuid
+  meeting    Meeting?  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
   id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   orgId      String    @map("org_id") @db.Uuid
   kind       String    @db.VarChar(8)
@@ -2038,18 +2065,92 @@ model PublicHoliday {
 
 /// FR-VO-008; FR-MEET-001: durable ring-and-accept decisions (ADR 031).
 model MeetingCall {
-  orgId String @map("org_id") @db.Uuid
-  meetingId String @map("meeting_id") @db.Uuid
-  callerId String @map("caller_id") @db.Uuid
-  calleeId String @map("callee_id") @db.Uuid
-  state String @default("RINGING") @db.VarChar(10)
-  expiresAt DateTime @default(dbgenerated("(now() + '00:00:45'::interval)")) @map("expires_at") @db.Timestamptz()
-  decidedAt DateTime? @map("decided_at") @db.Timestamptz()
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  orgId        String       @map("org_id") @db.Uuid
+  meetingId    String       @map("meeting_id") @db.Uuid
+  callerId     String       @map("caller_id") @db.Uuid
+  calleeId     String       @map("callee_id") @db.Uuid
+  state        String       @default("RINGING") @db.VarChar(10)
+  expiresAt    DateTime     @default(dbgenerated("(now() + '00:00:45'::interval)")) @map("expires_at") @db.Timestamptz()
+  decidedAt    DateTime?    @map("decided_at") @db.Timestamptz()
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz()
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
-  caller User @relation("CallCaller", fields: [callerId], references: [id], onDelete: Cascade)
-  callee User @relation("CallCallee", fields: [calleeId], references: [id], onDelete: Cascade)
+  meeting      Meeting      @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  caller       User         @relation("CallCaller", fields: [callerId], references: [id], onDelete: Cascade)
+  callee       User         @relation("CallCallee", fields: [calleeId], references: [id], onDelete: Cascade)
+
   @@id([meetingId, calleeId])
   @@map("meeting_calls")
+}
+
+/// ADR 049 §2 (FR-WT-007..012): overtime requests. Hand-written migration
+/// 20261107000200_overtime_onsite adds CHECKs, the one-per-day partial unique index and RLS.
+model OvertimeRequest {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId            String    @map("org_id") @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  workDate         DateTime  @map("work_date") @db.Date
+  plannedStart     DateTime? @map("planned_start") @db.Time()
+  plannedEnd       DateTime? @map("planned_end") @db.Time()
+  requestedMinutes Int       @map("requested_minutes")
+  projectId        String?   @map("project_id") @db.Uuid
+  taskId           String?   @map("task_id") @db.Uuid
+  workDescription  String    @map("work_description") @db.Text
+  reason           String    @db.Text
+  notes            String    @default("") @db.Text
+  /// PENDING, APPROVED, REJECTED, CANCELLED
+  status           String    @default("PENDING") @db.VarChar(10)
+  approvedMinutes  Int?      @map("approved_minutes")
+  decidedBy        String?   @map("decided_by") @db.Uuid
+  decidedAt        DateTime? @map("decided_at") @db.Timestamptz()
+  decisionComment  String?   @map("decision_comment") @db.Text
+  cancelledBy      String?   @map("cancelled_by") @db.Uuid
+  cancelledAt      DateTime? @map("cancelled_at") @db.Timestamptz()
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user         User         @relation("OvertimeRequester", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  decider      User?        @relation("OvertimeDecider", fields: [decidedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  canceller    User?        @relation("OvertimeCanceller", fields: [cancelledBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  task         Task?        @relation(fields: [taskId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([orgId, status, workDate], map: "overtime_requests_status_idx")
+  @@map("overtime_requests")
+}
+
+/// ADR 049 §7 (FR-WT-023..024): onsite work submitted for review; approval adds an ONSITE time entry.
+model OnsiteWorkRequest {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  workDate        DateTime  @map("work_date") @db.Date
+  startedAt       DateTime  @map("started_at") @db.Timestamptz()
+  endedAt         DateTime  @map("ended_at") @db.Timestamptz()
+  minutes         Int
+  location        String    @db.VarChar(200)
+  projectId       String?   @map("project_id") @db.Uuid
+  taskId          String?   @map("task_id") @db.Uuid
+  description     String    @db.Text
+  reason          String    @db.Text
+  /// PENDING, APPROVED, REJECTED, CANCELLED
+  status          String    @default("PENDING") @db.VarChar(10)
+  decidedBy       String?   @map("decided_by") @db.Uuid
+  decidedAt       DateTime? @map("decided_at") @db.Timestamptz()
+  decisionComment String?   @map("decision_comment") @db.Text
+  timeEntryId     String?   @map("time_entry_id") @db.Uuid
+  cancelledAt     DateTime? @map("cancelled_at") @db.Timestamptz()
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user         User         @relation("OnsiteRequester", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  decider      User?        @relation("OnsiteDecider", fields: [decidedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  task         Task?        @relation(fields: [taskId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  timeEntry    TimeEntry?   @relation(fields: [timeEntryId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([orgId, userId, workDate], map: "onsite_work_requests_user_day_idx")
+  @@index([orgId, status, workDate], map: "onsite_work_requests_status_idx")
+  @@map("onsite_work_requests")
 }

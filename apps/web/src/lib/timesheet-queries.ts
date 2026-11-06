@@ -11,7 +11,8 @@ import {
   TimesheetSettingsSchema,
   WeeklyCapSchema,
 } from '@hrvo/shared';
-import type { ManualEntryDto, ProjectRateDto, RateProfileDto, TimesheetDetail, TimesheetSettingsDto, UpdateEntryDto } from '@hrvo/shared';
+import type { ManualEntryDto, ProjectRateDto, RateProfileDto, StartTimerDto, TimesheetDetail, TimesheetSettingsDto, UpdateEntryDto } from '@hrvo/shared';
+import { TimeEntryListSchema } from '@hrvo/shared';
 import { apiFetch } from './api';
 import { useAuthStore } from './auth-store';
 
@@ -51,10 +52,14 @@ export function useTimerAction() {
   const qc = useQueryClient();
   const invalidate = useInvalidateTime();
   return useMutation({
-    mutationFn: (v: { action: 'start'; taskId: string } | { action: 'stop'; taskId?: string }) =>
+    mutationFn: (v: { action: 'start'; taskId: string } | { action: 'stop'; taskId?: string } | { action: 'startAny'; dto: StartTimerDto } | { action: 'resume' }) =>
       v.action === 'start'
         ? apiFetch(`/tasks/${enc(v.taskId)}/timer/start`, { method: 'POST', schema: TimerStateSchema })
-        : apiFetch(v.taskId ? `/tasks/${enc(v.taskId)}/timer/stop` : '/timer/stop', { method: 'POST', schema: TimerStateSchema }),
+        : v.action === 'startAny'
+          ? apiFetch('/timer/start', { method: 'POST', body: v.dto, schema: TimerStateSchema })
+          : v.action === 'resume'
+            ? apiFetch('/timer/resume', { method: 'POST', schema: TimerStateSchema })
+            : apiFetch(v.taskId ? `/tasks/${enc(v.taskId)}/timer/stop` : '/timer/stop', { method: 'POST', schema: TimerStateSchema }),
     onSuccess: (state) => {
       qc.setQueryData(timesheetKeys.timer, state);
       invalidate();
@@ -130,6 +135,15 @@ export function useTimesheetAction(id: string) {
         : apiFetch(`/timesheets/${enc(id)}/${action}`, { method: 'POST', body, schema: TimesheetDetailSchema });
     },
     onSuccess: store,
+  });
+}
+
+/** ADR 049: the caller's time entries in a range of work dates (at most 62 days). */
+export function useMyEntries(from: string, to: string) {
+  return useQuery({
+    queryKey: [...timesheetKeys.all, 'entries', from, to] as const,
+    queryFn: () => apiFetch(`/time-entries?from=${enc(from)}&to=${enc(to)}`, { schema: TimeEntryListSchema }),
+    enabled: useSignedIn(),
   });
 }
 

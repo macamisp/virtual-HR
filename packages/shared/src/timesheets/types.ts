@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { UserRefSchema } from '../tasks/types.ts';
+import { OvertimeSummarySchema } from './work-requests.ts';
 
 const workDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
 const isoDate = z.string().datetime({ offset: true });
@@ -15,8 +16,23 @@ export type TimesheetStatus = (typeof TIMESHEET_STATUSES)[number];
 /** The owner may change entries only while the timesheet is in one of these states. */
 export const EDITABLE_TIMESHEET_STATUSES: readonly TimesheetStatus[] = ['DRAFT', 'REJECTED'];
 
-export const ENTRY_SOURCES = ['TIMER', 'MANUAL', 'AUTO_FROM_ATTENDANCE'] as const;
+/** ADR 049 §7: ONSITE = approved onsite work (a work log, never attendance). */
+export const ENTRY_SOURCES = ['TIMER', 'MANUAL', 'AUTO_FROM_ATTENDANCE', 'ONSITE'] as const;
 export type EntrySource = (typeof ENTRY_SOURCES)[number];
+
+/** ADR 049 §3-4: where the work was done, and what kind of work it was (fixed lists). */
+export const WORK_TYPES = ['OFFICE', 'REMOTE', 'ONSITE'] as const;
+export type WorkType = (typeof WORK_TYPES)[number];
+export const WORK_CATEGORIES = ['DEVELOPMENT', 'DESIGN', 'TESTING', 'REVIEW', 'DOCUMENTATION', 'SUPPORT', 'RESEARCH', 'ADMIN', 'MEETING', 'TRAVEL', 'OTHER'] as const;
+export type WorkCategory = (typeof WORK_CATEGORIES)[number];
+export const WORK_TYPE_LABEL: Record<WorkType, string> = { OFFICE: 'Office', REMOTE: 'Remote', ONSITE: 'Onsite' };
+export const WORK_CATEGORY_LABEL: Record<WorkCategory, string> = {
+  DEVELOPMENT: 'Development', DESIGN: 'Design', TESTING: 'Testing', REVIEW: 'Review', DOCUMENTATION: 'Documentation',
+  SUPPORT: 'Support', RESEARCH: 'Research', ADMIN: 'Administration', MEETING: 'Meetings', TRAVEL: 'Travel', OTHER: 'Other',
+};
+/** Local time of day, HH:MM (24 h). */
+export const LocalTimeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM');
+const entryTitle = z.string().trim().min(2, 'Give the work a short title').max(200);
 
 export const RATE_TYPES = ['HOURLY', 'DAILY', 'FIXED'] as const;
 export type RateTypeName = (typeof RATE_TYPES)[number];
@@ -34,16 +50,27 @@ const hoursCap = z.string().regex(/^(0|[1-9]\d{0,2})(\.\d{1,2})?$/, 'Use hours s
 
 // ---- requests
 
-export const ManualEntryDtoSchema = z.object({
-  workDate,
-  minutes: z.number().int().min(1, 'At least one minute').max(24 * 60),
-  taskId: z.string().uuid().optional(),
-  projectId: z.string().uuid().optional(),
-  note: z.string().max(2000).default(''),
-  /** FR-TS-004: mandatory reason for manual time. */
-  reason: z.string().trim().min(3, 'Give a reason for adding time manually').max(500),
-  billable: z.boolean().default(true),
-});
+export const ManualEntryDtoSchema = z
+  .object({
+    workDate,
+    /** A duration; or give startTime and endTime (org-local, same day) and minutes are computed. */
+    minutes: z.number().int().min(1, 'At least one minute').max(24 * 60).optional(),
+    startTime: LocalTimeSchema.optional(),
+    endTime: LocalTimeSchema.optional(),
+    taskId: z.string().uuid().optional(),
+    projectId: z.string().uuid().optional(),
+    /** ADR 049 §4 (FR-WT-017): the employee's own name for the work. */
+    title: entryTitle.optional(),
+    workType: z.enum(WORK_TYPES).optional(),
+    category: z.enum(WORK_CATEGORIES).optional(),
+    note: z.string().max(2000).default(''),
+    /** FR-TS-004: mandatory reason for manual time. */
+    reason: z.string().trim().min(3, 'Give a reason for adding time manually').max(500),
+    billable: z.boolean().default(true),
+  })
+  .refine((v) => (v.startTime === undefined) === (v.endTime === undefined), { message: 'Give both a start and an end time', path: ['endTime'] })
+  .refine((v) => v.minutes !== undefined || v.startTime !== undefined, { message: 'Give a duration or a start and end time', path: ['minutes'] })
+  .refine((v) => !v.startTime || !v.endTime || v.endTime > v.startTime, { message: 'The end must be after the start (same day)', path: ['endTime'] });
 export type ManualEntryDto = z.infer<typeof ManualEntryDtoSchema>;
 
 export const UpdateEntryDtoSchema = z
@@ -52,9 +79,26 @@ export const UpdateEntryDtoSchema = z
     note: z.string().max(2000).optional(),
     reason: z.string().trim().min(3).max(500).optional(),
     billable: z.boolean().optional(),
+    title: entryTitle.nullable().optional(),
+    workType: z.enum(WORK_TYPES).nullable().optional(),
+    category: z.enum(WORK_CATEGORIES).nullable().optional(),
+    /** ADR 049 §4: link a named entry to a task (it had none); the task's rules apply. */
+    taskId: z.string().uuid().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, 'Nothing to change');
 export type UpdateEntryDto = z.infer<typeof UpdateEntryDtoSchema>;
+
+/** ADR 049 §3 (FR-WT-013): a timer on a task, or on a project and/or own title without a task. */
+export const StartTimerDtoSchema = z
+  .object({
+    taskId: z.string().uuid().optional(),
+    projectId: z.string().uuid().optional(),
+    title: entryTitle.optional(),
+    workType: z.enum(WORK_TYPES).optional(),
+    category: z.enum(WORK_CATEGORIES).optional(),
+  })
+  .refine((v) => !!v.taskId || !!v.title, { message: 'Choose a task or give the work a title', path: ['title'] });
+export type StartTimerDto = z.infer<typeof StartTimerDtoSchema>;
 
 export const TimeEntryListQuerySchema = z.object({
   from: workDate,
@@ -105,6 +149,8 @@ export const TimesheetSettingsDtoSchema = z.object({
   manualLimitMinutes: z.number().int().min(0).max(8 * 60),
   variancePct: z.number().int().min(5).max(50),
   submitDueDays: z.number().int().min(0).max(14),
+  /** ADR 049 §2: only approved overtime gets the multiplier. Omitted = unchanged. */
+  overtimeRequiresApproval: z.boolean().optional(),
 });
 export type TimesheetSettingsDto = z.infer<typeof TimesheetSettingsDtoSchema>;
 
@@ -127,9 +173,15 @@ export const TimeEntrySchema = z.object({
   userId: z.string(),
   timesheetId: z.string(),
   taskId: z.string().nullable(),
+  /** ADR 049 §3 (FR-WT-015): the task and project names when the time was recorded. */
   taskTitle: z.string().nullable(),
+  /** The task's name now, when it was renamed since (else null). */
+  taskTitleNow: z.string().nullable(),
   projectId: z.string().nullable(),
   projectName: z.string().nullable(),
+  title: z.string().nullable(),
+  workType: z.enum(WORK_TYPES).nullable(),
+  category: z.enum(WORK_CATEGORIES).nullable(),
   workDate,
   startedAt: isoDate.nullable(),
   endedAt: isoDate.nullable(),
@@ -160,6 +212,10 @@ export type TimerState = z.infer<typeof TimerStateSchema>;
 export const TimesheetDaySchema = z.object({
   date: workDate,
   attendanceMinutes: z.number(),
+  /** ADR 049: the part of attendance spent in verified calls. */
+  meetingMinutes: z.number(),
+  /** ADR 049 §7: approved onsite work (covers attendance in the variance check, never attendance). */
+  onsiteMinutes: z.number(),
   loggedMinutes: z.number(),
   manualMinutes: z.number(),
   varianceMinutes: z.number(),
@@ -174,6 +230,8 @@ export const PayableLineSchema = z.object({
   rate: z.string(),
   regularMinutes: z.number(),
   overtimeMinutes: z.number(),
+  /** ADR 049: overtime without approval, paid at the base rate (stored payables before ADR 049: 0). */
+  unapprovedOvertimeMinutes: z.number().default(0),
   amount: z.string(),
 });
 
@@ -183,6 +241,7 @@ export const PayableSchema = z.object({
   amount: z.string(),
   regularMinutes: z.number(),
   overtimeMinutes: z.number(),
+  unapprovedOvertimeMinutes: z.number().default(0),
   days: z.number(),
   lines: z.array(PayableLineSchema),
   /** true once approved (stored); false = live estimate from the current entries. */
@@ -215,6 +274,8 @@ export const TimesheetSummarySchema = z.object({
   periodEnd: workDate,
   status: z.enum(TIMESHEET_STATUSES),
   attendanceMinutes: z.number(),
+  /** ADR 049: the part of attendance spent in verified calls. */
+  meetingMinutes: z.number(),
   loggedMinutes: z.number(),
   billableMinutes: z.number(),
   varianceMinutes: z.number(),
@@ -243,6 +304,8 @@ export const TimesheetDetailSchema = TimesheetSummarySchema.extend({
   payableNote: z.string().nullable(),
   permissions: TimesheetPermissionsSchema,
   settings: z.object({ variancePct: z.number(), manualLimitMinutes: z.number() }),
+  /** ADR 049 §2: worked, requested and approved overtime of the period, shown separately. */
+  overtime: OvertimeSummarySchema,
 });
 export type TimesheetDetail = z.infer<typeof TimesheetDetailSchema>;
 
@@ -263,7 +326,7 @@ export const RatesListSchema = z.object({
 });
 export type RatesList = z.infer<typeof RatesListSchema>;
 
-export const TimesheetSettingsSchema = TimesheetSettingsDtoSchema;
+export const TimesheetSettingsSchema = TimesheetSettingsDtoSchema.extend({ overtimeRequiresApproval: z.boolean() });
 export type TimesheetSettings = z.infer<typeof TimesheetSettingsSchema>;
 
 export const ReportRowSchema = z.object({
@@ -271,6 +334,8 @@ export const ReportRowSchema = z.object({
   label: z.string(),
   timesheets: z.number(),
   attendanceMinutes: z.number(),
+  /** ADR 049: meeting part of attendance; null when grouped by project (calls have no project). */
+  meetingMinutes: z.number().nullable(),
   loggedMinutes: z.number(),
   approvedMinutes: z.number(),
   varianceMinutes: z.number(),

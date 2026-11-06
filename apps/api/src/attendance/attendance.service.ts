@@ -26,6 +26,7 @@ import type {
 } from '../../../../packages/shared/src/attendance/api.ts';
 import { planOfflineSync } from '../agent/offline-sync.ts';
 import type { FlagSink, NewFlag } from './attendance-flags.service.ts';
+import type { CallEvidence } from './call-evidence.ts';
 import type { OfflineInterval, OfflinePlan } from '../agent/offline-sync.ts';
 import {
   AttendanceState,
@@ -44,6 +45,7 @@ import type {
   AttendanceSession,
   Clock,
   HeartbeatPayload,
+  CallKind,
   HeartbeatSource,
   StateMachineTransitionResult,
   AttendanceCorrection,
@@ -107,14 +109,17 @@ export class AttendanceService {
     holidayOrLeave?: IHolidayProvider | ILeaveProvider,
     leaveProvider?: ILeaveProvider,
   ) {
+    // ADR 049: live processing uses the V3 meeting accounting; it is stored with every input, so
+    // the replay of inputs recorded before V3 (stored config without it) keeps the V2 rules.
+    // Not part of DEFAULT_ATTENDANCE_CONFIG, which the replayed machines are built from.
     if (isRepository(configOrRepo)) {
       this.repository = configOrRepo;
-      this.config = { ...DEFAULT_ATTENDANCE_CONFIG };
+      this.config = { ...DEFAULT_ATTENDANCE_CONFIG, meetingAccounting: 2 };
       this.clock = (repoOrClock as Clock | undefined) || clockOrUndefined || new SystemClock();
       this.holidayProvider = defaultOrgIdOrHoliday as IHolidayProvider | undefined;
       this.leaveProvider = holidayOrLeave as ILeaveProvider | undefined;
     } else {
-      this.config = { ...DEFAULT_ATTENDANCE_CONFIG, ...(configOrRepo ?? {}) };
+      this.config = { ...DEFAULT_ATTENDANCE_CONFIG, meetingAccounting: 2, ...(configOrRepo ?? {}) };
       this.clock = clockOrUndefined || new SystemClock();
       this.repository = repoOrClock as IAttendanceRepository | undefined;
       this.defaultOrgId = defaultOrgIdOrHoliday as string | undefined;
@@ -127,6 +132,8 @@ export class AttendanceService {
 
   /** FR-ADM-001: where each organisation's thresholds come from (the org settings table). */
   private flagSink: FlagSink | null = null;
+  /** ADR 049 §1b: decides whether a reported call is a real one (null = trust the client, tests only). */
+  private callEvidence: CallEvidence | null = null;
   private lockProvider: { run<T>(name: string, fn: () => Promise<T>): Promise<T> } | null = null;
 
   /** ADR 020: a lock shared by API tasks (RedisLock); without it, the in-process queue alone. */
@@ -135,6 +142,10 @@ export class AttendanceService {
   }
 
   /** ADR 019: where review flags go (AttendanceFlagsService). Flags never change recorded time. */
+  public setCallEvidence(evidence: CallEvidence): void {
+    this.callEvidence = evidence;
+  }
+
   public setFlagSink(sink: FlagSink): void {
     this.flagSink = sink;
   }
@@ -364,6 +375,19 @@ export class AttendanceService {
     // ADR 025: a valid heartbeat proves this login is live (used when another login logs out).
     if (this.repository) await this.repository.touchSessionSecret(payload.orgId, payload.sessionId, serverTime);
 
+    // ADR 049 §1b (FR-WT-001, FR-WT-002): the browser's inCall is a claim. The server checks it
+    // (outside the per-person lock: it may ask LiveKit) and the machine only sees verified calls.
+    // callKind is never taken from the request.
+    let callKind: CallKind | null = null;
+    if (payload.inCall && this.callEvidence) {
+      try {
+        callKind = await this.callEvidence.verify({ orgId: payload.orgId, userId: payload.userId, meetingId: payload.meetingId ?? null, at: serverTime });
+      } catch {
+        callKind = null;
+      }
+    }
+    const heartbeat: HeartbeatPayload = { ...payload, inCall: this.callEvidence ? callKind !== null : payload.inCall, callKind: callKind ?? undefined };
+
     return await this.withSessionLock(payload.orgId, payload.userId, async () => {
       // Ingest into state machine
       let existingSession: AttendanceSession | null = null;
@@ -396,7 +420,7 @@ export class AttendanceService {
       const hadMultiDevice = !!existingSession?.flags.includes('MULTI_DEVICE');
       const result = (await this.policy(payload.orgId)).machine.handleHeartbeat(
         existingSession,
-        payload,
+        heartbeat,
         serverTime,
         ip,
         source,
@@ -406,8 +430,10 @@ export class AttendanceService {
 
       if (this.repository) {
         await this.saveWithInput(result.session, serverTime, { kind: 'heartbeat', deviceId: payload.deviceId,
-          activeSeconds: payload.activeSeconds, idleSeconds: payload.idleSeconds, inCall: payload.inCall,
-          tabVisible: payload.tabVisible, windowFocused: payload.windowFocused, source });
+          activeSeconds: payload.activeSeconds, idleSeconds: payload.idleSeconds, inCall: heartbeat.inCall,
+          tabVisible: payload.tabVisible, windowFocused: payload.windowFocused, source,
+          ...(heartbeat.callKind ? { callKind: heartbeat.callKind } : {}),
+          ...(heartbeat.callKind === 'MEETING' && heartbeat.meetingId ? { meetingId: heartbeat.meetingId } : {}) });
         // FR-ATT-020: raw event the user can inspect. Counters only, never content.
         await this.repository.recordPresenceEvent({
           orgId: payload.orgId,
@@ -423,7 +449,9 @@ export class AttendanceService {
             idleSeconds: payload.idleSeconds,
             tabVisible: payload.tabVisible,
             windowFocused: payload.windowFocused,
-            inCall: payload.inCall,
+            inCall: heartbeat.inCall,
+            inCallReported: payload.inCall,
+            callKind: heartbeat.callKind ?? null,
             source,
           },
         });
@@ -961,6 +989,8 @@ export class AttendanceService {
     reviewerId: string;
     reviewerRole: string;
     reviewerPermissions?: readonly string[];
+    /** ADR 049 D4: the reviewer's team (a lead or manager of the requester's team may review). */
+    reviewerTeamId?: string | null;
     correctionId: string;
     approved: boolean;
     reviewNote?: string;
@@ -978,13 +1008,19 @@ export class AttendanceService {
       throw new Error('User cannot approve their own correction');
     }
 
-    // Role check: Only user's manager or HR/Admin may review
+    // ADR 049 D4: the requester's manager, a reviewer of the requester's own team, or HR/Admin.
+    // (Was: any MANAGER in the organisation.)
     const requester = await this.repository.findUserById(params.orgId, correction.userId);
-    const isManager = requester?.managerId === params.reviewerId || params.reviewerRole === UserRole.MANAGER;
-    const isHrOrAdmin = userCan({ role: params.reviewerRole, permissions: params.reviewerPermissions }, Permission.ATTENDANCE_READ_ALL) &&
-      userCan({ role: params.reviewerRole, permissions: params.reviewerPermissions }, Permission.ATTENDANCE_CORRECTIONS_REVIEW);
-    if (!isManager && !isHrOrAdmin) {
+    const canReview = userCan({ role: params.reviewerRole, permissions: params.reviewerPermissions }, Permission.ATTENDANCE_CORRECTIONS_REVIEW);
+    const isManager = requester?.managerId === params.reviewerId;
+    const sameTeam = canReview && !!params.reviewerTeamId && requester?.teamId === params.reviewerTeamId;
+    const isHrOrAdmin = userCan({ role: params.reviewerRole, permissions: params.reviewerPermissions }, Permission.ATTENDANCE_READ_ALL) && canReview;
+    if (!isManager && !sameTeam && !isHrOrAdmin) {
       throw new Error('Unauthorized to review correction: Only manager or HR/Admin may review');
+    }
+    // ADR 049 D3: decided once. The conditional update below settles a race between two reviewers.
+    if (correction.status !== CorrectionStatus.PENDING) {
+      throw new Error('Correction is no longer pending');
     }
 
     const reviewedAt = this.clock.now();
@@ -995,7 +1031,7 @@ export class AttendanceService {
       correction.reviewerId = params.reviewerId;
       correction.reviewedAt = reviewedAt;
       correction.reviewNote = params.reviewNote || null;
-      await this.repository.updateCorrection(correction);
+      if (!(await this.repository.updateCorrection(correction))) throw new Error('Correction is no longer pending');
 
       let origSession: AttendanceSession | null = null;
       if (correction.sessionId) {
@@ -1066,7 +1102,7 @@ export class AttendanceService {
       correction.reviewerId = params.reviewerId;
       correction.reviewedAt = reviewedAt;
       correction.reviewNote = params.reviewNote || null;
-      await this.repository.updateCorrection(correction);
+      if (!(await this.repository.updateCorrection(correction))) throw new Error('Correction is no longer pending');
 
       await this.repository.recordAuditLog({
         orgId: params.orgId,
@@ -1484,6 +1520,10 @@ export class AttendanceService {
       const todayBreakSeconds = todaySessions
         .filter((s) => s.userId === u.id && s.id !== openSession?.id)
         .reduce((sum, s) => sum + s.breakSeconds, openSession?.breakSeconds ?? 0);
+      // ADR 049 §1g (FR-WT-006): today's meeting time, including the running part of a call.
+      const todayMeetingSeconds = todaySessions
+        .filter((s) => s.userId === u.id && s.id !== openSession?.id)
+        .reduce((sum, s) => sum + s.meetingSeconds, openSession ? this.totalsAsOf(openSession).meetingSeconds : 0);
       const allowance = todayBreakSeconds > 0
         ? (await this.repository.findWorkScheduleForUser(params.orgId, u.id, todayStr))?.breakAllowanceMinutes ?? null
         : null;
@@ -1499,6 +1539,7 @@ export class AttendanceService {
         clockInAt,
         lastHeartbeatAt,
         todayNetSeconds,
+        todayMeetingSeconds,
         hasClockedInToday: clockedInToday.has(u.id) || !!openSession,
         todayBreakSeconds,
         breakAllowanceSeconds: allowance === null ? null : allowance * 60,
@@ -1529,7 +1570,8 @@ export class AttendanceService {
 
     const records = await this.repository.findDailyAttendanceInRange(params.orgId, params.filter);
 
-    let csv = 'work_date,user_id,display_name,email,first_in,last_out,net_hours,status\n';
+    // ADR 049 §1g: meeting_hours is appended last so existing column positions do not move.
+    let csv = 'work_date,user_id,display_name,email,first_in,last_out,net_hours,status,meeting_hours\n';
     for (const r of records) {
       const netHours = (r.netSeconds / 3600).toFixed(2);
       const firstIn = r.firstIn ? r.firstIn.toISOString() : '';
@@ -1539,7 +1581,7 @@ export class AttendanceService {
       const safeDisplayName = sanitizeExportCell(r.displayName || '');
       const safeEmail = sanitizeExportCell(r.email || '');
       const safeStatus = sanitizeExportCell(r.dayStatus);
-      csv += `${safeWorkDate},${safeUserId},"${String(safeDisplayName).replace(/"/g, '""')}","${String(safeEmail).replace(/"/g, '""')}",${firstIn},${lastOut},${netHours},${safeStatus}\n`;
+      csv += `${safeWorkDate},${safeUserId},"${String(safeDisplayName).replace(/"/g, '""')}","${String(safeEmail).replace(/"/g, '""')}",${firstIn},${lastOut},${netHours},${safeStatus},${((r.meetingSeconds ?? 0) / 3600).toFixed(2)}\n`;
     }
 
     const exportId = randomUUID();
@@ -1589,6 +1631,7 @@ export class AttendanceService {
       { header: 'last_out', key: 'last_out', width: 25 },
       { header: 'net_hours', key: 'net_hours', width: 12 },
       { header: 'status', key: 'status', width: 15 },
+      { header: 'meeting_hours', key: 'meeting_hours', width: 14 },
     ];
 
     for (const r of records) {
@@ -1601,6 +1644,7 @@ export class AttendanceService {
         last_out: r.lastOut ? r.lastOut.toISOString() : '',
         net_hours: Number((r.netSeconds / 3600).toFixed(2)),
         status: sanitizeExportCell(r.dayStatus),
+        meeting_hours: Number(((r.meetingSeconds ?? 0) / 3600).toFixed(2)),
       });
     }
 
@@ -1849,15 +1893,16 @@ export class AttendanceService {
     callerId: string;
     callerRole: string;
     callerPermissions?: readonly string[];
+    callerTeamId?: string | null;
   }): Promise<CorrectionQueueItem[]> {
     if (!this.repository) return [];
-    const orgWide = (userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_READ_ALL) &&
-      userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_CORRECTIONS_REVIEW)) ||
-      params.callerRole === UserRole.MANAGER;
+    // ADR 049 D4: the same scope as reviewCorrection (was: every MANAGER saw the whole organisation).
+    const orgWide = userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_READ_ALL) &&
+      userCan({ role: params.callerRole, permissions: params.callerPermissions }, Permission.ATTENDANCE_CORRECTIONS_REVIEW);
     const pending = await this.repository.findPendingCorrectionsWithRequester(params.orgId);
     return pending
       .filter((c) => c.userId !== params.callerId)
-      .filter((c) => orgWide || c.requesterManagerId === params.callerId)
+      .filter((c) => orgWide || c.requesterManagerId === params.callerId || (!!params.callerTeamId && c.requesterTeamId === params.callerTeamId))
       .map((c) => ({
         id: c.id,
         userId: c.userId,

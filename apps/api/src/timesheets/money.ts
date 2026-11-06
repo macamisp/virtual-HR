@@ -35,6 +35,13 @@ export interface PayableInput {
   periodEnd: string;
   /** Entries of every ISO week touching the period (earlier days count towards the cap). */
   entries: readonly PayableEntry[];
+  /**
+   * ADR 049 §2 (FR-WT-011): approved overtime minutes per work date, passed only when the
+   * organisation requires overtime approval. Then calculated overtime gets the multiplier up to the
+   * approved minutes of its ISO week (DAILY: of its day); the rest is paid at the base rate.
+   * Undefined = ADR 008 exactly.
+   */
+  approvedOvertime?: ReadonlyMap<string, number>;
 }
 
 export interface PayableLine {
@@ -42,6 +49,8 @@ export interface PayableLine {
   rate: string;
   regularMinutes: number;
   overtimeMinutes: number;
+  /** ADR 049: calculated overtime without approval, paid at the base rate (0 unless required). */
+  unapprovedOvertimeMinutes: number;
   amount: string;
 }
 
@@ -49,6 +58,7 @@ export interface PayableResult {
   amount: string;
   regularMinutes: number;
   overtimeMinutes: number;
+  unapprovedOvertimeMinutes: number;
   days: number;
   lines: PayableLine[];
 }
@@ -126,6 +136,7 @@ interface Acc {
   rate: bigint;
   regular: number;
   overtime: number;
+  unapproved: number;
   value: Frac;
 }
 
@@ -151,7 +162,7 @@ export function computePayable(input: PayableInput): PayableResult {
     const key = projectId ?? '';
     let acc = lines.get(key);
     if (!acc) {
-      acc = { projectId, rate, regular: 0, overtime: 0, value: { n: 0n, d: 1n } };
+      acc = { projectId, rate, regular: 0, overtime: 0, unapproved: 0, value: { n: 0n, d: 1n } };
       lines.set(key, acc);
     }
     return acc;
@@ -159,6 +170,23 @@ export function computePayable(input: PayableInput): PayableResult {
 
   const sorted = [...input.entries].filter((x) => x.minutes > 0).sort(chronological);
   let days = 0;
+  // ADR 049: approved minutes still available, per ISO week (HOURLY) or per day (DAILY).
+  const approvals = input.approvedOvertime;
+  const left = new Map<string, number>();
+  if (approvals) {
+    for (const [date, m] of approvals) {
+      const key = input.rateType === 'DAILY' ? date : weekStartOf(date);
+      left.set(key, (left.get(key) ?? 0) + Math.max(0, m));
+    }
+  }
+  /** Splits calculated overtime into [paid at the multiplier, paid at the base rate]. */
+  const approve = (key: string, overtime: number): [number, number] => {
+    if (!approvals || overtime <= 0) return [overtime, 0];
+    const avail = left.get(key) ?? 0;
+    const ok = Math.min(avail, overtime);
+    left.set(key, avail - ok);
+    return [ok, overtime - ok];
+  };
 
   if (input.rateType === 'FIXED') {
     const acc = line(null, baseRate);
@@ -172,15 +200,18 @@ export function computePayable(input: PayableInput): PayableResult {
       const week = weekStartOf(x.workDate);
       const before = used.get(week) ?? 0;
       used.set(week, before + x.minutes);
-      if (!inPeriod(x.workDate)) continue;
       const regular = Math.min(x.minutes, Math.max(0, cap - before));
-      const overtime = x.minutes - regular;
+      // Approvals are used up in chronological order over the whole week, also by days of an
+      // earlier period, so an approval is never counted twice.
+      const [overtime, unapproved] = approve(week, x.minutes - regular);
+      if (!inPeriod(x.workDate)) continue;
       const rate = rateFor(x.projectId);
       const acc = line(x.projectId, rate);
       acc.regular += regular;
       acc.overtime += overtime;
-      // cents = rate * (regular * 100 + overtime * multiplier) / (60 * 100)
-      acc.value = add(acc.value, frac(rate * (BigInt(regular) * 100n + BigInt(overtime) * multiplier), 6000n));
+      acc.unapproved += unapproved;
+      // cents = rate * ((regular + unapproved) * 100 + overtime * multiplier) / (60 * 100)
+      acc.value = add(acc.value, frac(rate * (BigInt(regular + unapproved) * 100n + BigInt(overtime) * multiplier), 6000n));
     }
     days = new Set(sorted.filter((x) => inPeriod(x.workDate)).map((x) => x.workDate)).size;
   } else {
@@ -191,18 +222,19 @@ export function computePayable(input: PayableInput): PayableResult {
       list.push(x);
       byDay.set(x.workDate, list);
     }
-    for (const list of byDay.values()) {
+    for (const [date, list] of byDay) {
       days += 1;
       const total = BigInt(list.reduce((s, x) => s + x.minutes, 0));
       let used = 0;
       for (const x of list) {
         const rate = rateFor(x.projectId);
         const regular = Math.min(x.minutes, Math.max(0, DAY_MINUTES - used));
-        const overtime = x.minutes - regular;
+        const [overtime, unapproved] = approve(date, x.minutes - regular);
         used += x.minutes;
         const acc = line(x.projectId, rate);
         acc.regular += regular;
         acc.overtime += overtime;
+        acc.unapproved += unapproved;
         // Share of the day rate: rate * minutes / day total.
         acc.value = add(acc.value, frac(rate * BigInt(x.minutes), total));
         // Overtime: rate / 8 per hour x multiplier -> rate * overtime * multiplier / (8 * 60 * 100).
@@ -216,7 +248,7 @@ export function computePayable(input: PayableInput): PayableResult {
   for (const acc of lines.values()) {
     const cents = roundHalfUp(acc.value);
     total += cents;
-    out.push({ projectId: acc.projectId, rate: formatMoney(acc.rate), regularMinutes: acc.regular, overtimeMinutes: acc.overtime, amount: formatMoney(cents) });
+    out.push({ projectId: acc.projectId, rate: formatMoney(acc.rate), regularMinutes: acc.regular, overtimeMinutes: acc.overtime, unapprovedOvertimeMinutes: acc.unapproved, amount: formatMoney(cents) });
   }
   if (total >= MAX_AMOUNT_CENTS) throw new Error('Payable amount too large for a timesheet');
   out.sort((a, b) => (a.projectId ?? '').localeCompare(b.projectId ?? ''));
@@ -224,6 +256,7 @@ export function computePayable(input: PayableInput): PayableResult {
     amount: formatMoney(total),
     regularMinutes: out.reduce((s, l) => s + l.regularMinutes, 0),
     overtimeMinutes: out.reduce((s, l) => s + l.overtimeMinutes, 0),
+    unapprovedOvertimeMinutes: out.reduce((s, l) => s + l.unapprovedOvertimeMinutes, 0),
     days,
     lines: out,
   };

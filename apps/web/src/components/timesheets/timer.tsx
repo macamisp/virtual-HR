@@ -15,7 +15,7 @@ import { formatDuration } from '@/lib/format';
  * Seconds the running timer has run, by the SERVER clock: the offset between serverNow and
  * the local clock at fetch time corrects a wrong local clock (times are never sent back).
  */
-function useElapsed(state: TimerState | undefined): number {
+export function useElapsed(state: TimerState | undefined): number {
   const [now, setNow] = useState(() => Date.now());
   const [offset, setOffset] = useState(0);
   useEffect(() => {
@@ -48,7 +48,7 @@ export function TaskTimerCard({ taskId, canLog, blockedReason }: { taskId: strin
         {here ? (
           <p aria-live="polite">Running for <span className="font-medium tabular-nums" data-testid="timer-elapsed">{formatDuration(elapsed)}</span></p>
         ) : running ? (
-          <p className="text-muted-foreground">Running on <Link className="text-primary underline-offset-4 hover:underline" href={`/tasks/${running.taskId}`}>{running.taskTitle ?? 'another task'}</Link>. Starting here stops it.</p>
+          <p className="text-muted-foreground">Running on <Link className="text-primary underline-offset-4 hover:underline" href={running.taskId ? `/tasks/${running.taskId}` : '/work-time'}>{running.taskTitle ?? running.title ?? 'other work'}</Link>. Starting here stops it.</p>
         ) : (
           <p className="text-muted-foreground">Not running. Timers stop on their own when you clock out.</p>
         )}
@@ -79,8 +79,8 @@ export function TimerBadge() {
   return (
     <div className="hidden items-center gap-1 rounded-md border px-2 py-1 text-sm lg:flex" data-testid="timer-badge">
       <Timer className="h-4 w-4 text-primary" aria-hidden="true" />
-      <Link href={`/tasks/${running.taskId}`} className="max-w-40 truncate hover:underline" title={running.taskTitle ?? undefined}>
-        {running.taskTitle ?? 'Task'}
+      <Link href={running.taskId ? `/tasks/${running.taskId}` : '/work-time'} className="max-w-40 truncate hover:underline" title={running.taskTitle ?? running.title ?? undefined}>
+        {running.taskTitle ?? running.title ?? 'Work'}
       </Link>
       <span className="tabular-nums text-muted-foreground">{formatDuration(elapsed)}</span>
       <Button variant="ghost" size="sm" className="h-7 px-2" aria-label="Stop timer" onClick={() => action.mutate({ action: 'stop' })} disabled={action.isPending}>

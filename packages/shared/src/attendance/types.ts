@@ -70,6 +70,11 @@ export interface HeartbeatPayload {
   windowFocused: boolean;
   inCall: boolean;
   meetingId?: string;
+  /**
+   * ADR 049 §1b: set by the SERVER after it verified the call (never read from the request body):
+   * which kind of call the heartbeat's inCall was confirmed for.
+   */
+  callKind?: CallKind;
   clientTimestamp?: number; // Ignored for server clock
   signature: string;        // HMAC-SHA256 signature
 }
@@ -81,8 +86,14 @@ export interface AttendanceSegment {
   endedAt: Date | null;
   durationSeconds: number;
   meetingId?: string | null;
+  /** ADR 049 §1c: for a meeting segment opened from a verified heartbeat, the kind of call and the meeting. */
+  callKind?: CallKind | null;
+  callMeetingId?: string | null;
   flags: string[];
 }
+
+/** ADR 049: the kinds of call the server can verify (office room, proximity group, meeting). */
+export type CallKind = 'ROOM' | 'PROXIMITY' | 'MEETING';
 
 export interface AttendanceSession {
   id: string;
@@ -114,6 +125,9 @@ export interface AttendanceSession {
   agentLastSeenAt?: Date | null;
   /** ADR 018: last browser heartbeat that was in a call (keeps agent-reported idle time active). */
   webInCallAt?: Date | null;
+  /** ADR 049 §1e: the device whose heartbeats report the call, and when it last confirmed it. */
+  callDeviceId?: string | null;
+  callConfirmedAt?: Date | null;
   /** FR-ATT-018: coarse location (ISO country) at clock-in and at the last heartbeat. */
   countryIn?: string | null;
   countryOut?: string | null;
@@ -137,6 +151,13 @@ export interface AttendanceConfig {
   maxCorrectionAgeDays?: number;         // default 7 days
   currentNoticeVersion?: string;         // default 'v1.0.0'
   presenceRetentionDays?: number;        // default 90 (FR-ADM-004, per organisation)
+  /**
+   * ADR 049 §1a/§1e: 2 = input during a meeting is not counted again and only the device in the
+   * call ends it. Absent = the V2 rules. Every saved attendance input stores the config it was
+   * processed with, so the nightly replay recomputes days recorded before V3 with the V2 rules
+   * and never reports a difference that only the new rules would produce.
+   */
+  meetingAccounting?: 2;
   /** FR-ATT-023 (ADR 019): ask "Are you still working?" before pausing. Off by default. */
   presenceChallengeEnabled?: boolean;
   presenceChallengeSeconds?: number;     // default 60
@@ -336,6 +357,8 @@ export interface LiveBoardUser {
   clockInAt?: Date | null;
   lastHeartbeatAt?: Date | null;
   todayNetSeconds: number;
+  /** ADR 049: meeting time today (verified calls), included in todayNetSeconds. */
+  todayMeetingSeconds: number;
   hasClockedInToday: boolean;   // distinguishes "signed out" from "not yet in"
   /** FR-ORG-005: break time today, and the allowance of the schedule in force today (null: no limit). */
   todayBreakSeconds: number;

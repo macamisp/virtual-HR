@@ -52,6 +52,11 @@ export const NotificationType = {
   LEAVE_REQUESTED: 'LEAVE_REQUESTED',
   LEAVE_APPROVED: 'LEAVE_APPROVED',
   LEAVE_REJECTED: 'LEAVE_REJECTED',
+  // FR-WT-012, FR-WT-024 (ADR 049)
+  OVERTIME_REQUESTED: 'OVERTIME_REQUESTED',
+  OVERTIME_DECIDED: 'OVERTIME_DECIDED',
+  ONSITE_REQUESTED: 'ONSITE_REQUESTED',
+  ONSITE_DECIDED: 'ONSITE_DECIDED',
   // FR-DOC-006 / FR-DOC-010
   DOCUMENT_PASSWORD_LOCKOUT: 'DOCUMENT_PASSWORD_LOCKOUT',
   DOCUMENT_PASSWORD_RECOVERED: 'DOCUMENT_PASSWORD_RECOVERED',
@@ -128,6 +133,10 @@ export const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; g
   LEAVE_REQUESTED: { label: 'Leave request waiting for my decision', group: 'Attendance' },
   LEAVE_APPROVED: { label: 'My leave was approved', group: 'Attendance' },
   LEAVE_REJECTED: { label: 'My leave was rejected', group: 'Attendance' },
+  OVERTIME_REQUESTED: { label: 'Overtime request waiting for my decision', group: 'Timesheets' },
+  OVERTIME_DECIDED: { label: 'My overtime request was decided', group: 'Timesheets' },
+  ONSITE_REQUESTED: { label: 'Onsite work waiting for my review', group: 'Timesheets' },
+  ONSITE_DECIDED: { label: 'My onsite work was reviewed', group: 'Timesheets' },
   DOCUMENT_INFECTED: { label: 'Malware found in an upload', group: 'Security', critical: true },
   DOCUMENT_PASSWORD_LOCKOUT: { label: 'Document password lockout', group: 'Security', critical: true },
   DOCUMENT_PASSWORD_RECOVERED: { label: 'Document password recovered by HR', group: 'Security', critical: true },

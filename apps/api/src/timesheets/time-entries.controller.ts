@@ -7,10 +7,11 @@ import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.ts';
 import { Permission } from '../../../../packages/shared/src/auth/types.ts';
 import {
   ManualEntryDtoSchema,
+  StartTimerDtoSchema,
   TimeEntryListQuerySchema,
   UpdateEntryDtoSchema,
 } from '../../../../packages/shared/src/timesheets/types.ts';
-import type { ManualEntryDto, TimeEntryListQuery, UpdateEntryDto } from '../../../../packages/shared/src/timesheets/types.ts';
+import type { ManualEntryDto, StartTimerDto, TimeEntryListQuery, UpdateEntryDto } from '../../../../packages/shared/src/timesheets/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
 import { TimeEntriesService } from './time-entries.service.ts';
 
@@ -31,7 +32,21 @@ export class TimeEntriesController {
   @Post('tasks/:id/timer/start')
   @HttpCode(HttpStatus.OK)
   start(@CurrentUser() user: AuthenticatedUser, @Param('id', id) taskId: string) {
-    return this.time.startTimer(user, taskId);
+    return this.time.startTimer(user, { taskId });
+  }
+
+  /** ADR 049 §3 (FR-WT-013): a timer on a task, a project or the person's own title. */
+  @Post('timer/start')
+  @HttpCode(HttpStatus.OK)
+  startAny(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(StartTimerDtoSchema)) dto: StartTimerDto) {
+    return this.time.startTimer(user, dto);
+  }
+
+  /** ADR 049 §3: continue today's last timer as a new entry (Pause = stop, then Resume). */
+  @Post('timer/resume')
+  @HttpCode(HttpStatus.OK)
+  resume(@CurrentUser() user: AuthenticatedUser) {
+    return this.time.resumeTimer(user);
   }
 
   @Post('tasks/:id/timer/stop')

@@ -9,6 +9,7 @@ import {
   CorrectionQueueSchema,
   CorrectionSchema,
   LiveBoardSchema,
+  MeetingIntervalListSchema,
   MyDaysSchema,
   MyTodaySchema,
   TransparencySchema,
@@ -60,6 +61,15 @@ export function useDays(from: string, to: string) {
   return useQuery({
     queryKey: queryKeys.days(from, to),
     queryFn: () => apiFetch(`/attendance/me/days?from=${from}&to=${to}`, { schema: MyDaysSchema }),
+    enabled: useSignedIn(),
+  });
+}
+
+/** ADR 049 (FR-WT-005): the caller's meeting intervals in a range of work dates. */
+export function useMyMeetings(from: string, to: string) {
+  return useQuery({
+    queryKey: ['attendance', 'meetings', from, to] as const,
+    queryFn: () => apiFetch(`/attendance/me/meetings?from=${from}&to=${to}`, { schema: MeetingIntervalListSchema }),
     enabled: useSignedIn(),
   });
 }

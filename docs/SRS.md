@@ -587,6 +587,37 @@ A virtual-office workspace with built-in HR: automatic attendance, timesheets, t
 | FR-AUD-005 | Privacy dashboard for each user showing what data is collected, retention periods and who accessed their documents. | Should | P3 |
 
 
+## 5.13 Smart Work Time (WT)
+
+Added 2026-11-05 (client requirements V3; design in ADR 049).
+
+| ID | Requirement | Priority | Phase |
+| --- | --- | --- | --- |
+| FR-WT-001 | Time in a genuine call (office room or proximity call with at least one other person, or a live meeting with at least one other participant) shall count as "In meeting" working time without keyboard or mouse input; the server verifies the call and does not trust the client's claim alone. | Must | P1 |
+| FR-WT-002 | Being alone in a room or meeting shall not count as meeting time. | Must | P1 |
+| FR-WT-003 | Input during a call shall not be counted a second time as active time; two tabs or two devices shall not double count or interrupt the meeting time. | Must | P1 |
+| FR-WT-004 | Meeting time shall stop within one heartbeat of the call ending, the other participants leaving, logout or the end of the attendance session. | Must | P1 |
+| FR-WT-005 | Each meeting interval (start, end, duration, kind) shall be stored and listed for the person and, in scope, their manager. | Must | P1 |
+| FR-WT-006 | Meeting time shall be shown in My attendance, timesheet days, attendance and timesheet reports, their exports and the live board. | Must | P1 |
+| FR-WT-007 | An employee shall request overtime for a date with planned start/end or a duration, project, optional task, work description, reason and optional notes. | Must | P1 |
+| FR-WT-008 | The person's manager, their team's lead/manager or HR shall approve (optionally fewer minutes) or reject (comment required) a pending overtime request; nobody decides their own. | Must | P1 |
+| FR-WT-009 | Overtime request states are PENDING, APPROVED, REJECTED and CANCELLED; history and decisions are visible to the owner and approvers in scope. | Must | P1 |
+| FR-WT-010 | At most one pending or approved overtime request per person per day. | Must | P1 |
+| FR-WT-011 | Worked (calculated), requested and approved overtime shall be shown separately; when the organisation requires approval, only approved overtime is paid at the overtime multiplier. | Must | P1 |
+| FR-WT-012 | Overtime requests and decisions are audit-logged and notified to approvers and the owner. | Must | P1 |
+| FR-WT-013 | A timer may run on a task, or on a project or own title without a task; it can be paused and resumed; only one runs at a time. | Must | P1 |
+| FR-WT-014 | Each task shows estimate, actual and remaining estimate; project totals are available in scope. | Must | P1 |
+| FR-WT-015 | Time entries keep the task and project names they were recorded with after a rename. | Must | P1 |
+| FR-WT-016 | Time may be logged on a task assigned to someone else only by people who manage that task. | Must | P1 |
+| FR-WT-017 | An employee may record work under their own title with optional project and task, start/end or duration, notes, work type (office, remote, onsite) and category. | Must | P1 |
+| FR-WT-018 | Declared start/end times of work entries shall not overlap; manual entries are audit-logged. | Must | P1 |
+| FR-WT-019 | A work-time report shall show estimated vs actual, task-wise, project-wise, category and work-type breakdowns, meeting vs focused task time, tasks over estimate, and weekly and monthly trends, for oneself and, in scope, for others. | Must | P1 |
+| FR-WT-020 | Work-time figures shall come from server records and never count overlapping attendance, task and meeting intervals twice; the report is exportable to CSV and XLSX. | Must | P1 |
+| FR-WT-021 | Work-time views shall state that activity time does not measure the quality of work and present observations, not ratings. | Must | P1 |
+| FR-WT-022 | A person with a connected calendar shall see upcoming calendar events (title, start/end, source, their response, open link); a calendar event alone never counts as worked time. | Must | P1 |
+| FR-WT-023 | An employee may submit onsite work (date, start/end, location, project, optional task, description, reason) for review; approval adds an onsite time entry and never creates attendance. | Must | P1 |
+| FR-WT-024 | Onsite requests are checked for overlap with other onsite requests, timed entries and attendance, limited per day, audit-logged and notified. | Must | P1 |
+
 
 # 6. Attendance Detection Design
 

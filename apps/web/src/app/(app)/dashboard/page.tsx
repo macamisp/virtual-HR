@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { UpcomingMeetings } from '@/components/calendar/upcoming-meetings';
 import { AccessDenied, EmptyState, ErrorState, LoadingState } from '@/components/state-views';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -24,13 +25,15 @@ export default function DashboardPage() {
   const all = useCan(Permission.REPORTS_ALL);
   const allowed = team || all;
   const d = useDashboard(allowed);
-  if (!allowed) return <AccessDenied what="The manager dashboard" />;
+  if (!allowed) return <div className="space-y-4"><UpcomingMeetings /><AccessDenied what="The manager dashboard" /></div>;
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">Dashboard</h1>
         {d.data ? <p className="text-sm text-muted-foreground">{formatWorkDate(d.data.today)} · {d.data.scope === 'all' ? 'whole organisation' : 'my team'} · {d.data.peopleInScope} people</p> : null}
       </div>
+      {/* FR-WT-022: the viewer's own next meetings (ADR 049 §6). */}
+      <UpcomingMeetings />
       {d.isPending ? <LoadingState label="Loading dashboard" rows={5} /> : null}
       {d.isError ? <ErrorState error={d.error} onRetry={() => void d.refetch()} /> : null}
       {d.data ? (

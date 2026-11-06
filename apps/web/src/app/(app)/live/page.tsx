@@ -117,6 +117,7 @@ export default function LiveBoardPage() {
                   <TableHead>Clocked in</TableHead>
                   <TableHead>Last heartbeat</TableHead>
                   <TableHead className="text-right">Net today</TableHead>
+                  <TableHead className="text-right">In meetings</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -137,6 +138,7 @@ export default function LiveBoardPage() {
                       <TableCell>{formatClock(r.clockInAt)}</TableCell>
                       <TableCell>{formatClock(r.lastHeartbeatAt)}</TableCell>
                       <TableCell className="text-right tabular-nums">{formatDuration(r.todayNetSeconds)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatDuration(r.todayMeetingSeconds)}</TableCell>
                     </TableRow>
                   );
                 })}

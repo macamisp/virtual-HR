@@ -6,6 +6,7 @@ import { AttendanceModule } from '../attendance/attendance.module.ts';
 import { TasksModule } from '../tasks/tasks.module.ts';
 import { OfficeModule } from '../office/office.module.ts';
 import { MediaService } from '../media/media.service.ts';
+import { CallEvidenceRegistrar } from '../media/call-evidence.service.ts';
 import { LiveKitWebhookController, MediaController } from '../media/media.controller.ts';
 import { MeetingsController } from './meetings.controller.ts';
 import { MeetingsService } from './meetings.service.ts';
@@ -22,7 +23,7 @@ import { OBJECT_STORE, objectStoreFromEnv } from '../documents/object-store.ts';
   imports: [MailModule, AttendanceModule, TasksModule, OfficeModule, NotificationsModule, ChatModule],
   controllers: [MeetingsController, MediaController, LiveKitWebhookController, RecordingsController],
   providers: [
-    MediaService, MeetingsService, RecordingsService, CallsService,
+    MediaService, MeetingsService, RecordingsService, CallsService, CallEvidenceRegistrar,
     // FR-MEET-007: recordings are encrypted like documents (same key provider and bucket, ADR 024).
     { provide: KEY_PROVIDER, useFactory: () => keyProviderFromEnv() },
     { provide: OBJECT_STORE, useFactory: () => objectStoreFromEnv() },

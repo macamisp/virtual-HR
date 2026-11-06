@@ -111,6 +111,8 @@ export const LiveBoardEntrySchema = z.object({
   clockInAt: isoDate.nullable(),
   lastHeartbeatAt: isoDate.nullable(),
   todayNetSeconds: z.number(),
+  /** ADR 049: meeting time today (verified calls), included in todayNetSeconds. */
+  todayMeetingSeconds: z.number(),
   hasClockedInToday: z.boolean(),
   /** FR-ORG-005: break time today and the allowance in force today (null: no limit). */
   todayBreakSeconds: z.number(),
@@ -143,3 +145,27 @@ export const BreakResultSchema = z.object({
   totals: TimeTotalsSchema,
 });
 export type BreakResult = z.infer<typeof BreakResultSchema>;
+
+/**
+ * ADR 049 §1c, §1g (FR-WT-005): one meeting interval, from the IN_MEETING segments of the attendance
+ * sessions (server clock). `kind` is null for intervals recorded before ADR 049 or opened by the
+ * meetings hook. `title` is shown only to the person themselves.
+ */
+export const MeetingIntervalSchema = z.object({
+  id: z.string(),
+  workDate: workDate,
+  startedAt: isoDate,
+  endedAt: isoDate.nullable(),
+  durationSeconds: z.number().int(),
+  kind: z.enum(['ROOM', 'PROXIMITY', 'MEETING']).nullable(),
+  meetingId: z.string().nullable(),
+  title: z.string().nullable(),
+});
+export type MeetingInterval = z.infer<typeof MeetingIntervalSchema>;
+export const MeetingIntervalListSchema = z.object({
+  from: workDate,
+  to: workDate,
+  totalSeconds: z.number().int(),
+  intervals: z.array(MeetingIntervalSchema),
+});
+export type MeetingIntervalList = z.infer<typeof MeetingIntervalListSchema>;

@@ -16,11 +16,14 @@ import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts
 import type { AttendanceSession } from '../../../../packages/shared/src/attendance/types.ts';
 import type {
   ManualEntryDto,
+  StartTimerDto,
   TimeEntry,
   TimeEntryListQuery,
   TimerState,
   UpdateEntryDto,
 } from '../../../../packages/shared/src/timesheets/types.ts';
+import type { TaskDetail } from '../../../../packages/shared/src/tasks/types.ts';
+import { appendAuditEntry } from '../common/audit-chain.ts';
 import { addDaysIso } from '../planning/planning-rules.ts';
 import { localDate } from '../notifications/reminder-rules.ts';
 import { ensureTimesheet, isEditable, orgSettings, refreshDay, TimesheetLockedError } from './timesheet-store.ts';
@@ -81,9 +84,21 @@ export class TimeEntriesService implements OnModuleInit {
     }));
   }
 
-  async startTimer(user: AuthenticatedUser, taskId: string): Promise<TimerState> {
-    const task = await this.tasks.get(user, taskId);
-    this.assertMayLogOn(user, task.assignee?.id ?? null, task.acceptanceStatus);
+  /**
+   * FR-TS-003, ADR 049 §3 (FR-WT-013): a timer on a task, or on a project and/or the person's own
+   * title without a task. Starting one stops the running one (one timer at a time).
+   */
+  async startTimer(user: AuthenticatedUser, dto: StartTimerDto): Promise<TimerState> {
+    let task: TaskDetail | null = null;
+    let projectId = dto.projectId ?? null;
+    if (dto.taskId) {
+      task = await this.tasks.get(user, dto.taskId);
+      this.assertMayLogOn(user, task);
+      if (projectId && task.projectId !== projectId) throw new BadRequestException('The task belongs to another project');
+      projectId = task.projectId;
+    }
+    const taskId = dto.taskId ?? null;
+    const title = dto.title ?? null;
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       await db.query(`SELECT pg_advisory_xact_lock(hashtext('timer:' || $1::text))`, [user.id]);
       const open = await db.query(
@@ -91,8 +106,11 @@ export class TimeEntriesService implements OnModuleInit {
         [user.orgId, user.id],
       );
       if (open.rowCount === 0) throw new ConflictException('Clock in before starting a timer: you are not tracked as online');
+      if (projectId && !task) await this.assertProjectAccess(db, user, projectId);
       const current = await this.runningEntry(db, user.id, user.id);
-      if (current?.taskId === taskId) return { running: current, serverNow: this.now().toISOString(), stopped: null };
+      if (current && current.taskId === taskId && current.title === title && current.projectId === projectId) {
+        return { running: current, serverNow: this.now().toISOString(), stopped: null };
+      }
 
       const now = this.now();
       // FR-TS-003: only one timer at a time; starting another stops the current one.
@@ -103,9 +121,11 @@ export class TimeEntriesService implements OnModuleInit {
       if (!isEditable(sheet.status)) throw new TimesheetLockedError(sheet.status);
       try {
         await db.query(
-          `INSERT INTO time_entries (org_id, user_id, timesheet_id, project_id, task_id, work_date, started_at, source)
-           VALUES ($1, $2, $3, $4, $5, $6::date, $7, 'TIMER')`,
-          [user.orgId, user.id, sheet.id, task.projectId, taskId, date, now],
+          `INSERT INTO time_entries (org_id, user_id, timesheet_id, project_id, task_id, work_date, started_at, source,
+             title, work_type, category, task_title, project_name)
+           VALUES ($1, $2, $3, $4, $5, $6::date, $7, 'TIMER', $8, $9, $10, $11, $12)`,
+          [user.orgId, user.id, sheet.id, projectId, taskId, date, now, title, dto.workType ?? null, dto.category ?? null,
+            task?.title ?? null, await this.projectName(db, projectId)],
         );
       } catch (err) {
         throw mapTimeDbError(err);
@@ -117,6 +137,31 @@ export class TimeEntriesService implements OnModuleInit {
       };
     }).catch((err: unknown) => {
       throw mapTimeDbError(err);
+    });
+  }
+
+  /**
+   * ADR 049 §3: "Resume" continues the person's last timer of today (same task, project, title,
+   * work type and category) as a new entry; the paused gap is not counted.
+   */
+  async resumeTimer(user: AuthenticatedUser): Promise<TimerState> {
+    const last = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
+      const settings = await orgSettings(db, user.orgId);
+      const res = await db.query<{ task_id: string | null; project_id: string | null; title: string | null; work_type: StartTimerDto['workType'] | null; category: StartTimerDto['category'] | null }>(
+        `SELECT task_id, project_id, title, work_type, category FROM time_entries
+         WHERE org_id = $1 AND user_id = $2 AND source = 'TIMER' AND ended_at IS NOT NULL AND work_date = $3::date
+         ORDER BY ended_at DESC LIMIT 1`,
+        [user.orgId, user.id, localDate(this.now(), settings.timezone)],
+      );
+      return res.rows[0] ?? null;
+    });
+    if (!last) throw new NotFoundException('Nothing to resume today: start a timer');
+    return await this.startTimer(user, {
+      ...(last.task_id ? { taskId: last.task_id } : {}),
+      ...(last.project_id && !last.task_id ? { projectId: last.project_id } : {}),
+      ...(last.title ? { title: last.title } : {}),
+      ...(last.work_type ? { workType: last.work_type } : {}),
+      ...(last.category ? { category: last.category } : {}),
     });
   }
 
@@ -142,8 +187,9 @@ export class TimeEntriesService implements OnModuleInit {
    * Returns the id of the first (original) entry, or null when nothing was running.
    */
   private async stopRunning(db: Db, orgId: string, userId: string, at: Date, auto: boolean): Promise<string | null> {
-    const res = await db.query<{ id: string; started_at: Date; project_id: string | null; task_id: string | null; billable: boolean; note: string }>(
-      `SELECT id, started_at, project_id, task_id, billable, note FROM time_entries
+    const res = await db.query<{ id: string; started_at: Date; project_id: string | null; task_id: string | null; billable: boolean; note: string;
+      title: string | null; work_type: string | null; category: string | null; task_title: string | null; project_name: string | null }>(
+      `SELECT id, started_at, project_id, task_id, billable, note, title, work_type, category, task_title, project_name FROM time_entries
        WHERE org_id = $1 AND user_id = $2 AND ended_at IS NULL FOR UPDATE`,
       [orgId, userId],
     );
@@ -161,9 +207,11 @@ export class TimeEntriesService implements OnModuleInit {
       const sheet = await ensureTimesheet(db, orgId, userId, p.date, settings);
       if (!isEditable(sheet.status)) continue; // never write into a submitted period
       await db.query(
-        `INSERT INTO time_entries (org_id, user_id, timesheet_id, project_id, task_id, work_date, started_at, ended_at, minutes, source, billable, note, auto_stopped)
-         VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, 'TIMER', $10, $11, $12)`,
-        [orgId, userId, sheet.id, run.project_id, run.task_id, p.date, p.start, p.end, minutesBetween(p.start, p.end), run.billable, run.note, auto],
+        `INSERT INTO time_entries (org_id, user_id, timesheet_id, project_id, task_id, work_date, started_at, ended_at, minutes, source, billable, note, auto_stopped,
+           title, work_type, category, task_title, project_name)
+         VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, 'TIMER', $10, $11, $12, $13, $14, $15, $16, $17)`,
+        [orgId, userId, sheet.id, run.project_id, run.task_id, p.date, p.start, p.end, minutesBetween(p.start, p.end), run.billable, run.note, auto,
+          run.title, run.work_type, run.category, run.task_title, run.project_name],
       );
     }
     for (const p of pieces) await refreshDay(db, orgId, userId, p.date, settings);
@@ -191,9 +239,10 @@ export class TimeEntriesService implements OnModuleInit {
 
   async addManual(user: AuthenticatedUser, dto: ManualEntryDto): Promise<TimeEntry> {
     let projectId = dto.projectId ?? null;
+    let task: TaskDetail | null = null;
     if (dto.taskId) {
-      const task = await this.tasks.get(user, dto.taskId);
-      this.assertMayLogOn(user, task.assignee?.id ?? null, task.acceptanceStatus);
+      task = await this.tasks.get(user, dto.taskId);
+      this.assertMayLogOn(user, task);
       if (projectId && task.projectId !== projectId) throw new BadRequestException('The task belongs to another project');
       projectId = task.projectId;
     }
@@ -202,14 +251,29 @@ export class TimeEntriesService implements OnModuleInit {
       const settings = await orgSettings(db, user.orgId);
       this.assertNotFuture(dto.workDate, settings);
       if (projectId && !dto.taskId) await this.assertProjectAccess(db, user, projectId);
+      // ADR 049 §4 (FR-WT-018): declared times are org-local on the work date; they must have
+      // ended and must not overlap the person's other timed entries.
+      let start: Date | null = null;
+      let end: Date | null = null;
+      let minutes = dto.minutes ?? 0;
+      if (dto.startTime && dto.endTime) {
+        start = fromZonedTime(`${dto.workDate}T${dto.startTime}:00`, settings.timezone);
+        end = fromZonedTime(`${dto.workDate}T${dto.endTime}:00`, settings.timezone);
+        if (end.getTime() > this.now().getTime()) throw new BadRequestException('The work must have ended: the end time is in the future');
+        minutes = minutesBetween(start, end);
+        await this.assertNoOverlap(db, user, start, end, null);
+      }
       const sheet = await ensureTimesheet(db, user.orgId, user.id, dto.workDate, settings);
       if (!isEditable(sheet.status)) throw new TimesheetLockedError(sheet.status);
-      await this.assertDayFits(db, user, dto.workDate, dto.minutes, null);
+      await this.assertDayFits(db, user, dto.workDate, minutes, null);
       const res = await db.query<{ id: string }>(
-        `INSERT INTO time_entries (org_id, user_id, timesheet_id, project_id, task_id, work_date, minutes, source, billable, note, manual_reason, ended_at)
-         VALUES ($1, $2, $3, $4, $5, $6::date, $7, 'MANUAL', $8, $9, $10, now()) RETURNING id`,
-        [user.orgId, user.id, sheet.id, projectId, dto.taskId ?? null, dto.workDate, dto.minutes, dto.billable, dto.note, dto.reason],
+        `INSERT INTO time_entries (org_id, user_id, timesheet_id, project_id, task_id, work_date, minutes, source, billable, note, manual_reason,
+           started_at, ended_at, title, work_type, category, task_title, project_name)
+         VALUES ($1, $2, $3, $4, $5, $6::date, $7, 'MANUAL', $8, $9, $10, $11, COALESCE($12, now()), $13, $14, $15, $16, $17) RETURNING id`,
+        [user.orgId, user.id, sheet.id, projectId, dto.taskId ?? null, dto.workDate, minutes, dto.billable, dto.note, dto.reason,
+          start, end, dto.title ?? null, dto.workType ?? null, dto.category ?? null, task?.title ?? null, await this.projectName(db, projectId)],
       );
+      await this.auditEntry(db, user, 'TIME_ENTRY_MANUAL_ADDED', res.rows[0]!.id, { workDate: dto.workDate, minutes, projectId, taskId: dto.taskId ?? null, declaredTimes: !!start });
       await refreshDay(db, user.orgId, user.id, dto.workDate, settings);
       return (await this.entryById(db, res.rows[0]!.id, user.id))!;
     }).catch((err: unknown) => {
@@ -221,20 +285,44 @@ export class TimeEntriesService implements OnModuleInit {
 
   async update(user: AuthenticatedUser, entryId: string, dto: UpdateEntryDto): Promise<TimeEntry> {
     let workDate = '';
+    // ADR 049 §4: linking a named entry to a task follows the task's own rules (visible, accepted,
+    // and not someone else's task unless the person manages it).
+    const task = dto.taskId ? await this.tasks.get(user, dto.taskId) : null;
+    if (task) this.assertMayLogOn(user, task);
     const entry = await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       await this.lockUserTime(db, user.id);
       const e = await this.ownEditableEntry(db, user, entryId);
       if (e.source !== 'MANUAL' && (dto.minutes !== undefined || dto.reason !== undefined)) {
         throw new BadRequestException('Only manual entries can change their minutes or reason');
       }
+      if (dto.minutes !== undefined && e.started_at !== null && e.source === 'MANUAL') {
+        throw new BadRequestException('This entry has start and end times: delete it and add it again to change them');
+      }
+      if (task && e.task_id) throw new BadRequestException('This entry already belongs to a task');
+      if (task && e.project_id && task.projectId !== e.project_id) throw new BadRequestException('The task belongs to another project');
       if (dto.minutes !== undefined) await this.assertDayFits(db, user, e.work_date, dto.minutes, e.id);
-      await db.query(
-        `UPDATE time_entries SET
-           minutes = COALESCE($2, minutes), note = COALESCE($3, note), manual_reason = COALESCE($4, manual_reason),
-           billable = COALESCE($5, billable), updated_at = now()
-         WHERE id = $1`,
-        [entryId, dto.minutes ?? null, dto.note ?? null, dto.reason ?? null, dto.billable ?? null],
-      );
+      const sets: string[] = [];
+      const params: unknown[] = [entryId];
+      const set = (col: string, v: unknown) => { params.push(v); sets.push(`${col} = $${params.length}`); };
+      if (dto.minutes !== undefined) set('minutes', dto.minutes);
+      if (dto.note !== undefined) set('note', dto.note);
+      if (dto.reason !== undefined) set('manual_reason', dto.reason);
+      if (dto.billable !== undefined) set('billable', dto.billable);
+      if (dto.title !== undefined) set('title', dto.title);
+      if (dto.workType !== undefined) set('work_type', dto.workType);
+      if (dto.category !== undefined) set('category', dto.category);
+      if (task) {
+        set('task_id', task.id);
+        set('task_title', task.title);
+        if (!e.project_id && task.projectId) {
+          set('project_id', task.projectId);
+          set('project_name', await this.projectName(db, task.projectId));
+        }
+      }
+      await db.query(`UPDATE time_entries SET ${sets.join(', ')}, updated_at = now() WHERE id = $1`, params);
+      if (e.source === 'MANUAL' || task) {
+        await this.auditEntry(db, user, 'TIME_ENTRY_MANUAL_UPDATED', entryId, { fields: Object.keys(dto).filter((k) => k !== 'note'), noteChanged: dto.note !== undefined });
+      }
       await refreshDay(db, user.orgId, user.id, e.work_date);
       workDate = e.work_date;
       return (await this.entryById(db, entryId, user.id))!;
@@ -248,7 +336,10 @@ export class TimeEntriesService implements OnModuleInit {
   async remove(user: AuthenticatedUser, entryId: string): Promise<{ deleted: true }> {
     return await this.prisma.runWithTenantContext(user.orgId, async (db) => {
       const e = await this.ownEditableEntry(db, user, entryId);
+      // ADR 049 §7: approved onsite work stays tied to its reviewed request.
+      if (e.source === 'ONSITE') throw new ConflictException('Approved onsite work cannot be deleted here: ask your manager or HR');
       await db.query(`DELETE FROM time_entries WHERE id = $1`, [entryId]);
+      if (e.source === 'MANUAL') await this.auditEntry(db, user, 'TIME_ENTRY_MANUAL_DELETED', entryId, { workDate: e.work_date, minutes: e.minutes });
       await refreshDay(db, user.orgId, user.id, e.work_date);
       return { deleted: true as const };
     }).catch((err: unknown) => {
@@ -273,11 +364,41 @@ export class TimeEntriesService implements OnModuleInit {
 
   // ---------------------------------------------------------------- helpers
 
-  /** FR-TASK-007: an assignee who has not accepted a task cannot log time on it. */
-  private assertMayLogOn(user: AuthenticatedUser, assigneeId: string | null, acceptance: string): void {
-    if (assigneeId === user.id && (acceptance === 'PENDING' || acceptance === 'DECLINED')) {
+  /**
+   * FR-TASK-007: an assignee who has not accepted a task cannot log time on it.
+   * ADR 049 §3 (FR-WT-016): a task assigned to someone else takes time only from people who
+   * manage it; everyone else records the work under their own title.
+   */
+  private assertMayLogOn(user: AuthenticatedUser, task: TaskDetail): void {
+    const assigneeId = task.assignee?.id ?? null;
+    if (assigneeId === user.id && (task.acceptanceStatus === 'PENDING' || task.acceptanceStatus === 'DECLINED')) {
       throw new ConflictException('Accept the task before logging time on it');
     }
+    if (assigneeId && assigneeId !== user.id && !task.permissions.canEdit) {
+      throw new ForbiddenException('This task is assigned to someone else: record the work under your own title instead');
+    }
+  }
+
+  /** ADR 049 §4 (FR-WT-018): declared intervals never overlap the person's other timed entries. */
+  private async assertNoOverlap(db: Db, user: AuthenticatedUser, start: Date, end: Date, excludeId: string | null): Promise<void> {
+    const res = await db.query(
+      `SELECT 1 FROM time_entries
+       WHERE org_id = $1 AND user_id = $2 AND started_at IS NOT NULL AND ($5::uuid IS NULL OR id <> $5)
+         AND tstzrange(started_at, COALESCE(ended_at, now())) && tstzrange($3, $4) LIMIT 1`,
+      [user.orgId, user.id, start, end, excludeId],
+    );
+    if ((res.rowCount ?? 0) > 0) throw new ConflictException('This overlaps time you have already recorded');
+  }
+
+  private async projectName(db: Db, projectId: string | null): Promise<string | null> {
+    if (!projectId) return null;
+    const r = await db.query<{ name: string }>(`SELECT name FROM projects WHERE id = $1`, [projectId]);
+    return r.rows[0]?.name ?? null;
+  }
+
+  /** ADR 049 §4: manual time is audited (metadata only, never the notes). */
+  private async auditEntry(db: Db, user: AuthenticatedUser, action: string, entryId: string, after: Record<string, unknown>): Promise<void> {
+    await appendAuditEntry(db, { orgId: user.orgId, actorId: user.id, action, entityType: 'TIME_ENTRY', entityId: entryId, after });
   }
 
   private assertNotFuture(date: string, settings: OrgTimesheetSettings): void {

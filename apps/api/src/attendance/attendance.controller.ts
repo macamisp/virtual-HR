@@ -56,6 +56,7 @@ function toHttpError(err: unknown): unknown {
     return new ForbiddenException(err.message);
   }
   if (/not found/i.test(err.message)) return new NotFoundException(err.message);
+  if (/no longer pending/i.test(err.message)) return new ConflictException(err.message);
   if (/must be (after|before)|Invalid|overlap|future|exceeds maximum allowed age/i.test(err.message)) return new BadRequestException(err.message);
   return err;
 }
@@ -138,6 +139,7 @@ export class AttendanceController {
       callerId: user.id,
       callerRole: user.role,
       callerPermissions: user.permissions,
+      callerTeamId: user.teamId ?? null,
     });
   }
 
@@ -245,6 +247,7 @@ export class AttendanceController {
       reviewerId: user.id,
       reviewerRole: user.role,
       reviewerPermissions: user.permissions,
+      reviewerTeamId: user.teamId ?? null,
       approved: dto.status === 'APPROVED',
       reviewNote: dto.reviewNote,
     }));

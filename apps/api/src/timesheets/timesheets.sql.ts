@@ -5,7 +5,7 @@
 import { ConflictException } from '@nestjs/common';
 import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
-import type { EntrySource, TimeEntry, TimesheetStatus } from '../../../../packages/shared/src/timesheets/types.ts';
+import type { EntrySource, TimeEntry, TimesheetStatus, WorkCategory, WorkType } from '../../../../packages/shared/src/timesheets/types.ts';
 import { toIso } from '../tasks/tasks.sql.ts';
 import { isEditable, TimesheetLockedError } from './timesheet-store.ts';
 import type { TimesheetActor } from './timesheet-policy.ts';
@@ -15,7 +15,8 @@ export function actorOf(user: AuthenticatedUser): TimesheetActor {
 }
 
 export const ENTRY_SELECT = `
-  SELECT e.id, e.user_id, e.timesheet_id, e.task_id, tk.title AS task_title, e.project_id, pr.name AS project_name,
+  SELECT e.id, e.user_id, e.timesheet_id, e.task_id, COALESCE(e.task_title, tk.title) AS task_title, tk.title AS task_title_now,
+         e.project_id, COALESCE(e.project_name, pr.name) AS project_name, e.title, e.work_type, e.category,
          to_char(e.work_date, 'YYYY-MM-DD') AS work_date, e.started_at, e.ended_at, e.minutes, e.source, e.billable,
          e.note, e.manual_reason, e.flagged, e.flag_reason, e.auto_stopped, ts.status AS timesheet_status
   FROM time_entries e
@@ -29,8 +30,12 @@ export interface EntryRow {
   timesheet_id: string;
   task_id: string | null;
   task_title: string | null;
+  task_title_now: string | null;
   project_id: string | null;
   project_name: string | null;
+  title: string | null;
+  work_type: WorkType | null;
+  category: WorkCategory | null;
   work_date: string;
   started_at: Date | null;
   ended_at: Date | null;
@@ -52,8 +57,12 @@ export function mapEntry(r: EntryRow, viewerId: string): TimeEntry {
     timesheetId: r.timesheet_id,
     taskId: r.task_id,
     taskTitle: r.task_title,
+    taskTitleNow: r.task_title_now !== null && r.task_title_now !== r.task_title ? r.task_title_now : null,
     projectId: r.project_id,
     projectName: r.project_name,
+    title: r.title,
+    workType: r.work_type,
+    category: r.category,
     workDate: r.work_date,
     startedAt: toIso(r.started_at),
     endedAt: toIso(r.ended_at),

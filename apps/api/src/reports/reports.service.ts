@@ -48,6 +48,7 @@ interface AttendanceAgg {
   net_seconds: string;
   expected_seconds: string;
   overtime_minutes: string;
+  meeting_seconds: string;
 }
 
 function attendanceRow(r: AttendanceAgg): AttendanceReportRow {
@@ -57,6 +58,7 @@ function attendanceRow(r: AttendanceAgg): AttendanceReportRow {
     daysEarlyLeave: Number(r.days_early), earlyLeaveMinutes: Number(r.early_minutes),
     daysAbsent: Number(r.days_absent), daysOnLeave: Number(r.days_leave),
     netMinutes: Math.round(Number(r.net_seconds) / 60), expectedMinutes: Math.round(Number(r.expected_seconds) / 60), overtimeMinutes: Number(r.overtime_minutes),
+    meetingMinutes: Math.round(Number(r.meeting_seconds) / 60),
   };
 }
 
@@ -101,7 +103,8 @@ export class ReportsService {
       count(*) FILTER (WHERE d.day_status = 'ABSENT')::int AS days_absent,
       count(*) FILTER (WHERE d.day_status = 'LEAVE')::int AS days_leave,
       COALESCE(sum(d.net_seconds), 0)::text AS net_seconds, COALESCE(sum(d.expected_seconds), 0)::text AS expected_seconds,
-      COALESCE(sum(d.overtime_minutes), 0)::text AS overtime_minutes`;
+      COALESCE(sum(d.overtime_minutes), 0)::text AS overtime_minutes,
+      COALESCE(sum(d.meeting_seconds), 0)::text AS meeting_seconds`;
     const from = `FROM attendance_daily d JOIN users u ON u.id = d.user_id LEFT JOIN teams t ON t.id = u.team_id WHERE d.org_id = $1 AND ${where}`;
     const grouped = await db.query<AttendanceAgg>(`SELECT ${key} AS key, ${label} AS label, ${agg} ${from} GROUP BY 1 ORDER BY 2`, params);
     const total = await db.query<AttendanceAgg>(`SELECT 'total' AS key, 'Total' AS label, ${agg} ${from}`, params);
@@ -110,8 +113,8 @@ export class ReportsService {
 
   async exportAttendance(user: AuthenticatedUser, q: AttendanceReportQuery & { format: 'csv' | 'xlsx' | 'pdf' }): Promise<ExportFile> {
     const r = await this.attendance(user, q);
-    const header = [{ user: 'Person', team: 'Team', day: 'Day', week: 'Week', month: 'Month' }[q.groupBy], 'People', 'Days present', 'Days late', 'Late (min)', 'Early leaves', 'Early (min)', 'Absent', 'On leave', 'Net (h)', 'Expected (h)', 'Overtime (min)'];
-    const line = (x: AttendanceReportRow): Cell[] => [x.label, x.people, x.daysPresent, x.daysLate, x.lateMinutes, x.daysEarlyLeave, x.earlyLeaveMinutes, x.daysAbsent, x.daysOnLeave, hours(x.netMinutes), hours(x.expectedMinutes), x.overtimeMinutes];
+    const header = [{ user: 'Person', team: 'Team', day: 'Day', week: 'Week', month: 'Month' }[q.groupBy], 'People', 'Days present', 'Days late', 'Late (min)', 'Early leaves', 'Early (min)', 'Absent', 'On leave', 'Net (h)', 'Expected (h)', 'Overtime (min)', 'Meetings (h)'];
+    const line = (x: AttendanceReportRow): Cell[] => [x.label, x.people, x.daysPresent, x.daysLate, x.lateMinutes, x.daysEarlyLeave, x.earlyLeaveMinutes, x.daysAbsent, x.daysOnLeave, hours(x.netMinutes), hours(x.expectedMinutes), x.overtimeMinutes, hours(x.meetingMinutes)];
     return await this.prisma.runWithTenantContext(user.orgId, (db) => exportTable(db, user, {
       report: `attendance-by-${q.groupBy}`, title: 'Attendance report', subtitle: `${q.from} to ${q.to} · by ${q.groupBy} · ${r.scope === 'all' ? 'whole organisation' : 'my team'}`,
       header, rows: [...r.rows.map(line), line(r.totals)], format: q.format, filters: { groupBy: q.groupBy, from: q.from, to: q.to, teamId: q.teamId ?? null, userId: q.userId ?? null },
@@ -223,7 +226,9 @@ export class ReportsService {
                 count(tk.id) FILTER (WHERE tk.status <> 'DONE' AND tk.due_date < $${todayIdx}::date)::int AS overdue,
                 COALESCE(sum(tk.estimate_minutes) FILTER (WHERE tk.status <> 'DONE'), 0)::int AS remaining,
                 COALESCE(sum(tk.estimate_minutes) FILTER (WHERE tk.status = 'DONE' AND tk.completed_at::date BETWEEN $${fromIdx}::date AND $${toIdx}::date), 0)::int AS estimate,
-                COALESCE(sum(tk.actual_minutes) FILTER (WHERE tk.status = 'DONE' AND tk.completed_at::date BETWEEN $${fromIdx}::date AND $${toIdx}::date), 0)::int AS actual
+                -- ADR 049 D5: actual time is the task's finished time entries (tasks.actual_minutes is never written).
+                COALESCE(sum((SELECT COALESCE(SUM(x.minutes), 0) FROM time_entries x WHERE x.task_id = tk.id AND x.ended_at IS NOT NULL))
+                  FILTER (WHERE tk.status = 'DONE' AND tk.completed_at::date BETWEEN $${fromIdx}::date AND $${toIdx}::date), 0)::int AS actual
          FROM users u LEFT JOIN teams t ON t.id = u.team_id
          LEFT JOIN tasks tk ON tk.assignee_id = u.id AND tk.deleted_at IS NULL ${projIdx ? `AND tk.project_id = $${projIdx}` : ''}
          WHERE u.status = 'ACTIVE' AND ${who}

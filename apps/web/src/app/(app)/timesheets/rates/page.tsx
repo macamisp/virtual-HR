@@ -123,6 +123,15 @@ function SettingsCard({ settings }: { settings: TimesheetSettings }) {
             <Input id={ids.v} type="number" min={5} max={50} value={s.variancePct} onChange={(e) => setS({ ...s, variancePct: Number(e.target.value) })} /></div>
           <div className="space-y-1"><Label htmlFor={ids.d}>Submit within (days after period end)</Label>
             <Input id={ids.d} type="number" min={0} max={14} value={s.submitDueDays} onChange={(e) => setS({ ...s, submitDueDays: Number(e.target.value) })} /></div>
+          <div className="space-y-1 sm:col-span-2">
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-1" checked={s.overtimeRequiresApproval} onChange={(e) => setS({ ...s, overtimeRequiresApproval: e.target.checked })} data-testid="ot-requires-approval" />
+              <span>
+                Pay the overtime rate only for approved overtime requests
+                <span className="block text-xs text-muted-foreground">Off: hours above the weekly cap are paid at the overtime rate automatically. On: unapproved overtime is paid at the base rate. Approved timesheets keep their amounts.</span>
+              </span>
+            </label>
+          </div>
           <div className="space-y-2 sm:col-span-2">
             {save.isError ? <Alert variant="destructive"><AlertDescription>{save.error.message}</AlertDescription></Alert> : null}
             {saved ? <p className="text-sm text-muted-foreground" role="status">Policy saved.</p> : null}
