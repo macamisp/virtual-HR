@@ -1,0 +1,45 @@
+/* Landing page (ADR 050). Layout and colour come from Tailwind and the app's tokens (globals.css);
+   this file holds only what utilities cannot express: anchor offsets, the hero backdrop and the
+   scroll reveal. */
+
+/* Smooth in-page jumps for the navigation links, only for people who have not asked for less motion. */
+@media (prefers-reduced-motion: no-preference) {
+  :global(html):has(.root) {
+    scroll-behavior: smooth;
+  }
+}
+
+/* Sections land below the sticky header when reached from a link. */
+.root :global(section[id]) {
+  scroll-margin-top: 5rem;
+}
+
+.hero {
+  background:
+    radial-gradient(60rem 30rem at 85% -10%, hsl(var(--primary) / 0.18), transparent 70%),
+    radial-gradient(40rem 24rem at 0% 10%, hsl(var(--success) / 0.10), transparent 70%);
+}
+
+.frame {
+  box-shadow:
+    0 1px 2px hsl(222 47% 11% / 0.06),
+    0 24px 48px -12px hsl(222 47% 11% / 0.25);
+}
+
+/* Decorative entry effect: progressive enhancement, no script fallback (content is visible without it). */
+@media (prefers-reduced-motion: no-preference) {
+  @supports ((animation-timeline: view()) and (animation-range: entry)) {
+    @keyframes reveal {
+      from {
+        opacity: 0;
+        transform: translateY(1.5rem);
+      }
+    }
+
+    .reveal {
+      animation: reveal linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 60%;
+    }
+  }
+}
