@@ -72,8 +72,16 @@ It uses a throw-away container from the existing `hrvo-api:staging` image on its
 is present). It checks the Sydney identity, verified TLS for both roles, fail-closed FORCE RLS, foreign-tenant
 invisibility, no bypass (`SET ROLE`, `row_security=off`), the logout path's 44 sequential round trips under 500 ms,
 10 concurrent sessions (the API's worst case) and LISTEN/NOTIFY. It prints the live containers before and after.
-**Any FAIL = stop.** The application-level checks (sign-up, cross-tenant through the API, measured logout) are
-§6.3, on the empty database, with §6.4 as the instant rollback.
+A second step (`supabase-ec2-logout.mjs`, in the same container) seeds two synthetic tenants as `hrvo_app`
+(`*.sbprobe.test`), checks cross-tenant reads and writes, opens an attendance session with a signed heartbeat
+and times the logout with the image's own code: the `AuthService.logout` transaction, then `hasOtherLiveLogin`
+and `onExplicitLogout`. It deletes its tenants at the end. **Any FAIL = stop.** Stage the files in a temporary
+directory, not in `/opt/virtual-hr/app`: `ENV_FILE=<dir>/sb.env CA=<dir>/ca.crt bash <dir>/scripts/supabase-ec2-probe.sh`.
+
+**Result 2026-11-12 09:5x UTC (EC2, image `hrvo-api:staging` = V3 44ea7f3): 24/24 PASS.** Connect 34–50 ms;
+RTT p50 2.3 ms, p95 2.6 ms; 44 round trips 103 ms; 10 sessions in 105 ms; NOTIFY 3 ms; **logout 93 / 89 / 85 ms**
+(limit 1 s). Live containers were unchanged before and after, and every temporary resource was removed.
+Sign-up through the real API is §6.3.
 
 ### 5.2 Backups (Free plan)
 

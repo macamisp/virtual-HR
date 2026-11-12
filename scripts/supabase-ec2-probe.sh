@@ -25,11 +25,18 @@ trap cleanup EXIT
 echo "live containers before:"; $D ps --format '{{.Names}} {{.Status}}' | sort
 $D network create --driver bridge "$NET" >/dev/null   # own network: not attached to data/edge/api_egress
 rc=0
-$D run --rm --name hrvo-sbprobe --network "$NET" \
-  --read-only --tmpfs /tmp:size=16m --memory 256m --memory-swap 256m --cpus 0.5 --pids-limit 64 \
-  --cap-drop ALL --security-opt no-new-privileges \
-  -v "$TMP/sb.env:/run/sb.env:ro" -v "$CA:/run/supabase-tls/ca.crt:ro" \
-  -v "$PWD/scripts/supabase-ec2-probe.mjs:/app/sb-probe.mjs:ro" \
-  --entrypoint node "$IMAGE" /app/sb-probe.mjs /run/sb.env /run/supabase-tls/ca.crt || rc=$?
+probe() { # $1 = script in scripts/; the rest are its arguments
+  local s=$1; shift
+  $D run --rm --name hrvo-sbprobe --network "$NET" \
+    --read-only --tmpfs /tmp:size=16m --memory 256m --memory-swap 256m --cpus 0.5 --pids-limit 64 \
+    --cap-drop ALL --security-opt no-new-privileges \
+    -v "$TMP/sb.env:/run/sb.env:ro" -v "$CA:/run/supabase-tls/ca.crt:ro" \
+    -v "$PWD/scripts/$s:/app/$s:ro" \
+    --entrypoint node "$IMAGE" "/app/$s" "$@"
+}
+echo "== connectivity, TLS, RLS, round-trip budget, pool, LISTEN/NOTIFY"
+probe supabase-ec2-probe.mjs /run/sb.env /run/supabase-tls/ca.crt || rc=$?
+echo "== synthetic tenants: cross-tenant RLS and FR-ATT-002 logout timing (image's own code)"
+probe supabase-ec2-logout.mjs /run/sb.env /run/supabase-tls/ca.crt /app/dist || rc=$?
 echo "live containers after:"; $D ps --format '{{.Names}} {{.Status}}' | sort
 exit $rc
