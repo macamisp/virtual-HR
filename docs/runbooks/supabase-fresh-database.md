@@ -57,23 +57,63 @@ concurrency 1 (session pool). They create and delete synthetic organisations; ru
 
 ## 6. Cutover (approval required)
 
-Existing accounts and history will **not** exist in the new database; everyone signs up again.
+**Effect:** the API stops reading the EC2 database. Existing accounts, workspaces and history are **not**
+in Supabase, so nobody can sign in with an old account. People sign up again and start fresh. The EC2
+`postgres` container, its volume `hrvo-staging_postgres_data` and `.env.staging.db` stay as they are.
+
+Host facts (2026-11-12): checkout `a9b6714`; live API image `hrvo-api:staging` = V3 `44ea7f3`; web unchanged.
+Runtime API diff to the release: only opt-in pool caps (`db-config.ts`, attendance pools). The migrate image gains the lockdown.
+
+### 6.1 Server env file (operator, no admin password on the server)
+
+Copy the workstation file **without** the admin password, and point the CA path at the server copy:
 
 ```bash
-# on EC2, in /opt/virtual-hr/app (checkout containing ADR 052), with the env file and CA under /opt/virtual-hr/secrets/supabase/
-OLD="docker compose -f docker-compose.staging.yml -f docker-compose.staging.ssh.yml -f docker-compose.staging.https.yml --env-file .env.staging --env-file .env.staging.db"
-NEW="$OLD -f docker-compose.staging.supabase.yml --env-file .env.staging.supabase"
-git -C /opt/virtual-hr/app diff --stat <deployed>..<release> -- apps/api packages docker   # review API changes
-sudo docker tag hrvo-api:staging hrvo-api:pre-supabase-<deployed>   # keep the running image for rollback
-sudo docker tag hrvo-api-migrate:staging hrvo-api-migrate:pre-supabase-<deployed>
-$NEW config -q && $NEW build api migrate        # new images (lockdown + pool caps)
-$NEW run --rm --no-deps migrate                 # idempotent against Supabase
-$NEW up -d --no-deps api                        # only the API is recreated
+W=/run/media/macami/DataDrive/hrvo-secrets/supabase
+grep -vE '^SUPABASE_ADMIN_PASSWORD=' "$W/supabase.env" \
+  | sed 's|^SUPABASE_CA_FILE=.*|SUPABASE_CA_FILE=/opt/virtual-hr/secrets/supabase/prod-ca-2021.crt|' \
+  | ssh ubuntu@HOST 'umask 077; cat > /opt/virtual-hr/app/.env.staging.supabase'
+ssh ubuntu@HOST 'sudo install -d -m 700 /opt/virtual-hr/secrets/supabase'
+scp "$W/prod-ca-2021.crt" ubuntu@HOST:/tmp/sb-ca.crt && ssh ubuntu@HOST \
+  'sudo install -m 644 /tmp/sb-ca.crt /opt/virtual-hr/secrets/supabase/prod-ca-2021.crt && rm /tmp/sb-ca.crt'
 ```
 
-Verify: `/health` 200, then a new signup → workspace → task → attendance, and confirm the rows exist in Supabase
-(Table editor, as the dashboard user) while the EC2 database's row counts are unchanged.
+(The CA is public; 644 lets the non-root container read it. The env file stays 600.)
 
-**Rollback (before or after new sign-ups):** `sudo docker tag hrvo-api:pre-supabase-<deployed> hrvo-api:staging`
-then `$OLD up -d --no-deps api`. The API is back on EC2 PostgreSQL (configuration and image) immediately.
-Data created in Supabase after cutover is not visible there.
+### 6.2 Switch (API only)
+
+```bash
+cd /opt/virtual-hr/app
+OLD="sudo -n docker compose -f docker-compose.staging.yml -f docker-compose.staging.ssh.yml -f docker-compose.staging.https.yml --env-file .env.staging --env-file .env.staging.db"
+NEW="$OLD -f docker-compose.staging.supabase.yml --env-file .env.staging.supabase"
+git fetch origin && git checkout --detach <release-sha>          # contains ADR 052
+git diff --stat 44ea7f3..HEAD -- apps/api packages docker           # expect only the ADR 052 files
+sudo docker tag hrvo-api:staging hrvo-api:v3-44ea7f3-pre-supabase   # rollback image
+$NEW config -q                                                      # renders; postgres service unchanged
+$NEW --profile tools config --format json | sudo -n docker run --rm -i --network none -v "$PWD/scripts:/s:ro" \
+  --entrypoint node hrvo-api:staging --experimental-strip-types --no-warnings=ExperimentalWarning \
+  /s/staging-compose-check.ts --api-subnet 172.30.1.0/29                 # policy (ADR 046/047), no host Node.js
+$NEW build api
+$NEW up -d --no-deps api                                            # recreates ONLY the API
+```
+
+Migrations are already applied (36). Future ones run from the workstation with `node scripts/supabase-init.mjs`.
+
+### 6.3 Verify
+
+1. `curl -fsS https://api.virtual-hr.site/health` returns 200; the API logs show no DB/TLS errors.
+2. Sign up a new workspace, verify the email, sign in, create a task, start and stop attendance.
+3. Supabase: rows appear (as postgres, read-only: `SELECT count(*) FROM organizations`). EC2: `organizations`
+   count unchanged.
+4. A second browser: an old account cannot sign in (expected).
+
+### 6.4 Rollback (any time)
+
+```bash
+sudo docker tag hrvo-api:v3-44ea7f3-pre-supabase hrvo-api:staging
+git checkout --detach a9b6714
+$OLD up -d --no-deps api      # without the Supabase override: back on the EC2 database
+```
+
+The API immediately serves the old accounts again. Anything created in Supabase after cutover is not visible
+there (it stays in Supabase).

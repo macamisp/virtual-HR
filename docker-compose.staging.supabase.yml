@@ -39,8 +39,11 @@ services:
       PGHOST: ${SUPABASE_PGHOST:?set SUPABASE_PGHOST in .env.staging.supabase}
       PGPORT: "5432"
       PGDATABASE: postgres
-      PGADMIN_USER: ${SUPABASE_ADMIN_USER:?set SUPABASE_ADMIN_USER in .env.staging.supabase}
-      PGADMIN_PASSWORD: ${SUPABASE_ADMIN_PASSWORD:?set SUPABASE_ADMIN_PASSWORD in .env.staging.supabase}
+      # Optional on the server: migrations can run from the operator workstation instead
+      # (scripts/supabase-init.mjs), so the API host need not hold the Supabase admin password.
+      # migrate-entrypoint.mjs refuses to start when these are empty.
+      PGADMIN_USER: ${SUPABASE_ADMIN_USER:-}
+      PGADMIN_PASSWORD: ${SUPABASE_ADMIN_PASSWORD:-}
       PGPASSWORD: ${SUPABASE_APP_PASSWORD:?set SUPABASE_APP_PASSWORD in .env.staging.supabase}
       PGRETENTION_PASSWORD: ${SUPABASE_RETENTION_PASSWORD:?set SUPABASE_RETENTION_PASSWORD in .env.staging.supabase}
       PGSSLROOTCERT: /run/supabase-tls/ca.crt
