@@ -8,7 +8,7 @@ import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type pg from 'pg';
-import { databaseUrl, poolConfig } from '../src/common/db-config.ts';
+import { databaseUrl, poolConfig, poolMax } from '../src/common/db-config.ts';
 import { PostgresAttendanceRepository } from '../src/attendance/attendance-repository.ts';
 
 const base = { PGHOST: 'db.internal', PGPORT: '5432', PGDATABASE: 'hrvo', PGUSER: 'hrvo_app', PGPASSWORD: 'p@ss:w/rd#1' };
@@ -43,6 +43,17 @@ describe('database connection config', () => {
     assert.throws(() => poolConfig({ ...base, PGSSLMODE: 'verify-full' }), /PGSSLROOTCERT/);
   });
 
+  it('connection caps for a session-mode pooler are opt-in and validated (ADR 052)', () => {
+    assert.equal(new URL(databaseUrl(base)).searchParams.get('connection_limit'), null, 'no cap unless asked');
+    assert.equal(new URL(databaseUrl({ ...base, PRISMA_CONNECTION_LIMIT: '4' })).searchParams.get('connection_limit'), '4');
+    for (const bad of ['0', '-1', 'abc', '4.5', '1000', ' ']) {
+      assert.equal(new URL(databaseUrl({ ...base, PRISMA_CONNECTION_LIMIT: bad })).searchParams.get('connection_limit'), null, bad);
+      assert.equal(poolMax({ PG_POOL_MAX: bad }), undefined, bad);
+    }
+    assert.equal(poolMax({ PG_POOL_MAX: '4' }), 4);
+    assert.equal(poolMax({}), undefined);
+  });
+
   it('without PG* settings the local defaults apply', () => {
     assert.equal(poolConfig({}).host, 'localhost');
     assert.equal(poolConfig({}).ssl, undefined);
@@ -67,6 +78,25 @@ describe('database connection config', () => {
       }
     } finally {
       await repo.close();
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
+  });
+
+  it('PG_POOL_MAX caps all three attendance pools; unset keeps the pg default', async () => {
+    const env = { ...base, PG_POOL_MAX: '3', PGRETENTION_PASSWORD: 'r' };
+    const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, env);
+    const capped = new PostgresAttendanceRepository();
+    delete process.env.PG_POOL_MAX;
+    const uncapped = new PostgresAttendanceRepository();
+    try {
+      for (const pool of [capped.getPool(), capped.getAdminPool(), capped.getRetentionPool()]) {
+        assert.equal((pool as unknown as { options: pg.PoolConfig }).options.max, 3);
+      }
+      assert.equal((uncapped.getPool() as unknown as { options: pg.PoolConfig }).options.max, 10, 'pg default');
+    } finally {
+      await capped.close();
+      await uncapped.close();
       for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     }
   });

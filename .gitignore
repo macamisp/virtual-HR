@@ -32,4 +32,5 @@ rootCA*
 # AWS EC2 staging (docs/runbooks/staging-ec2.md): filled-in env files and the database TLS material.
 .env.staging
 .env.staging.db
+.env.staging.supabase
 .staging/

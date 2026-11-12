@@ -13,7 +13,7 @@ import type { AttendanceInputRecord } from './attendance-replay.ts';
 
 import crypto from 'node:crypto';
 import pg from 'pg';
-import { poolConfig } from '../common/db-config.ts';
+import { poolConfig, poolMax } from '../common/db-config.ts';
 const { Pool } = pg;
 import {
   AttendanceState,
@@ -141,7 +141,8 @@ export interface PostgresRepositoryOptions {
  * only the login differs per role.
  */
 function envPoolConfigs(env: Record<string, string | undefined> = process.env): { app: pg.PoolConfig; admin: pg.PoolConfig; retention: pg.PoolConfig } {
-  const base = poolConfig(env);
+  const max = poolMax(env);
+  const base: pg.PoolConfig = { ...poolConfig(env), ...(max ? { max } : {}) };
   return {
     app: base,
     admin: { ...base, user: env.PGADMIN_USER || env.PGUSER || 'postgres', password: env.PGADMIN_PASSWORD || env.PGPASSWORD || 'postgres' },
