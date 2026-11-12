@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import type pg from 'pg';
 import { databaseUrl, poolConfig, poolMax } from '../src/common/db-config.ts';
 import { PostgresAttendanceRepository } from '../src/attendance/attendance-repository.ts';
+import { PrismaService } from '../src/common/prisma.service.ts';
 
 const base = { PGHOST: 'db.internal', PGPORT: '5432', PGDATABASE: 'hrvo', PGUSER: 'hrvo_app', PGPASSWORD: 'p@ss:w/rd#1' };
 
@@ -97,6 +98,23 @@ describe('database connection config', () => {
     } finally {
       await capped.close();
       await uncapped.close();
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
+  });
+
+  it('PG_POOL_MAX also caps the PrismaService pg pool (session-pooler budget, ADR 052)', async () => {
+    const env = { ...base, PG_POOL_MAX: '3' };
+    const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, env);
+    const capped = new PrismaService();
+    delete process.env.PG_POOL_MAX;
+    const uncapped = new PrismaService();
+    try {
+      assert.equal((capped.getPool() as unknown as { options: pg.PoolConfig }).options.max, 3);
+      assert.equal((uncapped.getPool() as unknown as { options: pg.PoolConfig }).options.max, 10, 'pg default');
+    } finally {
+      await capped.getPool().end();
+      await uncapped.getPool().end();
       for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     }
   });

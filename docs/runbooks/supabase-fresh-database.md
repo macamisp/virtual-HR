@@ -5,21 +5,23 @@ Never paste passwords, connection strings or keys into chat, git or command argu
 
 ## 1. Create the project (user, Supabase dashboard)
 
-1. **New project** in an organisation on the **Free** plan: name e.g. `virtual-hr`, region as chosen: the existing project
-   *HR Virtual Office* is in **Singapore (ap-southeast-1)**; EC2 is in Sydney, so expect roughly 90 ms extra per round trip. Generate a strong database password and store it in your password manager.
+1. **New project** in an organisation on the **Free** plan, in **Sydney (ap-southeast-2)**, the same region as EC2.
+   Done 2026-11-12: *Virtual-HR Sydney*, ref `czagpdusgatugojguwgf`, PG 17.11, session pool 15. (The Singapore project
+   was NO-GO: about 44 sequential round trips on the FR-ATT-002 logout path break the 1 s requirement at about 90 ms
+   RTT.) Generate a strong database password and store it in your password manager.
    If the form offers *Enable Data API*, **untick it**. Add no add-ons, compute upgrades, PITR or IPv4.
 2. **Data API off:** Project Settings → Data API (or Integrations → Data API): disable it, or at minimum remove
    `public` from the exposed schemas.
 3. **SSL:** Database → Settings → SSL configuration: turn on *Enforce SSL*, then **Download certificate** to
-   `/run/media/macami/DataDrive/hrvo-secrets/supabase/prod-ca-2021.crt` (outside the repo; `chmod 600`).
+   `/run/media/macami/DataDrive/hrvo-secrets/supabase-sydney/prod-ca-2021.crt` (outside the repo; `chmod 600`).
 4. **Connect → Session pooler** (not Direct, not Transaction): note the host (e.g.
-   `aws-0-ap-southeast-1.pooler.supabase.com`) and the user (`postgres.<project-ref>`).
+   `aws-0-ap-southeast-2.pooler.supabase.com`) and the user (`postgres.<project-ref>`).
 5. Database → Settings → **Connection pooling**: note the *pool size*.
 
 ## 2. Private env file (user, workstation)
 
 ```bash
-D=/run/media/macami/DataDrive/hrvo-secrets/supabase; mkdir -p -m 700 "$D"
+D=/run/media/macami/DataDrive/hrvo-secrets/supabase-sydney; mkdir -p -m 700 "$D"
 cp .env.staging.supabase.example "$D/supabase.env"; chmod 600 "$D/supabase.env"
 # random runtime-role passwords, written without printing them:
 sed -i "s|^SUPABASE_APP_PASSWORD=.*|SUPABASE_APP_PASSWORD=$(openssl rand -hex 32)|;
@@ -33,7 +35,7 @@ ${EDITOR:-nano} "$D/supabase.env"   # host, postgres.<ref>, DB password, hrvo_ap
 node --experimental-strip-types apps/api/prisma/scripts/supabase-preflight.ts target "$D/supabase.env"
 ```
 
-All checks must pass: project ref and pooler region (ap-southeast-1), non-TLS refused, hostname verified,
+All checks must pass: project ref and pooler region (ap-southeast-2), non-TLS refused, hostname verified,
 IPv4 reachability, verified TLS via the pooler, PostgreSQL 17, `postgres` has BYPASSRLS + CREATEROLE, API roles
 present, `public` empty, LISTEN/NOTIFY delivered. **Any FAIL = stop.**
 
@@ -52,8 +54,43 @@ It is idempotent, and re-running it applies only new migrations.
 node --experimental-strip-types apps/api/prisma/scripts/supabase-preflight.ts app "$D/supabase.env"
 ```
 
-Then run the API end-to-end suites against the project with synthetic accounts (`*@example.test`),
-concurrency 1 (session pool). They create and delete synthetic organisations; run them **only before cutover**.
+Functional correctness was already proven on the identical schema (workstation suites). **Do not re-run the full
+suites**: from the workstation they fail only the 1 s logout tests, because of the workstation's RTT to Sydney
+(about 200 ms). If a suite is interrupted, its synthetic orgs (`*-e2e`, `*.test` users) stay behind: delete them
+as `postgres` with `DELETE FROM organizations WHERE slug = '<slug>'` (cascades), then confirm every table is empty.
+
+### 5.1 Gate: minimal EC2 probe (approval required; no live changes)
+
+After §6.1 (the env file and CA are on the server), on the host, from `/opt/virtual-hr/app` with the ADR 052 checkout:
+
+```bash
+bash scripts/supabase-ec2-probe.sh
+```
+
+It uses a throw-away container from the existing `hrvo-api:staging` image on its own bridge network, read-only,
+256 MB / 0.5 CPU / 64 PIDs, no capabilities, and the restricted roles only (it refuses to run if the admin password
+is present). It checks the Sydney identity, verified TLS for both roles, fail-closed FORCE RLS, foreign-tenant
+invisibility, no bypass (`SET ROLE`, `row_security=off`), the logout path's 44 sequential round trips under 500 ms,
+10 concurrent sessions (the API's worst case) and LISTEN/NOTIFY. It prints the live containers before and after.
+**Any FAIL = stop.** The application-level checks (sign-up, cross-tenant through the API, measured logout) are
+§6.3, on the empty database, with §6.4 as the instant rollback.
+
+### 5.2 Backups (Free plan)
+
+The Free plan has no downloadable backups and no PITR. Take a daily logical dump from the workstation with a
+PostgreSQL 17 client (`docker.io/library/postgres:17-alpine` under podman): `pg_dump -n public -Fc --no-owner
+--no-privileges` as `postgres.<ref>` with `PGSSLMODE=verify-full`. Verified 2026-11-12: the dump restored into a
+`--network none` container gives 84 tables, 83 FORCE RLS, 36 migrations and 29 functions. The workstation disk is
+not encrypted, so keep the dumps out of the repo with mode 600. Upgrade to Pro (daily backups, optional PITR) when
+the data matters.
+
+### 5.3 Connection budget (session pool 15 per user)
+
+`hrvo_app` worst case = Prisma engine `L` + 3 pg pools of `P` (Prisma pg pool, attendance app, attendance admin,
+which falls back to `hrvo_app` because the API gets no `PGADMIN_*`) + 1 listener = `L + 3P + 1`. At
+`SUPABASE_PRISMA_CONNECTION_LIMIT=3` and `SUPABASE_PG_POOL_MAX=2` that is **10**, leaving room for the probe,
+migrations and the overlap while the API restarts. Run **exactly one** API container against the project: no
+second host, no `--scale`, and keep the EC2 dev or demo stacks off it.
 
 ## 6. Cutover (approval required)
 
@@ -62,14 +99,14 @@ in Supabase, so nobody can sign in with an old account. People sign up again and
 `postgres` container, its volume `hrvo-staging_postgres_data` and `.env.staging.db` stay as they are.
 
 Host facts (2026-11-12): checkout `a9b6714`; live API image `hrvo-api:staging` = V3 `44ea7f3`; web unchanged.
-Runtime API diff to the release: only opt-in pool caps (`db-config.ts`, attendance pools). The migrate image gains the lockdown.
+Runtime API diff to the release: only opt-in pool caps (`db-config.ts`, attendance pools, the `PrismaService` pg pool). The migrate image gains the lockdown. The live image ignores the caps, so the switch **must** build the API.
 
 ### 6.1 Server env file (operator, no admin password on the server)
 
 Copy the workstation file **without** the admin password, and point the CA path at the server copy:
 
 ```bash
-W=/run/media/macami/DataDrive/hrvo-secrets/supabase
+W=/run/media/macami/DataDrive/hrvo-secrets/supabase-sydney
 grep -vE '^SUPABASE_ADMIN_PASSWORD=' "$W/supabase.env" \
   | sed 's|^SUPABASE_CA_FILE=.*|SUPABASE_CA_FILE=/opt/virtual-hr/secrets/supabase/prod-ca-2021.crt|' \
   | ssh ubuntu@HOST 'umask 077; cat > /opt/virtual-hr/app/.env.staging.supabase'
@@ -89,6 +126,11 @@ NEW="$OLD -f docker-compose.staging.supabase.yml --env-file .env.staging.supabas
 git fetch origin && git checkout --detach <release-sha>          # contains ADR 052
 git diff --stat 44ea7f3..HEAD -- apps/api packages docker           # expect only the ADR 052 files
 sudo docker tag hrvo-api:staging hrvo-api:v3-44ea7f3-pre-supabase   # rollback image
+sudo cp -a .env.staging .env.staging.pre-supabase                    # rollback env (unchanged by the switch)
+grep -cE '^PGADMIN_(USER|PASSWORD)=' .env.staging                    # expect 0: the API gets no admin login
+sudo -n docker volume inspect hrvo-staging_postgres_data -f '{{.Name}} {{.CreatedAt}}'   # old DB volume kept
+sudo -n docker ps --filter name=postgres --format '{{.Names}} {{.Status}}'             # old DB keeps running
+sudo -n docker ps --filter name=api --format '{{.Names}}' | wc -l                       # expect 1 API container
 $NEW config -q                                                      # renders; postgres service unchanged
 $NEW --profile tools config --format json | sudo -n docker run --rm -i --network none -v "$PWD/scripts:/s:ro" \
   --entrypoint node hrvo-api:staging --experimental-strip-types --no-warnings=ExperimentalWarning \
