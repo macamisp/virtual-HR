@@ -79,9 +79,38 @@ async function notifyRoundTrip(env: Env, user: string, password: string): Promis
   }
 }
 
+/** A connection attempt that must FAIL (e.g. no TLS, or a certificate that does not match the host). */
+async function mustFail(config: pg.ClientConfig): Promise<{ failed: boolean; detail: string }> {
+  const c = new pg.Client({ ...config, connectionTimeoutMillis: 15000 });
+  try {
+    await c.connect();
+    await c.end();
+    return { failed: false, detail: 'connection was accepted' };
+  } catch (err) {
+    const e = err as { code?: string; message?: string };
+    return { failed: true, detail: `refused (${e.code ?? String(e.message ?? '').slice(0, 80)})` };
+  }
+}
+
 async function target(env: Env): Promise<Check[]> {
   const checks: Check[] = [];
   const admin = need(env, 'SUPABASE_ADMIN_USER');
+  const host = need(env, 'SUPABASE_PGHOST');
+  const ref = admin.includes('.') ? admin.slice(admin.indexOf('.') + 1) : '';
+  const expectRegion = env.SUPABASE_EXPECT_REGION || 'ap-southeast-1';
+  checks.push({ name: 'project reference (compare with Dashboard → Project Settings → Project ID)', ok: /^[a-z0-9]{20}$/.test(ref), detail: ref || 'admin user is not postgres.<project-ref>' });
+  checks.push({ name: `session pooler host is Supabase's, region ${expectRegion}, port 5432`, ok: host.endsWith('.pooler.supabase.com') && host.includes(expectRegion), detail: host });
+  for (const [userKey, role] of [['SUPABASE_APP_USER', 'hrvo_app'], ['SUPABASE_RETENTION_USER', 'hrvo_retention']] as const) {
+    const u = need(env, userKey);
+    checks.push({ name: `${userKey} is ${role}.<same project ref>`, ok: u === `${role}.${ref}`, detail: u === `${role}.${ref}` ? 'matches' : 'does not match the admin user\'s project ref' });
+  }
+  const plain = await mustFail({ host, port: 5432, database: 'postgres', user: admin, password: need(env, 'SUPABASE_ADMIN_PASSWORD'), ssl: false });
+  checks.push({ name: 'non-TLS connection is refused (Enforce SSL)', ok: plain.failed, detail: plain.detail });
+  const { lookup } = await import('node:dns/promises');
+  const ip = (await lookup(host, { family: 4 })).address;
+  checks.push({ name: 'pooler reachable over IPv4', ok: true, detail: ip });
+  const wrongName = await mustFail({ host: ip, port: 5432, database: 'postgres', user: admin, password: need(env, 'SUPABASE_ADMIN_PASSWORD'), ssl: { rejectUnauthorized: true, ca: readFileSync(need(env, 'SUPABASE_CA_FILE'), 'utf8') } });
+  checks.push({ name: 'certificate hostname is verified (connecting by IP must be rejected)', ok: wrongName.failed, detail: wrongName.detail });
   const c = client(env, admin, need(env, 'SUPABASE_ADMIN_PASSWORD'));
   await c.connect();
   try {
@@ -91,7 +120,7 @@ async function target(env: Env): Promise<Check[]> {
     const row = s.rows[0];
     checks.push({ name: 'TLS verified (CA + hostname) through the session pooler', ok: true, detail: `server ssl=${row?.ssl ?? 'n/a via pooler'} ${row?.tls ?? ''}`.trim() });
     const major = Number((await c.query<{ v: string }>(`SELECT current_setting('server_version_num') AS v`)).rows[0].v.slice(0, 2));
-    checks.push({ name: 'PostgreSQL major >= 16 (repository targets 16)', ok: major >= 16, detail: `server ${row?.version ?? major}` });
+    checks.push({ name: 'PostgreSQL major 17 (expected 17.11; repository targets >= 16)', ok: major === 17, detail: `server ${row?.version ?? major}` });
     const r = await c.query<{ rolname: string; rolsuper: boolean; rolbypassrls: boolean; rolcreaterole: boolean; rolcreatedb: boolean }>(
       `SELECT rolname, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb FROM pg_roles WHERE rolname = current_user`,
     );

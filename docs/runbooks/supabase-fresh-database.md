@@ -5,15 +5,15 @@ Never paste passwords, connection strings or keys into chat, git or command argu
 
 ## 1. Create the project (user, Supabase dashboard)
 
-1. **New project** in an organisation on the **Free** plan: name e.g. `virtual-hr`, region **Asia-Pacific
-   (Sydney)** (same region as EC2). Generate a strong database password and store it in your password manager.
+1. **New project** in an organisation on the **Free** plan: name e.g. `virtual-hr`, region as chosen: the existing project
+   *HR Virtual Office* is in **Singapore (ap-southeast-1)**; EC2 is in Sydney, so expect roughly 90 ms extra per round trip. Generate a strong database password and store it in your password manager.
    If the form offers *Enable Data API*, **untick it**. Add no add-ons, compute upgrades, PITR or IPv4.
 2. **Data API off:** Project Settings → Data API (or Integrations → Data API): disable it, or at minimum remove
    `public` from the exposed schemas.
 3. **SSL:** Database → Settings → SSL configuration: turn on *Enforce SSL*, then **Download certificate** to
    `/run/media/macami/DataDrive/hrvo-secrets/supabase/prod-ca-2021.crt` (outside the repo; `chmod 600`).
 4. **Connect → Session pooler** (not Direct, not Transaction): note the host (e.g.
-   `aws-0-ap-southeast-2.pooler.supabase.com`) and the user (`postgres.<project-ref>`).
+   `aws-0-ap-southeast-1.pooler.supabase.com`) and the user (`postgres.<project-ref>`).
 5. Database → Settings → **Connection pooling**: note the *pool size*.
 
 ## 2. Private env file (user, workstation)
@@ -33,7 +33,8 @@ ${EDITOR:-nano} "$D/supabase.env"   # host, postgres.<ref>, DB password, hrvo_ap
 node --experimental-strip-types apps/api/prisma/scripts/supabase-preflight.ts target "$D/supabase.env"
 ```
 
-All checks must pass: verified TLS via the pooler, PG ≥ 16, `postgres` has BYPASSRLS + CREATEROLE, API roles
+All checks must pass: project ref and pooler region (ap-southeast-1), non-TLS refused, hostname verified,
+IPv4 reachability, verified TLS via the pooler, PostgreSQL 17, `postgres` has BYPASSRLS + CREATEROLE, API roles
 present, `public` empty, LISTEN/NOTIFY delivered. **Any FAIL = stop.**
 
 ## 4. Initialise the schema (same code path as the EC2 migrate job)

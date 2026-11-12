@@ -67,5 +67,6 @@ The emulation uses `postgres:16.10`: a separate superuser, a non-superuser `post
 - **Free-plan limits** (confirm on the pricing page at approval): 500 MB database, shared compute, project paused
   after a period of inactivity, and no automated backups. ADR 051's encrypted `pg_dump` procedure can be pointed at
   Supabase later; until then a Free project is not a durable system of record. Upgrading needs approval.
-- Supabase's network path adds latency to every query (EC2 Sydney → Supabase, ideally `ap-southeast-2`).
+- Supabase's network path adds latency to every query (EC2 Sydney → the existing project in Singapore `ap-southeast-1`, PostgreSQL 17.11: roughly 90 ms per
+  round trip; to be measured).
 - Future migrations must keep granting EXECUTE explicitly to `hrvo_app`; the lockdown's verify step enforces it.
