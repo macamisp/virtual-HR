@@ -97,21 +97,45 @@ leaving only the public key in the workstation keyring:
 ```bash
 gpg --quick-gen-key 'Virtual-HR backup' ed25519 sign 2y && FPR=<40-hex fingerprint>
 gpg --quick-add-key "$FPR" cv25519 encr 2y
-gpg --export-secret-keys --armor "$FPR" > /path/offline/hrvo-backup-secret.asc  # then move it offline
-mkdir -p ~/.config/systemd/user && cat > ~/.config/systemd/user/hrvo-supabase-backup.service <<EOF
+gpg --export-secret-keys --armor "$FPR" > /path/offline/hrvo-backup-secret.asc  # passphrase-protected; move it offline
+gpg --delete-secret-keys "$FPR"            # the workstation keeps the PUBLIC key only
+gpg --with-colons --list-keys "$FPR" | awk -F: '$1=="sub"{print $12}'   # expect: e
+```
+
+Gate before the timer (run by hand, with the private key imported **temporarily**):
+
+```bash
+RECIPIENT_FPR=$FPR bash scripts/supabase-backup.sh            # writes .dump.gpg + .sha256 + last-status
+F=$(ls -t /run/media/macami/DataDrive/hrvo-backups/supabase/*.dump.gpg | head -1)
+bash scripts/supabase-backup-verify.sh "$F"                     # checksum + encrypted to the key (public only)
+gpg --import /path/offline/hrvo-backup-secret.asc && bash scripts/supabase-backup-verify.sh --restore "$F"
+gpg --batch --yes --delete-secret-keys "$FPR"                   # private key back offline only
+```
+
+Only after `PASS restore`, install the timer with a failure notification:
+
+```bash
+U=~/.config/systemd/user; mkdir -p $U
+cat > $U/hrvo-supabase-backup.service <<EOF
+[Unit]
+OnFailure=hrvo-supabase-backup-failed.service
 [Service]
 Type=oneshot
 Environment=RECIPIENT_FPR=$FPR
 ExecStart=/usr/bin/bash "/run/media/macami/DataDrive/Hr virtual office/scripts/supabase-backup.sh"
 EOF
-printf '[Timer]\nOnCalendar=*-*-* 02:30:00\nPersistent=true\n[Install]\nWantedBy=timers.target\n' \
-  > ~/.config/systemd/user/hrvo-supabase-backup.timer
+printf '[Service]\nType=oneshot\nExecStart=/usr/bin/notify-send -u critical "Virtual-HR backup FAILED" "journalctl --user -u hrvo-supabase-backup"\n' \
+  > $U/hrvo-supabase-backup-failed.service
+printf '[Timer]\nOnCalendar=*-*-* 02:30:00\nPersistent=true\n[Install]\nWantedBy=timers.target\n' > $U/hrvo-supabase-backup.timer
 systemctl --user daemon-reload && systemctl --user enable --now hrvo-supabase-backup.timer
-systemctl --user start hrvo-supabase-backup.service && journalctl --user -u hrvo-supabase-backup -n 3
 ```
 
-`Persistent=true` catches up on missed runs after the workstation was off. The data drive must be mounted.
-Restore test: `gpg -d <file> | podman run --rm -i --network none postgres:17-alpine pg_restore --list`.
+`Persistent=true` catches up on missed runs (linger is off, so it runs while you are logged in and the data
+drive is mounted). Failures: a critical desktop notification, the `last-status` file (`FAILED <time> <reason>`)
+and the journal. Weekly: check `last-status`, and once a month run `--restore` with the key imported temporarily.
+Tested 2026-11-12 with a throw-away key: the Singapore env and an unknown key are refused (exit 2/3, `FAILED`
+status); the real run writes mode-600 files only; checksum, OpenPGP check and restore PASS (84 tables, 83
+FORCE RLS, 36 migrations); a notification from a systemd user unit is delivered.
 Upgrade to Pro (daily backups, optional PITR) when the data matters.
 
 ### 5.3 Connection budget (session pool 15 per user)
