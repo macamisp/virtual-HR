@@ -70,3 +70,22 @@ The emulation uses `postgres:16.10`: a separate superuser, a non-superuser `post
 - Supabase's network path adds latency to every query (EC2 Sydney → the existing project in Singapore `ap-southeast-1`, PostgreSQL 17.11: roughly 90 ms per
   round trip; to be measured).
 - Future migrations must keep granting EXECUTE explicitly to `hrvo_app`; the lockdown's verify step enforces it.
+
+## Verification on the real project (2026-11-12, `ctkquvqxnpslgfmjpdxy`, ap-southeast-1, PostgreSQL 17.11)
+
+- **Target preflight 16/16.** `postgres` is NOSUPERUSER with BYPASSRLS + CREATEROLE; TLS 1.3 verified (CA + hostname;
+  connecting by IP is rejected); plaintext is refused; IPv4 session pooler; `public` was empty; LISTEN/NOTIFY works across sessions.
+- **Initialisation** via `scripts/supabase-init.mjs` (24 s): 36/36 migrations, lockdown verified.
+  App preflight 8/8. The fingerprint equals a fresh local install, except the PostgreSQL 17 owner privilege
+  `MAINTAIN` (`m`). Counts equal the EC2 production audit: 84 tables, 83 FORCE RLS + policies, 204 indexes,
+  29 functions (16 SECURITY DEFINER, owner `postgres`), 20 triggers, 4 sequences.
+- **Functional suites** (local test API → Supabase, synthetic data, cleaned up afterwards): `workspace-e2e` 22/22;
+  22 further suites 304/314. The 10 failures were caused by the workstation clock running 5 h 19 min fast
+  (`System clock synchronized: no`), which skews the test process's `Date.now()` against the database's `now()`,
+  and/or by 1-second logout deadlines. Re-run after the clock is synchronised.
+- **Probe:** pools recover after backend termination; a terminated listener sees `error`/`end` (no silent re-attach)
+  and receives NOTIFY after restart; the session pool admits **15 connections per user** and then refuses
+  (`EMAXCONNSESSION`, no queueing). Latency from the workstation (Colombo) is 39 ms p50.
+- **Connection budget per API process (`hrvo_app`):** Prisma 4 + attendance pool 4 + admin pool 4 (falls back to
+  `hrvo_app`; used only by tests) + listener 1 = 13 of 15. `hrvo_retention` has its own 15. Do not run two API
+  containers at once against this project.
