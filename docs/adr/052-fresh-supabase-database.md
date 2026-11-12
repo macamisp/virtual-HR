@@ -89,3 +89,19 @@ The emulation uses `postgres:16.10`: a separate superuser, a non-superuser `post
 - **Connection budget per API process (`hrvo_app`):** Prisma 4 + attendance pool 4 + admin pool 4 (falls back to
   `hrvo_app`; used only by tests) + listener 1 = 13 of 15. `hrvo_retention` has its own 15. Do not run two API
   containers at once against this project.
+
+### Re-run after clock synchronisation (2026-11-12 06:16 UTC; chrony offset 0 s)
+
+`auth-hardening-e2e`, `admin-e2e`, `attendance-logout-e2e`, `meetings-e2e`: **87/92**. The 5 clock-caused failures now
+pass: reset-link TTL, consent history time, and three "call no longer ringing". The **5 remaining failures are all
+FR-ATT-002 / NFR-ACC-002 "attendance closes within 1 s of logout/revocation"** (1,725 ms measured). Logout closes
+attendance synchronously in the request: about 44 sequential database round trips (1,725 ms / 39 ms RTT from
+Colombo). That is a latency × round-trip property of this topology, not a clock or schema defect.
+
+**Implication for production:** EC2 is in ap-southeast-2 and the project is in ap-southeast-1. Sydney↔Singapore RTT is
+typically about 90 ms (to be measured from EC2), so logout would take about 4 s, well beyond the 1 s requirement.
+Every other request is slowed by the same factor. Options: a project co-located with EC2 in ap-southeast-2
+(needs a new project, since the region cannot change); reduce the logout path's round trips (application change,
+separate slice with failing tests first); or an explicitly accepted exception. Until one is chosen: **NO-GO**.
+
+Workstation note: the clock error came from the RTC being kept in local time (`timedatectl`: "RTC in local TZ").
