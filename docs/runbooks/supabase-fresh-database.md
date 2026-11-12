@@ -85,12 +85,34 @@ Sign-up through the real API is §6.3.
 
 ### 5.2 Backups (Free plan)
 
-The Free plan has no downloadable backups and no PITR. Take a daily logical dump from the workstation with a
-PostgreSQL 17 client (`docker.io/library/postgres:17-alpine` under podman): `pg_dump -n public -Fc --no-owner
---no-privileges` as `postgres.<ref>` with `PGSSLMODE=verify-full`. Verified 2026-11-12: the dump restored into a
-`--network none` container gives 84 tables, 83 FORCE RLS, 36 migrations and 29 functions. The workstation disk is
-not encrypted, so keep the dumps out of the repo with mode 600. Upgrade to Pro (daily backups, optional PITR) when
-the data matters.
+The Free plan has no downloadable backups and no PITR. `scripts/supabase-backup.sh` runs on the **workstation**
+(the admin login never goes to EC2). `pg_dump` 17 (podman) streams into `gpg --encrypt` to a public key, so
+plaintext never touches the unencrypted disk. It writes `supabase-<UTC>.dump.gpg` plus a `.sha256` and keeps
+14 days. Verified 2026-11-12 with a throw-away key: encrypted, the checksum is OK, and after decryption
+`pg_restore --list` shows 84 tables, 29 functions and 83 policies.
+
+One-time setup (user): create a backup key and keep the private key **offline** (password manager or USB),
+leaving only the public key in the workstation keyring:
+
+```bash
+gpg --quick-gen-key 'Virtual-HR backup' ed25519 sign 2y && FPR=<40-hex fingerprint>
+gpg --quick-add-key "$FPR" cv25519 encr 2y
+gpg --export-secret-keys --armor "$FPR" > /path/offline/hrvo-backup-secret.asc  # then move it offline
+mkdir -p ~/.config/systemd/user && cat > ~/.config/systemd/user/hrvo-supabase-backup.service <<EOF
+[Service]
+Type=oneshot
+Environment=RECIPIENT_FPR=$FPR
+ExecStart=/usr/bin/bash "/run/media/macami/DataDrive/Hr virtual office/scripts/supabase-backup.sh"
+EOF
+printf '[Timer]\nOnCalendar=*-*-* 02:30:00\nPersistent=true\n[Install]\nWantedBy=timers.target\n' \
+  > ~/.config/systemd/user/hrvo-supabase-backup.timer
+systemctl --user daemon-reload && systemctl --user enable --now hrvo-supabase-backup.timer
+systemctl --user start hrvo-supabase-backup.service && journalctl --user -u hrvo-supabase-backup -n 3
+```
+
+`Persistent=true` catches up on missed runs after the workstation was off. The data drive must be mounted.
+Restore test: `gpg -d <file> | podman run --rm -i --network none postgres:17-alpine pg_restore --list`.
+Upgrade to Pro (daily backups, optional PITR) when the data matters.
 
 ### 5.3 Connection budget (session pool 15 per user)
 
@@ -149,13 +171,30 @@ $NEW up -d --no-deps api                                            # recreates 
 
 Migrations are already applied (36). Future ones run from the workstation with `node scripts/supabase-init.mjs`.
 
-### 6.3 Verify
+`$NEW build api` does not restart anything. It can run before the switch window (about 5–10 min on 2 vCPU).
+Only `up -d --no-deps api` recreates a container: the overlay defines only `api` and `migrate` (the
+`tools` profile, never started by `up`), and `--no-deps` keeps web, postgres, redis, storage, clamav and the
+proxy as they are. Before and after, `sudo -n docker ps --format '{{.Names}} {{.Status}}'` must show the same
+uptime for everything except the API.
 
-1. `curl -fsS https://api.virtual-hr.site/health` returns 200; the API logs show no DB/TLS errors.
-2. Sign up a new workspace, verify the email, sign in, create a task, start and stop attendance.
-3. Supabase: rows appear (as postgres, read-only: `SELECT count(*) FROM organizations`). EC2: `organizations`
-   count unchanged.
-4. A second browser: an old account cannot sign in (expected).
+### 6.3 Verify (smoke tests, within 15 minutes)
+
+1. `curl -fsS https://api.virtual-hr.site/health` returns 200, and `docker logs --since 5m` for the API shows no
+   `ECONNREFUSED`, `EMAXCONNSESSION`, `self-signed`, `password authentication failed` or Prisma `P1001`/`P1017`.
+2. Sign up a new workspace (real mailbox), verify the email, and sign in.
+3. Create a task, start attendance (the heartbeat is accepted), log out, and sign in again: the session closed
+   at logout (FR-ATT-002).
+4. Sign up a second workspace in another browser: it does not see the first workspace's people, tasks or
+   attendance.
+5. Old account: the sign-in is refused, and an old browser tab is sent to sign-in. It must not get a 500.
+6. Supabase (workstation, read-only as postgres): `organizations` = 2, and `pg_stat_activity` for `hrvo_app`
+   shows 10 or fewer sessions. EC2 postgres: still running, uptime unchanged.
+7. The next morning: the backup timer wrote one `.dump.gpg`.
+
+**Rollback triggers (any one = §6.4 immediately, no debugging on production):** health is not 200 for over
+2 min · repeated DB/TLS/pool errors in the API log · sign-up or sign-in fails · logout does not close the
+session · any cross-tenant data visible · any 5xx on the main pages · any container other than the API was
+recreated.
 
 ### 6.4 Rollback (any time)
 
