@@ -14,8 +14,8 @@ Requirements: NFR-REL-002, NFR-SEC-001. **Every production step below needs the 
 ## 0. One-time key setup (operator, on the workstation)
 
 ```bash
-gpg --quick-gen-key "HRVO DB backup <ops@virtual-hr.site>" ed25519 sign 2y   # choose a strong passphrase
-FPR=$(gpg --with-colons --list-keys "HRVO DB backup" | awk -F: '$1=="fpr"{print $10; exit}')
+gpg --quick-gen-key "HRVO DB backup 2026" ed25519 sign 2y   # pinentry asks for a strong passphrase
+FPR=$(gpg --with-colons --list-keys "HRVO DB backup 2026" | awk -F: '$1=="fpr"{print $10; exit}')
 gpg --quick-add-key "$FPR" cv25519 encr 2y
 gpg --armor --export "$FPR" > hrvo-backup-public.asc                 # public: safe to copy to the host
 gpg --armor --export-secret-keys "$FPR" > /media/<offline-usb>/hrvo-backup-secret.asc   # 2 offline copies
@@ -34,7 +34,7 @@ SSH with `StrictHostKeyChecking=yes`, `IdentitiesOnly=yes` and the stored ED2551
 ## 2. Create the encrypted backup (host; writes only under `/home/ubuntu/hrvo-backups`)
 
 ```bash
-scp hrvo-backup-public.asc scripts/db-backup/backup-encrypted.sh ubuntu@HOST:~/
+scp hrvo-backup-public.asc scripts/db-backup/{backup-encrypted.sh,fingerprint.sql} ubuntu@HOST:~/
 ssh ubuntu@HOST 'gpg --batch --import ~/hrvo-backup-public.asc &&
   RECIPIENT_FPR=<FPR> KIND=adhoc bash ~/backup-encrypted.sh </dev/null'
 ```
@@ -72,8 +72,10 @@ scripts/db-backup/restore-test.sh /run/media/macami/DataDrive/hrvo-backups/hrvo-
 ```
 
 Each step must pass: ciphertext checksums → tmpfs container with no network → roles + `pg_restore
---exit-on-error` → plaintext hashes → exact row counts → migrations → RLS/schema fingerprints →
-`hrvo_app` fail-closed check. Record the `PASS` line and `restore_seconds` in the drill log below.
+--exit-on-error` → plaintext hashes → exact row counts → migrations → `fingerprint.sql` (roles, tables/RLS
+flags/ACLs, columns, policies, functions incl. body hashes, triggers, indexes, constraints, sequences,
+extensions) → `tenant-isolation.sql` as `hrvo_app` (no context sees nothing; up to two tenants see exactly
+their own rows; a cross-tenant UPDATE is refused by RLS). Record the `PASS` line and `restore_seconds` in the drill log below.
 gpg asks for the passphrase through pinentry, so the operator runs this step, or unlocks gpg-agent first.
 
 ## 5. Retention and recovery
@@ -109,3 +111,4 @@ Size today is about 0.56 MB per backup set. Allowing growth to 5 MB, 87 retained
 | Date (UTC) | Backup | Restore target | Result | Restore s | By | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | 2026-11-12 | local e2e DB (dry run) | tmpfs container | PASS | 1 (5.8 total) | Claude | throwaway key; not production; tamper test rejected |
+| 2026-11-12 | local e2e DB (dry run v2) | tmpfs container | PASS | 1 | Claude | content fingerprints + isolation (77 tables); planted RLS leak detected (failures=3) |

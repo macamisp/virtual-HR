@@ -10,6 +10,7 @@
 set -euo pipefail
 umask 077
 DIR=${1:?backup directory}; MANIFEST=${2:-docs/migrations/source-manifest.json}
+HERE=$(cd "$(dirname "$0")" && pwd)
 IMAGE=${RESTORE_IMAGE:-docker.io/library/postgres:16.10-alpine}
 NAME="hrvo-restore-test-$(date -u +%Y%m%dT%H%M%SZ)"
 SU=hrvo_restore_su            # unique bootstrap superuser: never collides with restored roles
@@ -65,23 +66,31 @@ if ! diff -q "$TMP/repo.tsv" "$TMP/migrations.tsv" >/dev/null; then
   log "note: DB migrations differ from repository manifest (expected if the manifest is older/newer):"
   diff "$TMP/repo.tsv" "$TMP/migrations.tsv" | grep '^[<>]' | cut -f1 >&2 || true
 fi
-"${PSQL[@]}" "$DB" -A -t <<'SQL' >"$TMP/schema.tsv"
-SELECT 'tables_forced_rls' || chr(9) || count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-  WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relforcerowsecurity
-UNION ALL SELECT 'policies' || chr(9) || count(*) FROM pg_policies WHERE schemaname='public'
-UNION ALL SELECT 'security_definer_functions' || chr(9) || count(*) FROM pg_proc p
-  JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.prosecdef
-UNION ALL SELECT 'user_triggers' || chr(9) || count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
-  JOIN pg_namespace n ON n.oid=c.relnamespace WHERE NOT t.tgisinternal AND n.nspname='public'
-UNION ALL SELECT 'indexes' || chr(9) || count(*) FROM pg_indexes WHERE schemaname='public'
-ORDER BY 1;
-SQL
-diff -u "$DIR/schema.tsv" "$TMP/schema.tsv" >&2 || { echo "schema fingerprints differ" >&2; exit 13; }
+"${PSQL[@]}" "$DB" -A -t -f - <"$HERE/fingerprint.sql" >"$TMP/schema.tsv"
+[[ $(sha256sum "$HERE/fingerprint.sql" | cut -d' ' -f1) == "$(get fingerprint_sql_sha256)" ]] \
+  || log "warning: fingerprint.sql differs from the version used at backup time"
+diff -u "$DIR/schema.tsv" "$TMP/schema.tsv" >&2 || { echo "schema/role/RLS fingerprints differ" >&2; exit 13; }
+sed 's/^/  /' "$TMP/schema.tsv" | cut -c1-110 >&2
 
-log "6/6 runtime role still fail-closed under FORCE RLS"
+log "6/6 tenant isolation as hrvo_app (FORCE RLS): no context, two tenants, cross-tenant write"
 "${PSQL[@]}" "$DB" -A -t -c "SELECT rolname||' super='||rolsuper||' bypassrls='||rolbypassrls FROM pg_roles WHERE rolname IN ('hrvo_app','hrvo_retention') ORDER BY 1" >&2
-LEAK=$("${PSQL[@]}" "$DB" -A -t -c "SET ROLE hrvo_app; SELECT count(*) FROM public.users;" 2>&1 || true)
-[[ $LEAK == 0 ]] || { echo "hrvo_app without app.org_id saw users: $LEAK" >&2; exit 14; }
+"${PSQL[@]}" "$DB" -f - <"$HERE/tenant-isolation.sql" >"$TMP/iso.txt"
+ISO=$(sed -n 's/^isolation\t//p' "$TMP/iso.txt"); log "  $ISO"
+grep '^isolation_detail' "$TMP/iso.txt" | cut -f2 | sed 's/^/  FAIL /' >&2 || true
+[[ $ISO == *" failures=0" ]] || { echo "tenant isolation failed" >&2; exit 14; }
+A=$(podman exec "$NAME" psql -X -At -U $SU -d "$DB" -c "SELECT id FROM public.users ORDER BY id LIMIT 1")
+if [[ -n $A ]]; then
+  WRITE=$(podman exec -i "$NAME" psql -X -q -At -v ON_ERROR_STOP=1 -U $SU -d "$DB" 2>&1 <<SQL || true
+BEGIN;
+SELECT set_config('app.org_id', (SELECT org_id::text FROM public.users WHERE id = '$A'), true) \\g /dev/null
+SET LOCAL ROLE hrvo_app;
+UPDATE public.users SET org_id = gen_random_uuid() WHERE id = '$A';
+ROLLBACK;
+SQL
+)
+  [[ $WRITE == *"row-level security"* ]] || { echo "cross-tenant UPDATE was not refused by RLS: ${WRITE:0:200}" >&2; exit 15; }
+  log "  cross-tenant UPDATE refused by RLS (rolled back)"
+fi
 
 RESULT=PASS
 echo "PASS dir=$(basename "$DIR") db=$DB tables=$(wc -l <"$TMP/counts.tsv") restore_seconds=$RESTORE_S snapshot=$(get snapshot_utc)"

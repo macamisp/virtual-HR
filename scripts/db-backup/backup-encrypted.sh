@@ -20,6 +20,8 @@ KIND=${KIND:-adhoc}; [[ $KIND =~ ^(daily|weekly|adhoc)$ ]] || { echo "bad KIND" 
 OUT_ROOT=${OUT_ROOT:-$HOME/hrvo-backups}
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 OUT="$OUT_ROOT/hrvo-$TS-$KIND"
+FP_SQL=${FP_SQL:-$(dirname "$0")/fingerprint.sql}
+[[ -r $FP_SQL ]] || { echo "missing $FP_SQL (copy it next to this script)" >&2; exit 2; }
 
 waitfile() { for _ in $(seq 50); do [[ -s $1 ]] && return 0; sleep 0.2; done; echo "hash file $1 missing" >&2; return 1; }
 log() { printf '%s %s\n' "$(date -u +%H:%M:%SZ)" "$*" >&2; }
@@ -76,15 +78,8 @@ q "SELECT format('SELECT %L || chr(9) || count(*) FROM %I.%I;', n.nspname||'.'||
 sort "$OUT/counts.raw" >"$OUT/counts.tsv"; rm -f "$OUT/counts.raw"
 q "SELECT migration_name || chr(9) || checksum FROM public._prisma_migrations
    WHERE rolled_back_at IS NULL AND finished_at IS NOT NULL ORDER BY 1;" >"$OUT/migrations.tsv"
-q "SELECT 'tables_forced_rls' || chr(9) || count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-     WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relforcerowsecurity
-   UNION ALL SELECT 'policies' || chr(9) || count(*) FROM pg_policies WHERE schemaname='public'
-   UNION ALL SELECT 'security_definer_functions' || chr(9) || count(*) FROM pg_proc p
-     JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.prosecdef
-   UNION ALL SELECT 'user_triggers' || chr(9) || count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
-     JOIN pg_namespace n ON n.oid=c.relnamespace WHERE NOT t.tgisinternal AND n.nspname='public'
-   UNION ALL SELECT 'indexes' || chr(9) || count(*) FROM pg_indexes WHERE schemaname='public'
-   ORDER BY 1;" >"$OUT/schema.tsv"
+q "$(cat "$FP_SQL")" >"$OUT/schema.tsv"   # roles, tables/RLS, columns, policies, functions, triggers, indexes, constraints
+grep -q $'^policies\t' "$OUT/schema.tsv" || { echo "fingerprint query failed" >&2; exit 8; }
 SERVER_VERSION=$(q "SELECT current_setting('server_version');")
 q "COMMIT;" >/dev/null; printf '\\q\n' >&"${SNAP[1]}"; wait "$SNAP_PID" || true; SNAP_PID=
 
@@ -93,6 +88,7 @@ waitfile "$OUT/db.dump.plain.sha256"; waitfile "$OUT/roles.sql.plain.sha256"
 {
   echo "created_utc=$TS"; echo "kind=$KIND"; echo "snapshot_utc=$SNAP_AT"
   echo "server_version=$SERVER_VERSION"; echo "container=$PG"
+  echo "fingerprint_sql_sha256=$(sha256sum "$FP_SQL" | cut -d" " -f1)"
   echo "recipient_fpr=$RECIPIENT_FPR"
   echo "db_dump_plain_sha256=$(cat "$OUT/db.dump.plain.sha256")"
   echo "roles_sql_plain_sha256=$(cat "$OUT/roles.sql.plain.sha256")"
