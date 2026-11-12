@@ -2,6 +2,7 @@
 
 Assessment date: 2026-11-11 (Asia/Colombo). Recommendation: **BLOCKED**.
 Follow-up: [2026-11-12 access verification and local test diagnostics](follow-up-2026-11-12.md).
+Source audit: [2026-11-12 read-only production inventory](source-audit-2026-11-12.md).
 Scope: read-only production audit and an explicitly authorized isolated test migration.
 Production cutover requires separate approval. No production commands, backups, restores,
 resource creation, connection changes or infrastructure changes were performed in this assessment.
