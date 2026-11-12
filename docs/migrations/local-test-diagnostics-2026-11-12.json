@@ -1,0 +1,362 @@
+{
+  "date": "2026-11-12",
+  "node_version": "22.23.1",
+  "scope": "Diagnostic reruns of the 23 previously failing local test files; no production connection",
+  "command": [
+    "node",
+    "--test",
+    "--experimental-test-isolation=none",
+    "--test-timeout=6000",
+    "--test-reporter=spec",
+    "<file>"
+  ],
+  "process_timeout_seconds": 14,
+  "results": [
+    {
+      "file": "account-emails-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 5",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 5"
+      ]
+    },
+    {
+      "file": "admin-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 22",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 22"
+      ]
+    },
+    {
+      "file": "agent-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 16",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 16"
+      ]
+    },
+    {
+      "file": "app-shell-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 15",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 15"
+      ]
+    },
+    {
+      "file": "attendance-advanced-features.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": true,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 20",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 20"
+      ]
+    },
+    {
+      "file": "attendance-guards-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 15",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 15"
+      ]
+    },
+    {
+      "file": "attendance-hardening-coverage.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": true,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 37",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 37"
+      ]
+    },
+    {
+      "file": "attendance-logout-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 10",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 10"
+      ]
+    },
+    {
+      "file": "attendance-postgres-edge-cases.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": true,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 17",
+        "\u2139 pass 0",
+        "\u2139 fail 17",
+        "\u2139 cancelled 0"
+      ]
+    },
+    {
+      "file": "attendance-raw-replay.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": true,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 8",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 8"
+      ]
+    },
+    {
+      "file": "attendance-replay.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 4",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 4"
+      ]
+    },
+    {
+      "file": "attendance-self-service-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 11",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 11"
+      ]
+    },
+    {
+      "file": "auth-hardening-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 35",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 35"
+      ]
+    },
+    {
+      "file": "calendar-sync-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": true,
+      "summary": [
+        "\u2139 tests 10",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 10"
+      ]
+    },
+    {
+      "file": "calendar-upcoming-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": true,
+      "summary": [
+        "\u2139 tests 9",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 9"
+      ]
+    },
+    {
+      "file": "chat-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 10",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 10"
+      ]
+    },
+    {
+      "file": "correction-review-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 3",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 3"
+      ]
+    },
+    {
+      "file": "demo-guard.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM",
+        "ERR_ASSERTION"
+      ],
+      "pg_connect_denied": true,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 6",
+        "\u2139 pass 3",
+        "\u2139 fail 3",
+        "\u2139 cancelled 0"
+      ]
+    },
+    {
+      "file": "document-rules.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": true,
+      "summary": [
+        "\u2139 tests 13",
+        "\u2139 pass 11",
+        "\u2139 fail 2",
+        "\u2139 cancelled 0"
+      ]
+    },
+    {
+      "file": "documents-denied-log.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 3",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 3"
+      ]
+    },
+    {
+      "file": "documents-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 21",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 21"
+      ]
+    },
+    {
+      "file": "esign-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": false,
+      "summary": [
+        "\u2139 tests 8",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 8"
+      ]
+    },
+    {
+      "file": "google-signin-e2e.test.js",
+      "exit": 1,
+      "error_codes": [
+        "EPERM"
+      ],
+      "pg_connect_denied": false,
+      "listen_denied": true,
+      "summary": [
+        "\u2139 tests 14",
+        "\u2139 pass 0",
+        "\u2139 fail 0",
+        "\u2139 cancelled 14"
+      ]
+    }
+  ]
+}
