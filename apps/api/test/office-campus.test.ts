@@ -21,7 +21,13 @@ const grid = buildGrid(map);
 
 /** Fingerprints of the original 60 x 40 office (ADR 015 / 054), taken before the campus was added. */
 const ORIGINAL_TILES = '79ae155066bb093d50c28af8833dd33115bd96d4558a57217b78376f2d4b4f16';
-const ORIGINAL_OBJECTS = '9c89616aa52984746afbb2e01cc4945a8271cddfbec1de81624f9dbfc126693d';
+/**
+ * The 59 original objects WITH their ids and properties, as in the map production stores today
+ * (78aef7e). The ids matter: the server matches rooms and desks to their rows by object id when a
+ * map is replaced, so a renumbered desk would carry someone else's assignment.
+ */
+const ORIGINAL_OBJECTS = 'a5cd696409bd0343eea0e503136c268dded2cea628b87ecc69a8194ba38fbe24';
+const ORIGINAL_MAX_ID = 59;
 
 describe('Office campus map (ADR 055)', () => {
   it('is a valid map: 100 x 40 tiles, eleven rooms, the twenty desks', () => {
@@ -36,8 +42,13 @@ describe('Office campus map (ADR 055)', () => {
     const parts: string[] = [];
     for (let y = 0; y < 40; y += 1) for (let x = 0; x < 60; x += 1) { if (x === 59 && y >= 33 && y <= 35) continue; parts.push(`${floor[y * W + x]}/${walls[y * W + x]}`); }
     assert.equal(createHash('sha256').update(parts.join(',')).digest('hex'), ORIGINAL_TILES, 'every original tile');
-    const objs = ['rooms', 'desks', 'furniture', 'spawn'].map((l) => objectLayer(map, l).filter((o) => o.x < 59 * T).map((o) => [o.name, o.x, o.y, o.width, o.height, o.properties ?? []]));
-    assert.equal(createHash('sha256').update(JSON.stringify(objs)).digest('hex'), ORIGINAL_OBJECTS, 'every original room, desk, furniture piece and the spawn');
+    const objs = ['rooms', 'desks', 'furniture', 'spawn'].flatMap((l) => objectLayer(map, l).filter((o) => o.id <= ORIGINAL_MAX_ID).map((o) => JSON.stringify([l, o.id, o.name, o.x, o.y, o.width, o.height, o.properties ?? []])));
+    assert.equal(objs.length, 59);
+    assert.equal(createHash('sha256').update(objs.join('\n')).digest('hex'), ORIGINAL_OBJECTS, 'every original room, desk, furniture piece and the spawn, with its id');
+    // Campus objects only take ids after the original ones; every id is unique.
+    const all = ['rooms', 'desks', 'furniture', 'spawn'].flatMap((l) => objectLayer(map, l));
+    assert.equal(new Set(all.map((o) => o.id)).size, all.length);
+    for (const o of all) if (o.id > ORIGINAL_MAX_ID) assert.ok(o.x >= 59 * T, `object ${o.id} (${o.name}) is a campus object`);
     assert.deepEqual(spawnPoint(map), { x: 10 * T + T / 2, y: 35 * T + T / 2 });
   });
 
