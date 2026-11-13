@@ -13,8 +13,8 @@
 // shader/uniform code for eval-free versions (otherwise the canvas never starts: "0 fps").
 import 'pixi.js/unsafe-eval';
 import { Application, BitmapText, CanvasSource, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
-import { AVATAR_FRAMES, AVATAR_KEYS, avatarKeyOr, createAnimation, FACINGS, gameObjects, objectLayer, sheetCell, stepAnimation, TILE_SIZE } from '@hrvo/shared';
-import type { AvatarAnimation, AvatarFrame, AvatarKey, CampusGame, Facing, MapObject, OfficeMap, VoStatus } from '@hrvo/shared';
+import { ACTION_MS, AVATAR_FRAMES, AVATAR_KEYS, AVATAR_POSES, avatarKeyOr, createAnimation, FACINGS, gameObjects, objectLayer, poseCell, sheetCell, stepAnimation, TILE_SIZE } from '@hrvo/shared';
+import type { AvatarActionKind, AvatarActionState, AvatarAnimation, AvatarFrame, AvatarKey, AvatarPose, CampusGame, Facing, MapObject, OfficeMap, VoStatus } from '@hrvo/shared';
 import { createAvatarSheetCanvas } from './avatar-sheet';
 import { renderEnvironment } from './office-environment';
 import { renderFestive } from './office-festive';
@@ -44,6 +44,15 @@ class AvatarTextures {
       const c = sheetCell(key, facing, f as AvatarFrame);
       this.frames.set(`${key}/${facing}/${f}`, new Texture({ source: this.source, frame: new Rectangle(c.x, c.y, c.width, c.height) }));
     }
+    // ADR 056: the action poses, cut from the same sheet.
+    for (const key of AVATAR_KEYS) for (const pose of AVATAR_POSES) {
+      const c = poseCell(key, pose);
+      this.frames.set(`${key}/pose/${pose}`, new Texture({ source: this.source, frame: new Rectangle(c.x, c.y, c.width, c.height) }));
+    }
+  }
+
+  pose(key: AvatarKey, pose: AvatarPose): Texture {
+    return this.frames.get(`${key}/pose/${pose}`)!;
   }
 
   get(key: AvatarKey, facing: Facing, frame: AvatarFrame): Texture {
@@ -56,6 +65,9 @@ class AvatarTextures {
     this.source.destroy();
   }
 }
+
+/** Changes whenever a new action starts, so a second wave restarts the animation. */
+const actionSig = (a: AvatarActionState): string => `${a.kind}|${a.with ?? ''}|${a.seat ?? ''}|${a.since ?? ''}`;
 
 /** An atlas on screen: one texture source, its sub-textures and their sprites. */
 interface SceneAtlas { source: CanvasSource; textures: Texture[]; sprites: Sprite[] }
@@ -74,10 +86,42 @@ interface AvatarView {
   key: AvatarKey;
   anim: AvatarAnimation;
   shown: string;
+  /** ADR 056: the action shown (its signature and when it started here), its effect, its pose. */
+  actSig: string;
+  actAt: number;
+  /** Created on the first action that needs an effect (most avatars never do). */
+  fx: Graphics | null;
+  fxSig: string;
+  pose: AvatarPose | null;
+  lift: number;
+  /** For the browser tests: the last pose shown and the highest jump lift of the current action. */
+  lastPose: AvatarPose | null;
+  maxLift: number;
+}
+
+/** What an avatar is doing on screen right now (from the roster, or my own optimistic action). */
+interface ShownAction { kind: AvatarActionKind; with?: string; facing?: Facing; sig: string; at?: number }
+
+/** ADR 056: the pose, lift (px up), sway (px sideways) and effect of an action `t` ms in. */
+function actionLook(kind: AvatarActionKind, t: number, facing: Facing, partnerRight: boolean, reduced: boolean): { pose: AvatarPose | null; lift: number; sway: number; fx: 'heart' | 'spark' | 'note' | null } {
+  const alt = (period: number) => (reduced ? 0 : Math.floor(t / period) % 2);
+  switch (kind) {
+    case 'sit': return { pose: `sit-${facing}` as AvatarPose, lift: 0, sway: 0, fx: null };
+    case 'jump': {
+      if (t >= ACTION_MS.jump) return { pose: null, lift: 0, sway: 0, fx: null };
+      if (reduced) return { pose: 'jump-air', lift: 0, sway: 0, fx: null };
+      if (t < 90 || t > 510) return { pose: 'jump-crouch', lift: 0, sway: 0, fx: null };
+      return { pose: 'jump-air', lift: Math.round(Math.sin(((t - 90) / 420) * Math.PI) * 14), sway: 0, fx: null };
+    }
+    case 'wave': return t < ACTION_MS.wave ? { pose: alt(230) ? 'wave-b' : 'wave-a', lift: 0, sway: 0, fx: null } : { pose: null, lift: 0, sway: 0, fx: null };
+    case 'dance': return t < ACTION_MS.dance ? { pose: alt(260) ? 'dance-b' : 'dance-a', lift: reduced ? 0 : alt(130), sway: reduced ? 0 : (alt(260) ? 1 : -1), fx: 'note' } : { pose: null, lift: 0, sway: 0, fx: null };
+    case 'hug': return t < ACTION_MS.hug ? { pose: partnerRight ? 'hug-right' : 'hug-left', lift: 0, sway: 0, fx: 'heart' } : { pose: null, lift: 0, sway: 0, fx: null };
+    case 'highfive': return t < ACTION_MS.highfive ? { pose: partnerRight ? 'highfive-right' : 'highfive-left', lift: 0, sway: 0, fx: t > 250 ? 'spark' : null } : { pose: null, lift: 0, sway: 0, fx: null };
+  }
 }
 
 /** What one avatar looks like right now (for the browser tests; no personal data beyond the id). */
-export interface AvatarDebug { id: string; self: boolean; key: AvatarKey; facing: Facing; frame: AvatarFrame; walking: boolean; status: VoStatus | null; away: boolean }
+export interface AvatarDebug { id: string; self: boolean; key: AvatarKey; facing: Facing; frame: AvatarFrame; walking: boolean; status: VoStatus | null; away: boolean; pose: AvatarPose | null; lift: number; lastPose: AvatarPose | null; maxLift: number }
 
 export class OfficeRenderer {
   app = new Application();
@@ -102,6 +146,8 @@ export class OfficeRenderer {
   private bulbs: [Graphics, Graphics] | null = null;
   private twinkleMs = 0;
   private bulbCount = 0;
+  /** ADR 056: the server start time of my own action already shown optimistically. */
+  private echoed: number | null = null;
   private readonly reducedMotion = typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   private map: OfficeMap | null = null;
   private games: Array<{ object: MapObject; game: CampusGame }> = [];
@@ -160,7 +206,7 @@ export class OfficeRenderer {
 
   /** ADR 053: the state of every avatar on the map (browser tests). */
   avatarStates(): AvatarDebug[] {
-    return [...this.sprites].map(([id, s]) => ({ id, self: s.self, key: s.key, facing: s.anim.facing, frame: s.anim.frame, walking: s.anim.walking, status: s.status, away: !!s.away }));
+    return [...this.sprites].map(([id, s]) => ({ id, self: s.self, key: s.key, facing: s.anim.facing, frame: s.anim.frame, walking: s.anim.walking, status: s.status, away: !!s.away, pose: s.pose, lift: s.lift, lastPose: s.lastPose, maxLift: s.maxLift }));
   }
 
   private onWheel = (e: WheelEvent) => {
@@ -356,7 +402,7 @@ export class OfficeRenderer {
     badge.position.set(0, -20);
     badge.visible = false;
     root.addChild(ring, body, label, badge);
-    s = { root, ring, body, self, status: null, away: null, name: label, badge, key, anim: createAnimation('down'), shown: `${key}/down/0` };
+    s = { root, ring, body, self, status: null, away: null, name: label, badge, key, anim: createAnimation('down'), shown: `${key}/down/0`, actSig: '', actAt: 0, fx: null, fxSig: '', pose: null, lift: 0, lastPose: null, maxLift: 0 };
     this.sprites.set(id, s);
     this.avatarLayer.addChild(root);
     return s;
@@ -388,13 +434,76 @@ export class OfficeRenderer {
   }
 
   /** ADR 053: one animation step from how far the avatar moved, and the matching frame of its character. */
-  private animate(s: AvatarView, key: AvatarKey, dx: number, dy: number, dtMs: number): void {
+  private animate(s: AvatarView, key: AvatarKey, dx: number, dy: number, dtMs: number, act: ShownAction | null = null, partnerRight = true): void {
     stepAnimation(s.anim, dx, dy, dtMs);
-    const shown = `${key}/${s.anim.facing}/${s.anim.frame}`;
+    // ADR 056: nobody doing anything (the usual case): only the walk frame, no action work.
+    if (!act && s.actSig === '' && s.pose === null) {
+      const walk = `${key}/${s.anim.facing}/${s.anim.frame}`;
+      if (walk !== s.shown) { s.key = key; s.shown = walk; s.body.texture = this.textures!.get(key, s.anim.facing, s.anim.frame); }
+      return;
+    }
+    // An action's pose replaces the walk frame while it lasts.
+    const now = performance.now();
+    if (!act) s.actSig = '';
+    else if (act.sig !== s.actSig) { s.actSig = act.sig; s.actAt = act.at ?? now; s.maxLift = 0; }
+    const look = act ? actionLook(act.kind, now - s.actAt, act.facing ?? s.anim.facing, partnerRight, this.reducedMotion) : null;
+    s.pose = look?.pose ?? null;
+    s.lift = look?.pose ? look.lift : 0;
+    if (s.pose) { s.lastPose = s.pose; s.maxLift = Math.max(s.maxLift, s.lift); }
+    s.body.position.set(look?.pose ? look.sway : 0, FEET_Y - s.lift);
+    this.drawFx(s, look?.pose ? look.fx : null, now - s.actAt);
+    const shown = s.pose ? `${key}/pose/${s.pose}` : `${key}/${s.anim.facing}/${s.anim.frame}`;
     if (shown === s.shown) return;
     s.key = key;
     s.shown = shown;
-    s.body.texture = this.textures!.get(key, s.anim.facing, s.anim.frame);
+    s.body.texture = s.pose ? this.textures!.pose(key, s.pose) : this.textures!.get(key, s.anim.facing, s.anim.frame);
+  }
+
+  /** A small heart, sparkle or note above the head; redrawn only when it changes, then just moved. */
+  private drawFx(s: AvatarView, kind: 'heart' | 'spark' | 'note' | null, t: number): void {
+    if (s.fxSig !== (kind ?? '')) {
+      s.fxSig = kind ?? '';
+      if (!s.fx && kind) { s.fx = new Graphics(); s.root.addChildAt(s.fx, s.root.getChildIndex(s.body) + 1); }
+      const g = s.fx;
+      if (!g) return;
+      g.clear();
+      if (kind === 'heart') {
+        g.rect(-5, -3, 4, 3).rect(1, -3, 4, 3).rect(-5, 0, 10, 2).rect(-4, 2, 8, 2).rect(-2, 4, 4, 2).fill(0xe0595c);
+        g.rect(-4, -2, 2, 1).fill(0xffffff);
+      } else if (kind === 'spark') {
+        g.rect(-1, -7, 2, 14).rect(-7, -1, 14, 2).fill(0xf3d48a);
+        g.rect(-1, -2, 2, 4).rect(-2, -1, 4, 2).fill(0xffffff);
+        g.rect(-5, -5, 2, 2).rect(3, -5, 2, 2).rect(-5, 3, 2, 2).rect(3, 3, 2, 2).fill(0xd9a94e);
+      } else if (kind === 'note') {
+        g.rect(1, -8, 2, 9).rect(3, -8, 4, 2).fill(0x2e3d5a);
+        g.rect(-2, -1, 4, 3).fill(0x2e3d5a);
+      }
+    }
+    if (!kind || !s.fx) return;
+    const rise = this.reducedMotion ? 0 : Math.min(8, t / 120);
+    s.fx.position.set(kind === 'note' && !this.reducedMotion ? Math.round(Math.sin(t / 200) * 4) : 0, -26 - Math.round(rise));
+  }
+
+  /** The action to show for an avatar: the roster's, or (for me) the one I just started. */
+  private shownAction(id: string, self: boolean): ShownAction | null {
+    const r = this.client.roster.get(id)?.action ?? null;
+    if (!r && !(self && this.client.selfAction)) return null;
+    if (self) {
+      const mine = this.client.selfAction;
+      const playing = mine && performance.now() - mine.at < ACTION_MS[mine.kind];
+      // The server's echo of the action I already started: play it once, not twice.
+      if (r && mine && r.kind === mine.kind && r.since !== undefined && performance.now() - mine.at < ACTION_MS[mine.kind] + 2_000) this.echoed = r.since;
+      if (playing && (!r || r.kind === mine.kind)) return { kind: mine.kind, sig: `${mine.kind}@${mine.at}`, at: mine.at };
+      if (r && r.kind !== 'sit' && r.since !== undefined && r.since === this.echoed) return null;
+    }
+    return r ? { kind: r.kind, with: r.with, facing: r.facing, sig: actionSig(r) } : null;
+  }
+
+  /** For a hug or a high five: is the partner to the right of this avatar? */
+  private partnerRight(act: ShownAction | null, x: number): boolean {
+    if (!act?.with) return true;
+    const p = this.sprites.get(act.with);
+    return p ? p.root.position.x >= x : true;
   }
 
   private frame(dtMs: number): void {
@@ -424,7 +533,8 @@ export class OfficeRenderer {
       if (s.name.text !== name) s.name.text = name;
       this.setStatus(s, a.status, a.away);
       // Remote movement is inferred from the eased position the user actually sees.
-      this.animate(s, key, a.rx - px, a.ry - py, dtMs);
+      const act = this.shownAction(a.id, false);
+      this.animate(s, key, a.rx - px, a.ry - py, dtMs, act, this.partnerRight(act, a.rx));
       s.root.position.set(a.rx, a.ry);
       s.root.zIndex = a.ry;
       seen.add(a.id);
@@ -436,7 +546,8 @@ export class OfficeRenderer {
     this.setStatus(mine, meEntry?.status ?? 'ACTIVE');
     const last = this.lastSelf;
     const moved = last && last.floorId === self.floorId ? { dx: self.x - last.x, dy: self.y - last.y } : { dx: 0, dy: 0 };
-    this.animate(mine, myKey, moved.dx, moved.dy, dtMs);
+    const myAct = this.shownAction(meId, true);
+    this.animate(mine, myKey, moved.dx, moved.dy, dtMs, myAct, this.partnerRight(myAct, self.x));
     this.lastSelf = { x: self.x, y: self.y, floorId: self.floorId };
     mine.root.position.set(self.x, self.y);
     mine.root.zIndex = self.y + 0.5;

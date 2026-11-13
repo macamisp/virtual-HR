@@ -2,7 +2,7 @@
 
 import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { DoorOpen, Lock, Megaphone, Map as MapIcon, Minus, Navigation, Plus, Sparkles, Users } from 'lucide-react';
-import { ACCESS_MODES, avatarKeyOr, distanceToRect, GAME_REACH, gameObjects, nearestWalkable, TILE_SIZE, VO_STATUS_LABEL } from '@hrvo/shared';
+import { ACCESS_MODES, avatarKeyOr, distanceToRect, GAME_REACH, gameObjects, nearestSeat, nearestWalkable, PAIR_LABEL, PAIR_REACH, TILE_SIZE, VO_STATUS_LABEL } from '@hrvo/shared';
 import type { AccessMode, AvatarKey, CampusGame, MapObject, OfficeMap, OfficeSnapshot, Room, VoStatus } from '@hrvo/shared';
 import { AccessDenied, ErrorState, LoadingState } from '@/components/state-views';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -17,6 +17,8 @@ import { OfficeToolbar } from '@/components/media/office-toolbar';
 import { AvatarActions } from '@/components/office/avatar-actions';
 import { AvatarSettings } from '@/components/office/avatar-settings';
 import { GameDialog, GamePrompt } from '@/components/office/campus-games';
+import { AvatarActionMenu } from '@/components/office/avatar-action-menu';
+import type { ActionContext } from '@/components/office/avatar-action-menu';
 import { useFestiveMode } from '@/lib/office/festive-mode';
 import { CallPerson } from '@/components/call-person';
 import type { OfficeClient } from '@/lib/office/office-client';
@@ -83,6 +85,24 @@ function standingSpot(client: OfficeClient, o: MapObject): { x: number; y: numbe
   return null;
 }
 
+/** ADR 056: what the actions menu can offer now: a free chair in reach, seated, dancing, who is nearby. */
+function actionContext(client: OfficeClient): ActionContext {
+  const self = client.self;
+  const meId = client.snapshot.me.id;
+  const mine = client.roster.get(meId);
+  const seated = mine?.action?.kind === 'sit';
+  const dancing = mine?.action?.kind === 'dance' || client.selfAction?.kind === 'dance';
+  if (!self) return { seat: null, seated, dancing, nearby: [] };
+  const seat = seated ? null : nearestSeat(client.seats(), self, (s) => !client.seatTaken(s.id));
+  const nearby: ActionContext['nearby'] = [];
+  for (const a of client.avatars.values()) {
+    const r = client.roster.get(a.id);
+    if (!r || r.floorId !== self.floorId || a.roomId !== self.roomId || a.away) continue;
+    if (Math.hypot(a.x - self.x, a.y - self.y) <= PAIR_REACH) nearby.push({ id: a.id, name: r.name });
+  }
+  return { seat, seated, dancing, nearby };
+}
+
 function MapView({ client, festive, picture }: { client: OfficeClient; festive: boolean; picture: AvatarKey }) {
   const host = useRef<HTMLDivElement | null>(null);
   const renderer = useRef<OfficeRenderer | null>(null);
@@ -96,10 +116,15 @@ function MapView({ client, festive, picture }: { client: OfficeClient; festive: 
   festiveRef.current = festive;
   useEffect(() => { renderer.current?.setFestive(festive); }, [festive]);
   const close = useCallback(() => { setPlaying(null); host.current?.focus(); }, []);
+  const [actx, setActx] = useState<ActionContext>({ seat: null, seated: false, dancing: false, nearby: [] });
+  const actxRef = useRef(actx);
+  actxRef.current = actx;
   useEffect(() => {
     const t = setInterval(() => {
       const n = nearGame(client);
       setNear((cur) => (cur === (n?.game ?? null) ? cur : (n?.game ?? null)));
+      const ax = actionContext(client);
+      setActx((cur) => (JSON.stringify(cur) === JSON.stringify(ax) ? cur : ax));
       const p = pending.current;
       if (!p) return;
       if (n && n.object.id === p.object.id) { pending.current = null; setPlaying(p.game); }
@@ -178,11 +203,19 @@ function MapView({ client, festive, picture }: { client: OfficeClient; festive: 
         data-testid="office-canvas"
         tabIndex={0}
         role="application"
-        aria-label="Office map. Use W A S D or the arrow keys to walk, or click a spot. The list view offers the same actions without the map."
+        aria-label="Office map. Use W A S D or the arrow keys to walk, or click a spot. E sits on a nearby chair or plays a nearby game, Space jumps; the Actions button has the rest. The list view offers the same actions without the map."
         className="h-full w-full outline-none focus-visible:ring-2 focus-visible:ring-primary"
         onKeyDown={(e) => {
           if (KEYS[e.code]) { e.preventDefault(); pressed.current.add(e.code); updateKeys(); return; }
-          if (e.code === 'KeyE' && near && !e.repeat) { e.preventDefault(); pressed.current.clear(); updateKeys(); setPlaying(near); }
+          if (e.code === 'KeyE' && near && !e.repeat) { e.preventDefault(); pressed.current.clear(); updateKeys(); setPlaying(near); return; }
+          // ADR 056: E sits on (or gets up from) the chair in reach; Space jumps.
+          if (e.code === 'KeyE' && !e.repeat) {
+            const ax = actxRef.current;
+            if (ax.seated) { e.preventDefault(); void client.stand(); }
+            else if (ax.seat) { e.preventDefault(); void client.sit(ax.seat.id); }
+            return;
+          }
+          if (e.code === 'Space' && !e.repeat) { e.preventDefault(); void client.act('jump'); }
         }}
         onKeyUp={(e) => { if (pressed.current.delete(e.code)) updateKeys(); }}
         onBlur={() => { pressed.current.clear(); updateKeys(); }}
@@ -193,8 +226,9 @@ function MapView({ client, festive, picture }: { client: OfficeClient; festive: 
         <Button size="sm" variant="outline" aria-label="Zoom in" onClick={() => renderer.current?.zoomBy(1.2)}><Plus aria-hidden="true" /></Button>
         <Button size="sm" variant="outline" aria-label="Zoom out" onClick={() => renderer.current?.zoomBy(1 / 1.2)}><Minus aria-hidden="true" /></Button>
       </div>
-      <p className="absolute bottom-2 left-2 rounded bg-white/80 px-2 py-1 text-xs text-muted-foreground" aria-hidden="true">WASD / arrows to walk · click to go · {fps} fps</p>
+      <p className="absolute bottom-2 left-2 rounded bg-white/80 px-2 py-1 text-xs text-muted-foreground" aria-hidden="true">WASD / arrows to walk · click to go · E sit · Space jump · {fps} fps</p>
       {near && !playing ? <GamePrompt game={near} onPlay={() => setPlaying(near)} /> : null}
+      <AvatarActionMenu client={client} ctx={actx} />
       {playing ? <GameDialog game={playing} picture={picture} onClose={close} /> : null}
     </div>
   );
@@ -443,6 +477,24 @@ export default function OfficePage() {
                   {client.notice.text}
                   {client.notice.action ? <Button size="sm" variant="outline" onClick={client.notice.action.run}>{client.notice.action.label}</Button> : null}
                   <Button size="sm" variant="ghost" onClick={() => client.dismissNotice()}>Dismiss</Button>
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            {/* ADR 056: hug and high-five requests: nothing happens until the other person says yes. */}
+            {client.incoming.map((r) => (
+              <Alert key={r.id} data-testid="pair-request">
+                <AlertDescription className="flex flex-wrap items-center gap-2">
+                  {r.fromName} would like a {PAIR_LABEL[r.kind]}.
+                  <Button size="sm" onClick={() => client.answerPair(r.id, true)}>Accept</Button>
+                  <Button size="sm" variant="ghost" onClick={() => client.answerPair(r.id, false)}>Decline</Button>
+                </AlertDescription>
+              </Alert>
+            ))}
+            {client.outgoing ? (
+              <Alert data-testid="pair-waiting">
+                <AlertDescription className="flex flex-wrap items-center gap-2">
+                  Waiting for {client.outgoing.toName} to accept your {PAIR_LABEL[client.outgoing.kind]}…
+                  <Button size="sm" variant="ghost" onClick={() => client.cancelPair()}>Cancel</Button>
                 </AlertDescription>
               </Alert>
             ) : null}
