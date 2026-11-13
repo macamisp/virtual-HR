@@ -13,74 +13,24 @@
  *
  * Paint order: floors, door sills, wall shadows, light, rugs, walls, wall decor, chairs,
  * furniture, corner plants. Variation is a hash of the tile position, so a map always looks the same.
+ *
+ * ADR 055: tall things (trees, arcade cabinets, potted plants) are not painted into the floor
+ * chunks but into one atlas of "props" that the renderer sorts with the avatars by their base, so
+ * a person walking behind a tree is hidden by its canopy and one walking in front is not.
  */
 import { objectLayer, prop, TILE_SIZE, tileLayer } from '@hrvo/shared';
 import type { MapObject, OfficeMap } from '@hrvo/shared';
+import {
+  BLUE, buildAtlas, CREAM, GLASS, GOLD, GOLD_LIGHT, GRASS, hash, INK, LEAF, LIGHT, MAPLE, NAVY, OAK, overlaps, Painter, pick, SAGE, STONE, TERRA, WATER,
+} from './pixel-kit';
+import type { AtlasPiece, AtlasSprite, Rect } from './pixel-kit';
 
 const T = TILE_SIZE;
 /** Chunk edge in px: well under every GPU's texture limit, also for the largest map (200 tiles). */
 export const ENV_CHUNK = 1024;
 
-// ---------------------------------------------------------------- palette
-// Warm oak, deep navy, cream and ivory, sage, muted terracotta, foliage green, golden light.
-// Floors stay light enough for the avatars' dark name labels.
-
-const OAK = { light: 0xd9b384, base: 0xcba274, mid: 0xbf9566, dark: 0xa87d50, deep: 0x8a6440, line: 0x74522f };
-const NAVY = { light: 0x4a5d82, base: 0x2e3d5a, mid: 0x26334d, deep: 0x1a2438 };
-const CREAM = { light: 0xfbf6ea, base: 0xf3ead8, mid: 0xe9dec7, dark: 0xd8cbb0, line: 0xc7b998 };
-const SAGE = { light: 0xd3dece, base: 0xc8d4c2, mid: 0xc2cfbc, dark: 0x9db39a, deep: 0x7f977c };
-const TERRA = { light: 0xdb9a7c, base: 0xc47a5a, mid: 0xb56c4c, dark: 0x9c5a3c, deep: 0x7f4630 };
-const LEAF = { light: 0x86c074, base: 0x5c9a55, dark: 0x3d7242, deep: 0x2c5534 };
-const BLUE = { light: 0xd9e1ea, base: 0xcfd8e3, mid: 0xc6d0dc, line: 0xb7c3d2 };
-const MAPLE = { light: 0xe9d3b0, base: 0xe2c9a3, mid: 0xdabf97, line: 0xc6a779 };
-const GOLD = 0xd9a94e;
-const GLASS = { base: 0xa9d3e8, light: 0xd8eef8, dark: 0x86b9d3 };
-const LIGHT = 0xffd27a;
-const INK = 0x000000;
-
 /** Floor styles of the map (packages/shared default-map FLOOR). Anything else gets the fallback. */
-const FLOOR = { CARPET: 1, WOOD: 2, MEETING: 3, PRIVATE: 4, RECEPTION: 5 } as const;
-
-// ---------------------------------------------------------------- helpers
-
-/** Deterministic hash of a position (and a salt): the only source of variation. */
-function hash(x: number, y: number, salt = 0): number {
-  let h = (Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263) + Math.imul(salt | 0, 2147483647)) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return (h ^ (h >>> 16)) >>> 0;
-}
-
-const pick = <V>(items: readonly V[], h: number): V => items[h % items.length]!;
-
-/** Whole-pixel fills only, so every edge stays crisp. */
-class Painter {
-  private colour = -1;
-  private alpha = 1;
-  private readonly ctx: CanvasRenderingContext2D;
-  constructor(ctx: CanvasRenderingContext2D) {
-    this.ctx = ctx;
-  }
-  r(colour: number, x: number, y: number, w: number, h: number, alpha = 1): void {
-    if (w <= 0 || h <= 0) return;
-    if (colour !== this.colour) { this.ctx.fillStyle = `#${colour.toString(16).padStart(6, '0')}`; this.colour = colour; }
-    if (alpha !== this.alpha) { this.ctx.globalAlpha = alpha; this.alpha = alpha; }
-    this.ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
-  }
-  /** A filled ellipse as one span per row (no anti-aliased curve). */
-  ellipse(colour: number, cx: number, cy: number, rx: number, ry: number, alpha = 1): void {
-    for (let dy = -ry; dy <= ry; dy += 1) {
-      const half = Math.round(rx * Math.sqrt(Math.max(0, 1 - (dy * dy) / (ry * ry + 0.5))));
-      this.r(colour, cx - half, cy + dy, half * 2 + 1, 1, alpha);
-    }
-  }
-  /** A 1 px frame. */
-  frame(colour: number, x: number, y: number, w: number, h: number): void {
-    this.r(colour, x, y, w, 1); this.r(colour, x, y + h - 1, w, 1); this.r(colour, x, y, 1, h); this.r(colour, x + w - 1, y, 1, h);
-  }
-}
-
-interface Rect { x: number; y: number; width: number; height: number }
-const overlaps = (a: Rect, b: Rect, pad = 0): boolean => a.x - pad < b.x + b.width && a.x + a.width + pad > b.x && a.y - pad < b.y + b.height && a.y + a.height + pad > b.y;
+const FLOOR = { CARPET: 1, WOOD: 2, MEETING: 3, PRIVATE: 4, RECEPTION: 5, GRASS: 6, CAFE: 7, ARCADE: 8, PATH: 9 } as const;
 
 /** What the painter needs to know about a map, worked out once. */
 interface Scene {
@@ -221,6 +171,51 @@ function floorTile(p: Painter, s: Scene, tx: number, ty: number): void {
       { const h = hash(tx, ty, 6); p.r(CREAM.mid, x + 4 + (h % 20), y + 5 + ((h >>> 6) % 20), 5, 1); p.r(CREAM.mid, x + 6 + ((h >>> 12) % 18), y + 9 + ((h >>> 3) % 16), 3, 1); }
       for (const [cx, cy] of [[0, 0], [T - 2, 0], [0, T - 2], [T - 2, T - 2]] as const) p.r(SAGE.dark, x + cx, y + cy, 2, 2);
       break;
+    case FLOOR.GRASS: { // lawn with tufts and the odd flower
+      p.r(pick([GRASS.base, GRASS.base, GRASS.mid, GRASS.light], hash(tx, ty, 61)), x, y, T, T);
+      for (let i = 0; i < 7; i += 1) {
+        const h = hash(tx * 13 + i, ty * 7 + i, 62);
+        const gx = x + 2 + (h % 27);
+        const gy = y + 3 + ((h >>> 7) % 26);
+        p.r(GRASS.dark, gx, gy, 1, 2); p.r(GRASS.dark, gx + 2, gy - 1, 1, 3); p.r(GRASS.light, gx + 1, gy + 1, 1, 1);
+      }
+      const f = hash(tx, ty, 63);
+      if (f % 9 === 0) { const fx = x + 6 + (f % 18); const fy = y + 6 + ((f >>> 5) % 18); p.r(pick([0xf6f1e4, GOLD_LIGHT, TERRA.light], f >>> 9), fx, fy, 2, 2); p.r(GOLD, fx + 1, fy + 1, 1, 1); }
+      break;
+    }
+    case FLOOR.PATH: { // flagstones
+      p.r(STONE.line, x, y, T, T);
+      const stones = [[1, 1, 14, 9], [16, 1, 15, 13], [1, 11, 9, 11], [11, 11, 4, 11], [16, 15, 15, 8], [1, 23, 13, 8], [15, 24, 16, 7]] as const;
+      stones.forEach(([sx, sy, sw, sh], i) => {
+        const tone = pick([STONE.base, STONE.mid, STONE.light, STONE.base], hash(tx * 7 + i, ty, 64));
+        p.r(tone, x + sx, y + sy, sw, sh); p.r(STONE.light, x + sx, y + sy, sw, 1, 0.7); p.r(STONE.dark, x + sx, y + sy + sh - 1, sw, 1, 0.6);
+      });
+      break;
+    }
+    case FLOOR.CAFE: { // terracotta and cream tiles, a cream diamond every other tile
+      for (let j = 0; j < 2; j += 1) for (let i = 0; i < 2; i += 1) {
+        const cream = (tx * 2 + i + ty * 2 + j) % 4 === 0;
+        p.r(cream ? CREAM.base : pick([TERRA.light, 0xd99475, 0xd48d6e], hash(tx * 2 + i, ty * 2 + j, 65)), x + i * 16, y + j * 16, 16, 16);
+        p.r(cream ? CREAM.light : 0xe6ab90, x + i * 16, y + j * 16, 15, 1);
+        p.r(cream ? CREAM.dark : TERRA.mid, x + i * 16 + 15, y + j * 16, 1, 16); p.r(cream ? CREAM.dark : TERRA.mid, x + i * 16, y + j * 16 + 15, 16, 1);
+      }
+      break;
+    }
+    case FLOOR.ARCADE: { // deep carpet with a retro confetti pattern
+      p.r(alt ? 0x2b2f52 : 0x292c4d, x, y, T, T);
+      const shapes = [0x46b3a8, GOLD, TERRA.light, 0x8f7bd6];
+      for (let i = 0; i < 4; i += 1) {
+        const h = hash(tx * 5 + i, ty * 11 + i, 66);
+        const sx = x + 2 + (h % 26);
+        const sy = y + 2 + ((h >>> 6) % 26);
+        const c = pick(shapes, h >>> 12);
+        if (h % 3 === 0) { p.r(c, sx, sy, 3, 1); p.r(c, sx + 1, sy + 1, 1, 1); }
+        else if (h % 3 === 1) { p.r(c, sx, sy, 1, 3); p.r(c, sx + 1, sy + 1, 2, 1); }
+        else p.r(c, sx, sy, 2, 2);
+      }
+      p.r(0x3a3f6b, x, y, T, 1, 0.6);
+      break;
+    }
     default: // unknown style: a neutral stone tile
       p.r(alt ? 0xe6e2da : 0xe0dcd3, x, y, T, T);
       p.r(0xcfcabf, x + T - 1, y, 1, T); p.r(0xcfcabf, x, y + T - 1, T, 1);
@@ -281,6 +276,7 @@ function wallTile(p: Painter, s: Scene, tx: number, ty: number): void {
     p.r(OAK.line, x, y + T - 1, T, 1);
     if (!we) p.r(CREAM.line, x, fy, 1, T - CAP - 4);
     if (!e) p.r(CREAM.line, x + T - 1, fy, 1, T - CAP - 4);
+    if ((s.floor[(ty + 1) * s.w + tx] ?? 0) === FLOOR.GRASS) ivy(p, tx, ty);
   }
   // Door frames: an oak jamb on the wall end beside a doorway (the opening itself is untouched).
   const door = (dx: number, dy: number) => s.doors.has((ty + dy) * s.w + tx + dx);
@@ -288,6 +284,21 @@ function wallTile(p: Painter, s: Scene, tx: number, ty: number): void {
   if (door(1, 0)) { p.r(OAK.deep, x + T - 3, y, 3, T); p.r(OAK.light, x + T - 3, y, 1, T); p.r(OAK.line, x + T - 1, y, 1, T); }
   if (door(0, -1)) { p.r(OAK.deep, x, y, T, 3); p.r(OAK.light, x, y + 2, T, 1); p.r(OAK.line, x, y, T, 1); }
   if (door(0, 1)) { p.r(OAK.deep, x, y + T - 3, T, 3); p.r(OAK.light, x, y + T - 3, T, 1); p.r(OAK.line, x, y + T - 1, T, 1); }
+}
+
+/** Garden walls: ivy climbing the face from the skirting board. */
+function ivy(p: Painter, tx: number, ty: number): void {
+  const x = tx * T;
+  const fy = ty * T + CAP;
+  for (let i = 0; i < 9; i += 1) {
+    const h = hash(tx * 9 + i, ty, 71);
+    const lx = x + (h % 30);
+    const top = fy + 2 + ((h >>> 5) % 10);
+    p.r(LEAF.deep, lx, top, 1, T - CAP - 4 - (top - fy));
+    p.r(h & 1 ? LEAF.base : LEAF.dark, lx - 1, top, 3, 2);
+    p.r(LEAF.light, lx, top, 1, 1);
+    if (h % 3 === 0) p.r(LEAF.dark, lx + 1, top + 4, 2, 2);
+  }
 }
 
 /** Soft, stepped shadows the walls cast onto the floor below and to their right. */
@@ -360,12 +371,20 @@ function wallPiece(p: Painter, piece: WallPiece): void {
 /** A free wall face that is not a wall end or a door jamb. */
 const plainFace = (s: Scene, tx: number, ty: number): boolean => hasFace(s, tx, ty) && !s.faceUsed.has(ty * s.w + tx) && s.wall(tx - 1, ty) && s.wall(tx + 1, ty);
 /** Outer walls (nothing but the outside above them) get a window on every third tile. */
-const isWindow = (s: Scene, tx: number, ty: number): boolean => tx % 3 === 1 && plainFace(s, tx, ty) && !s.open(tx, ty - 1) && !s.wall(tx, ty - 1);
+const isWindow = (s: Scene, tx: number, ty: number): boolean => tx % 3 === 1 && plainFace(s, tx, ty) && !s.open(tx, ty - 1) && !s.wall(tx, ty - 1) && (s.floor[(ty + 1) * s.w + tx] ?? 0) !== FLOOR.GRASS;
+/** A warm lantern on a garden wall, every fourth tile. */
+const isLantern = (s: Scene, tx: number, ty: number): boolean => tx % 4 === 2 && plainFace(s, tx, ty) && (s.floor[(ty + 1) * s.w + tx] ?? 0) === FLOOR.GRASS;
 
 function wallDecor(p: Painter, s: Scene, tx: number, ty: number): void {
   if (!plainFace(s, tx, ty)) return;
   const x = tx * T;
   const fy = ty * T + CAP;
+  if ((s.floor[(ty + 1) * s.w + tx] ?? 0) === FLOOR.GRASS) {
+    if (!isLantern(s, tx, ty)) return;
+    p.r(NAVY.deep, x + 13, fy + 1, 6, 2); p.r(NAVY.deep, x + 12, fy + 3, 8, 9); p.r(GOLD_LIGHT, x + 13, fy + 4, 6, 7); p.r(0xfff3c4, x + 15, fy + 5, 2, 4);
+    p.r(NAVY.deep, x + 12, fy + 12, 8, 1);
+    return;
+  }
   if (!s.open(tx, ty - 1) && !s.wall(tx, ty - 1)) {
     if (!isWindow(s, tx, ty)) return;
     p.r(OAK.deep, x + 5, fy + 1, 22, 13); p.r(OAK.mid, x + 5, fy + 1, 22, 1);
@@ -405,11 +424,19 @@ function lightPool(p: Painter, cx: number, cy: number, rx: number, ry: number): 
 function lighting(p: Painter, s: Scene, view: Rect): void {
   for (const r of s.rooms) {
     if (!overlaps(view, r)) continue;
+    // Warm light reads as grey haze on the dark arcade carpet: the arcade glows from its cabinets instead.
+    const floorAt = s.floor[Math.floor((r.y + r.height / 2) / T) * s.w + Math.floor((r.x + r.width / 2) / T)] ?? 0;
+    if (floorAt === FLOOR.ARCADE) continue;
     lightPool(p, Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2), Math.round(Math.min(r.width * 0.42, 300)), Math.round(Math.min(r.height * 0.4, 130)));
   }
   for (const d of s.desks) {
     if (overlaps(view, d, 48)) lightPool(p, Math.round(d.x + d.width / 2), Math.round(d.y + d.height / 2 + 4), 52, 30);
   }
+}
+
+/** Lantern glow on the lawn and pendant-lamp pools over café tables. */
+function campusLights(p: Painter, s: Scene, tx: number, ty: number): void {
+  if (s.wall(tx, ty) && isLantern(s, tx, ty)) lightPool(p, tx * T + 16, (ty + 1) * T + 6, 34, 18);
 }
 
 /** Daylight falling onto the floor below a window, in two flat steps. */
@@ -630,13 +657,253 @@ function cabinet(p: Painter, f: MapObject): void {
   for (let i = x + 1; i < x + w - 6; i += 24) { p.r(OAK.deep, i + 23, y + h - 9, 1, 7); p.r(GOLD, i + 10, y + h - 6, 3, 1); }
 }
 
+/** Kinds drawn as depth-sorted props (they rise above their footprint) rather than on the floor. */
+const TALL = new Set(['plant', 'tree', 'arcade']);
+const isTall = (f: MapObject): boolean => TALL.has(kindOf(f));
+
 function furnitureItem(p: Painter, s: Scene, f: MapObject): void {
   const kind = kindOf(f);
   if (kind === 'plant') pottedPlant(p, Math.round(f.x + f.width / 2), f.y + f.height - 1, true);
+  else if (CAMPUS[kind]) CAMPUS[kind]!(p, f);
   else if (kind === 'sofa' && f.width >= f.height && f.width >= 48) sofa(p, f);
   else if (kind === 'counter' && f.height >= 20) counter(p, f);
   else if (kind === 'table' && f.width >= 24 && f.height >= 20) { if (isDeskTable(s, f)) deskTable(p, f); else plainTable(p, s, f); }
   else cabinet(p, f);
+}
+
+// ---------------------------------------------------------------- campus furniture (ADR 055)
+
+const shadow = (p: Painter, f: MapObject) => p.r(INK, f.x + 2, f.y + f.height - 1, f.width - 3, 4, 0.18);
+
+/** Coffee bar: cream top, oak front, espresso machine, grinder, cups and a pastry case. */
+function coffeeCounter(p: Painter, f: MapObject): void {
+  const { x, y, width: w, height: h } = f;
+  shadow(p, f);
+  p.r(OAK.line, x, y + 1, w, h - 2);
+  p.r(OAK.dark, x + 1, y + 20, w - 2, h - 23);
+  for (let i = x + 12; i < x + w - 4; i += 24) p.r(OAK.deep, i, y + 22, 1, h - 27);
+  p.r(GOLD, x + 1, y + h - 6, w - 2, 1);
+  p.r(CREAM.base, x + 1, y + 2, w - 2, 18); p.r(CREAM.light, x + 1, y + 2, w - 2, 2); p.r(CREAM.line, x + 1, y + 19, w - 2, 1);
+  // Espresso machine.
+  const mx = x + 8;
+  p.r(0x6b7280, mx, y + 3, 26, 14); p.r(0xc0c6ce, mx + 1, y + 4, 24, 4); p.r(TERRA.base, mx + 2, y + 9, 22, 2);
+  p.r(0x2f3542, mx + 5, y + 12, 3, 4); p.r(0x2f3542, mx + 17, y + 12, 3, 4); p.r(CREAM.light, mx + 5, y + 15, 3, 2); p.r(CREAM.light, mx + 17, y + 15, 3, 2);
+  p.r(GOLD_LIGHT, mx + 11, y + 5, 3, 2);
+  // Grinder with beans.
+  p.r(0x3a3f4b, mx + 30, y + 4, 8, 12); p.r(0x6b4226, mx + 31, y + 5, 6, 4); p.r(0x8a5a35, mx + 32, y + 6, 2, 1);
+  // Cups and a pastry case.
+  for (let i = 0; i < 3; i += 1) { p.r(CREAM.light, mx + 44 + i * 6, y + 10, 4, 5); p.r(TERRA.mid, mx + 44 + i * 6, y + 10, 4, 1); }
+  const cx = x + w - 52;
+  if (cx > mx + 64) {
+    p.r(GLASS.dark, cx, y + 3, 40, 14); p.r(GLASS.light, cx + 1, y + 4, 38, 12, 0.85);
+    for (let i = 0; i < 5; i += 1) { p.r(pick([0xd9a05b, 0xb7703c, 0xe7c38a, TERRA.light], i), cx + 3 + i * 7, y + 10, 5, 4); p.r(0xf6e2bd, cx + 4 + i * 7, y + 10, 3, 1); }
+    p.r(0xffffff, cx + 2, y + 5, 10, 1, 0.8);
+  }
+  // Menu board on the counter front.
+  p.r(NAVY.deep, x + w - 30, y + 24, 22, h - 32); p.r(CREAM.base, x + w - 27, y + 27, 12, 1); p.r(CREAM.dark, x + w - 27, y + 30, 16, 1); p.r(CREAM.dark, x + w - 27, y + 33, 9, 1);
+}
+
+/** A wall bookshelf seen from the room: shelves of coloured spines, a plant and a vase. */
+function bookshelf(p: Painter, f: MapObject): void {
+  const { x, y, width: w, height: h } = f;
+  shadow(p, f);
+  p.r(OAK.deep, x, y, w, h); p.r(OAK.dark, x + 2, y + 2, w - 4, h - 4);
+  const rows = Math.max(2, Math.floor((h - 4) / 9));
+  const spines = [NAVY.base, TERRA.base, CREAM.base, SAGE.deep, GOLD, NAVY.light, TERRA.dark, LEAF.dark];
+  for (let r = 0; r < rows; r += 1) {
+    const ry = y + 2 + r * 9;
+    p.r(OAK.mid, x + 1, ry + 8, w - 2, 1);
+    let bx = x + 3;
+    for (let i = 0; bx < x + w - 4; i += 1) {
+      const hv = hash(bx, r, f.x);
+      const bw = 2 + (hv % 2);
+      if (hv % 11 === 0 && bx < x + w - 14) { p.ellipse(LEAF.base, bx + 4, ry + 4, 4, 3); p.r(TERRA.base, bx + 2, ry + 5, 5, 3); bx += 10; continue; }
+      if (hv % 7 !== 0) p.r(pick(spines, hv >>> 4), bx, ry + 1 + (hv % 3 === 0 ? 1 : 0), bw, 7 - (hv % 3 === 0 ? 1 : 0));
+      bx += bw + (i % 6 === 5 ? 2 : 0);
+    }
+  }
+}
+
+/** A round café table with a pendant lamp above it and chairs on two sides (paint only). */
+function cafeTable(p: Painter, f: MapObject): void {
+  const cx = Math.round(f.x + f.width / 2);
+  const cy = Math.round(f.y + f.height / 2);
+  for (const dx of [-21, 21]) {
+    p.r(INK, cx + dx - 6, cy + 7, 12, 2, 0.14);
+    p.r(OAK.deep, cx + dx - 6, cy - 6, 12, 12); p.r(OAK.base, cx + dx - 5, cy - 5, 10, 10); p.r(OAK.light, cx + dx - 5, cy - 5, 10, 1);
+    p.r(OAK.deep, cx + dx + (dx < 0 ? -6 : 3), cy - 7, 3, 14);
+  }
+  p.ellipse(INK, cx + 1, cy + 9, 11, 3, 0.18);
+  p.ellipse(OAK.line, cx, cy, 13, 12); p.ellipse(CREAM.base, cx, cy - 1, 12, 10); p.ellipse(CREAM.light, cx - 2, cy - 4, 7, 4);
+  p.r(TERRA.base, cx - 7, cy - 1, 4, 4); p.r(CREAM.light, cx - 7, cy - 1, 4, 1); p.r(0x5b3a29, cx - 6, cy, 2, 1); // cup
+  p.r(CREAM.light, cx + 2, cy + 1, 6, 3); p.r(0xd9a05b, cx + 3, cy + 1, 4, 2); // plate with a pastry
+  p.ellipse(0x2f3542, cx, cy - 6, 3, 2); p.r(GOLD_LIGHT, cx - 1, cy - 5, 3, 2); // pendant lamp from above
+}
+
+function coffeeTable(p: Painter, f: MapObject): void {
+  const { x, y, width: w, height: h } = f;
+  shadow(p, f);
+  p.r(OAK.line, x + 2, y + 4, w - 4, h - 7); p.r(OAK.base, x + 3, y + 5, w - 6, h - 12); p.r(OAK.light, x + 3, y + 5, w - 6, 1); p.r(OAK.dark, x + 3, y + h - 7, w - 6, 3);
+  p.r(CREAM.light, x + 10, y + 8, 12, 9); p.r(NAVY.light, x + 11, y + 9, 10, 2); p.r(CREAM.line, x + 11, y + 13, 8, 1); // magazine
+  p.r(TERRA.base, x + w - 22, y + 8, 5, 5); p.r(CREAM.light, x + w - 22, y + 8, 5, 1); // mug
+  p.r(SAGE.dark, x + w - 14, y + 9, 6, 6); p.ellipse(LEAF.base, x + w - 11, y + 8, 4, 3); // succulent
+}
+
+/** An arcade cabinet (1 x 2 tiles): marquee, glowing screen, joystick and buttons. A prop. */
+function arcadeCabinet(p: Painter, f: MapObject): void {
+  const { x, y, width: w, height: h } = f;
+  const g = String(prop(f, 'game', ''));
+  const body = g === 'memory' ? 0x8f3b76 : g === 'puzzle' ? 0x2f6f8f : 0xb5452f;
+  const bodyDark = g === 'memory' ? 0x652a54 : g === 'puzzle' ? 0x214e65 : 0x7f3020;
+  const screen = g === 'memory' ? 0xf5c6e0 : g === 'puzzle' ? 0xbfe6f2 : 0xc9f2c3;
+  p.ellipse(INK, x + w / 2, y + h - 2, w / 2 + 3, 4, 0.22);
+  p.r(INK, x - 1, y - 12, w + 2, h + 11, 0.85);
+  p.r(body, x, y - 11, w, h + 8); p.r(bodyDark, x + w - 5, y - 11, 5, h + 8);
+  p.r(GOLD_LIGHT, x + 2, y - 9, w - 6, 7); p.r(bodyDark, x + 4, y - 7, w - 10, 1); p.r(bodyDark, x + 4, y - 5, w - 14, 1); // marquee
+  p.r(0x14162a, x + 2, y + 1, w - 6, 22); p.r(screen, x + 4, y + 3, w - 10, 18);
+  // Little game art on the screen.
+  if (g === 'tictactoe') { p.r(0x2f6d3a, x + 11, y + 4, 1, 16); p.r(0x2f6d3a, x + 17, y + 4, 1, 16); p.r(0x2f6d3a, x + 5, y + 9, 20, 1); p.r(0x2f6d3a, x + 5, y + 15, 20, 1); p.r(TERRA.dark, x + 6, y + 5, 3, 3); }
+  else if (g === 'memory') { for (let i = 0; i < 3; i += 1) for (let j = 0; j < 2; j += 1) p.r(i === 1 && j === 0 ? GOLD : 0x8f3b76, x + 6 + i * 7, y + 5 + j * 8, 5, 6); }
+  else { for (let i = 0; i < 3; i += 1) for (let j = 0; j < 3; j += 1) if (i + j < 4) p.r(0x2f6f8f, x + 6 + i * 6, y + 5 + j * 5, 5, 4); }
+  p.r(0xffffff, x + 5, y + 4, 4, 1, 0.6);
+  p.r(bodyDark, x + 1, y + 25, w - 4, 10); // control panel
+  p.r(0x22252f, x + 6, y + 27, 3, 5); p.r(TERRA.light, x + 5, y + 26, 5, 2);
+  p.r(GOLD, x + 14, y + 28, 3, 3); p.r(0x46b3a8, x + 19, y + 28, 3, 3);
+  p.r(bodyDark, x + 3, y + 37, w - 8, h - 41); p.r(0x14162a, x + 8, y + h - 14, w - 18, 4); // coin door
+}
+
+function pingPong(p: Painter, f: MapObject): void {
+  const { x, y, width: w, height: h } = f;
+  shadow(p, f);
+  p.r(0x1d4f3c, x, y + 2, w, h - 6); p.r(0x2a6b51, x + 2, y + 4, w - 4, h - 10);
+  p.r(0xffffff, x + 2, y + 4, w - 4, 1); p.r(0xffffff, x + 2, y + h - 7, w - 4, 1); p.r(0xffffff, x + 2, y + 4, 1, h - 10); p.r(0xffffff, x + w - 3, y + 4, 1, h - 10);
+  p.r(0xffffff, x + 2, y + Math.round(h / 2) - 2, w - 4, 1, 0.7);
+  p.r(CREAM.light, x + Math.round(w / 2) - 1, y, 3, h - 2); p.r(0x9aa3af, x + Math.round(w / 2), y, 1, h - 2); // net
+  p.r(0x22252f, x + 4, y + h - 4, 3, 3); p.r(0x22252f, x + w - 7, y + h - 4, 3, 3);
+  p.ellipse(TERRA.base, x + 18, y + 18, 5, 5); p.r(OAK.dark, x + 21, y + 22, 6, 2); // paddle
+  p.ellipse(0x1f3a7a, x + w - 20, y + 30, 5, 5); p.r(OAK.dark, x + w - 27, y + 34, 6, 2);
+  p.r(0xffffff, x + w - 40, y + 14, 2, 2);
+}
+
+function chessTable(p: Painter, f: MapObject): void {
+  const { x, y, width: w, height: h } = f;
+  shadow(p, f);
+  p.r(OAK.line, x + 2, y + 2, w - 4, h - 6); p.r(OAK.base, x + 3, y + 3, w - 6, h - 14); p.r(OAK.dark, x + 3, y + h - 11, w - 6, 6);
+  const bx = x + 12;
+  const by = y + 8;
+  for (let r = 0; r < 8; r += 1) for (let c = 0; c < 8; c += 1) p.r((r + c) % 2 ? 0x6b4a2f : CREAM.base, bx + c * 5, by + r * 5, 5, 5);
+  p.frame(OAK.deep, bx - 1, by - 1, 42, 42);
+  for (let c = 0; c < 8; c += 1) { if (c % 3 !== 1) p.r(0x22252f, bx + 1 + c * 5, by + 6, 3, 3); if (c % 4 !== 2) p.r(0xf6f1e4, bx + 1 + c * 5, by + 31, 3, 3); }
+  p.r(0x22252f, bx + 16, by + 1, 3, 3); p.r(0xf6f1e4, bx + 21, by + 36, 3, 3); p.r(GOLD, bx + 21, by + 36, 3, 1);
+  chairTop(p, x + w / 2, y - 8); chairBottom(p, x + w / 2, y + h + 6);
+}
+
+const chairTop = (p: Painter, cx: number, cy: number) => { p.r(NAVY.mid, cx - 6, cy - 5, 12, 11); p.r(NAVY.light, cx - 5, cy - 4, 10, 8); p.r(NAVY.mid, cx - 6, cy - 6, 12, 4); };
+const chairBottom = (p: Painter, cx: number, cy: number) => { p.r(INK, cx - 6, cy + 6, 12, 2, 0.14); p.r(NAVY.mid, cx - 6, cy - 5, 12, 11); p.r(NAVY.light, cx - 5, cy - 4, 10, 8); p.r(NAVY.mid, cx - 6, cy + 2, 12, 4); };
+
+/** A board-game table: a Tic-Tac-Toe board or a spread of memory cards, with stools. */
+function gameTable(p: Painter, f: MapObject): void {
+  const { x, y, width: w, height: h } = f;
+  shadow(p, f);
+  p.r(OAK.line, x + 2, y + 2, w - 4, h - 6); p.r(OAK.base, x + 3, y + 3, w - 6, h - 14); p.r(OAK.light, x + 3, y + 3, w - 6, 1); p.r(OAK.dark, x + 3, y + h - 11, w - 6, 6);
+  const g = String(prop(f, 'game', ''));
+  const cx = x + w / 2;
+  if (g === 'tictactoe') {
+    const bx = cx - 18;
+    p.r(CREAM.light, bx, y + 8, 36, 36); p.r(NAVY.base, bx + 11, y + 10, 2, 32); p.r(NAVY.base, bx + 23, y + 10, 2, 32); p.r(NAVY.base, bx + 2, y + 19, 32, 2); p.r(NAVY.base, bx + 2, y + 31, 32, 2);
+    p.r(TERRA.base, bx + 3, y + 10, 6, 2); p.r(TERRA.base, bx + 5, y + 9, 2, 6); p.ellipse(LEAF.dark, bx + 18, y + 26, 3, 3); p.ellipse(CREAM.light, bx + 18, y + 26, 1, 1);
+  } else {
+    for (let i = 0; i < 4; i += 1) for (let j = 0; j < 3; j += 1) {
+      const up = (i + j * 2) % 5 === 0;
+      p.r(up ? CREAM.light : 0x8f3b76, cx - 21 + i * 11, y + 8 + j * 12, 9, 10); p.r(up ? GOLD : 0xb85a98, cx - 18 + i * 11, y + 11 + j * 12, 3, 3);
+    }
+  }
+  chairTop(p, cx, y - 8); chairBottom(p, cx, y + h + 6);
+}
+
+function beanbag(p: Painter, f: MapObject): void {
+  const cx = Math.round(f.x + f.width / 2);
+  const cy = Math.round(f.y + f.height / 2);
+  const c = hash(f.x, f.y, 81) % 2 ? { base: 0x46b3a8, dark: 0x2f8a80, light: 0x7fd1c7 } : { base: GOLD, dark: 0xb5862f, light: GOLD_LIGHT };
+  p.ellipse(INK, cx + 1, cy + 10, 13, 4, 0.18);
+  p.ellipse(c.dark, cx, cy + 1, 14, 12); p.ellipse(c.base, cx - 1, cy, 12, 10); p.ellipse(c.light, cx - 4, cy - 4, 5, 3); p.ellipse(c.dark, cx + 2, cy + 3, 6, 4);
+}
+
+/** A tiered stone fountain with water and a few floating petals. */
+function fountain(p: Painter, f: MapObject): void {
+  const cx = Math.round(f.x + f.width / 2);
+  const cy = Math.round(f.y + f.height / 2);
+  const rx = Math.round(f.width / 2) - 4;
+  const ry = Math.round(f.height / 2) - 10;
+  p.ellipse(INK, cx + 2, cy + 6, rx + 2, ry + 2, 0.16);
+  p.ellipse(STONE.dark, cx, cy + 4, rx, ry); p.ellipse(STONE.light, cx, cy, rx, ry); p.ellipse(STONE.mid, cx, cy + 1, rx - 4, ry - 4);
+  p.ellipse(WATER.dark, cx, cy + 1, rx - 7, ry - 7); p.ellipse(WATER.base, cx, cy, rx - 8, ry - 8);
+  for (let i = 0; i < 9; i += 1) { const h = hash(i, f.x, 82); p.r(WATER.light, cx - rx + 14 + (h % (rx * 2 - 28)), cy - ry + 12 + ((h >>> 8) % (ry * 2 - 22)), 4 + (h % 4), 1); }
+  p.r(TERRA.light, cx - 22, cy + 10, 3, 2); p.r(0xf6f1e4, cx + 18, cy - 8, 3, 2); p.r(TERRA.light, cx + 26, cy + 6, 2, 2);
+  // Upper basin and spout.
+  p.ellipse(STONE.dark, cx, cy - 4, 18, 9); p.ellipse(STONE.light, cx, cy - 7, 18, 9); p.ellipse(WATER.base, cx, cy - 7, 13, 6); p.ellipse(WATER.light, cx - 3, cy - 9, 5, 2);
+  p.r(STONE.mid, cx - 3, cy - 26, 6, 18); p.r(STONE.light, cx - 3, cy - 26, 2, 18); p.ellipse(STONE.light, cx, cy - 27, 6, 3);
+  p.r(WATER.light, cx - 1, cy - 34, 2, 8); p.r(WATER.light, cx - 5, cy - 31, 2, 6, 0.8); p.r(WATER.light, cx + 3, cy - 31, 2, 6, 0.8);
+}
+
+function bench(p: Painter, f: MapObject): void {
+  const { x, y, width: w, height: h } = f;
+  shadow(p, f);
+  p.r(0x3a3f4b, x + 3, y + h - 6, 3, 5); p.r(0x3a3f4b, x + w - 6, y + h - 6, 3, 5);
+  p.r(OAK.deep, x + 1, y + 2, w - 2, 8); for (let i = 0; i < 2; i += 1) { p.r(OAK.base, x + 2, y + 3 + i * 4, w - 4, 3); p.r(OAK.light, x + 2, y + 3 + i * 4, w - 4, 1); }
+  p.r(OAK.deep, x + 1, y + 12, w - 2, 12); for (let i = 0; i < 3; i += 1) { p.r(OAK.mid, x + 2, y + 13 + i * 4, w - 4, 3); p.r(OAK.light, x + 2, y + 13 + i * 4, w - 4, 1); }
+  p.r(0x3a3f4b, x, y + 11, 3, 14); p.r(0x3a3f4b, x + w - 3, y + 11, 3, 14);
+}
+
+/** A raised flower bed: timber edge, soil, rows of flowers and leaves. */
+function flowers(p: Painter, f: MapObject): void {
+  const { x, y, width: w, height: h } = f;
+  shadow(p, f);
+  p.r(OAK.deep, x + 1, y + 2, w - 2, h - 4); p.r(0x5b3a29, x + 4, y + 5, w - 8, h - 12); p.r(OAK.mid, x + 1, y + 2, w - 2, 2);
+  const blooms = [TERRA.light, 0xf6f1e4, GOLD_LIGHT, 0xe07a8f, 0xb79ce0];
+  for (let yy = y + 6; yy < y + h - 9; yy += 6) for (let xx = x + 5; xx < x + w - 7; xx += 6) {
+    const hv = hash(xx, yy, 83);
+    p.r(LEAF.dark, xx, yy + 2, 4, 3); p.r(LEAF.base, xx + 1, yy + 1, 2, 2);
+    const c = pick(blooms, hv);
+    p.r(c, xx + (hv % 3), yy - 1, 3, 3); p.r(GOLD, xx + 1 + (hv % 3), yy, 1, 1);
+  }
+}
+
+function lounger(p: Painter, f: MapObject): void {
+  const { x, y, width: w, height: h } = f;
+  shadow(p, f);
+  p.r(OAK.deep, x + 3, y + 2, w - 6, h - 5);
+  p.r(0xf6f1e4, x + 4, y + 3, w - 8, h - 7); for (let i = y + 5; i < y + h - 6; i += 6) p.r(0x46b3a8, x + 4, i, w - 8, 2);
+  p.r(CREAM.light, x + 6, y + 4, w - 12, 8); p.r(CREAM.dark, x + 6, y + 11, w - 12, 1); // pillow
+}
+
+/** A broad tree (2 x 2 footprint): trunk on the footprint, canopy above it. A prop. */
+function tree(p: Painter, f: MapObject): void {
+  const cx = Math.round(f.x + f.width / 2);
+  const base = f.y + f.height;
+  p.ellipse(INK, cx + 3, base - 6, 26, 8, 0.2);
+  p.r(0x6b4a2f, cx - 5, base - 30, 10, 26); p.r(0x8a6440, cx - 5, base - 30, 3, 26); p.r(0x4f3522, cx + 3, base - 30, 2, 26);
+  p.r(0x6b4a2f, cx - 9, base - 7, 18, 3);
+  const top = base - 34;
+  p.ellipse(LEAF.deep, cx, top, 30, 25);
+  p.ellipse(LEAF.dark, cx - 4, top - 3, 26, 21);
+  p.ellipse(LEAF.base, cx - 10, top - 8, 14, 11); p.ellipse(LEAF.base, cx + 9, top - 2, 13, 10); p.ellipse(LEAF.base, cx - 2, top + 8, 12, 8);
+  p.ellipse(LEAF.light, cx - 13, top - 12, 6, 4); p.ellipse(LEAF.light, cx + 6, top - 7, 5, 3); p.ellipse(LEAF.light, cx - 4, top + 4, 4, 2);
+  for (let i = 0; i < 10; i += 1) { const hv = hash(i, f.x + f.y, 84); p.r(LEAF.deep, cx - 22 + (hv % 44), top - 16 + ((hv >>> 8) % 30), 2, 2); }
+}
+
+/** Kind -> painter for the campus furniture (ADR 055). */
+const CAMPUS: Record<string, (p: Painter, f: MapObject) => void> = {
+  'coffee-counter': coffeeCounter, bookshelf, 'cafe-table': cafeTable, 'coffee-table': coffeeTable, arcade: arcadeCabinet,
+  'ping-pong': pingPong, 'chess-table': chessTable, 'game-table': gameTable, beanbag, fountain, bench, flowers, lounger, tree,
+};
+
+/** How far a tall prop reaches beyond its footprint (left, top, right, bottom), for its atlas box. */
+function propBox(f: MapObject): Rect {
+  const kind = kindOf(f);
+  if (kind === 'tree') return { x: f.x - 18, y: f.y - 64, width: f.width + 36, height: f.height + 66 };
+  if (kind === 'arcade') return { x: f.x - 6, y: f.y - 14, width: f.width + 12, height: f.height + 18 };
+  return { x: f.x - 8, y: f.y - 24, width: f.width + 16, height: f.height + 26 };
 }
 
 /** Small plants tucked into free room corners (never the label corner, a doorway or furniture). */
@@ -671,20 +938,31 @@ function paint(p: Painter, s: Scene, view: Rect): void {
   tiles((tx, ty) => wallShadow(p, s, tx, ty));
   lighting(p, s, view);
   tiles((tx, ty) => daylight(p, s, tx, ty));
+  tiles((tx, ty) => campusLights(p, s, tx, ty));
   rugs(p, s, view);
   tiles((tx, ty) => { if (s.wall(tx, ty)) wallTile(p, s, tx, ty); });
   for (const piece of s.pieces) if (overlaps(view, { x: piece.x, y: piece.y, width: piece.width, height: 14 }, 2)) wallPiece(p, piece);
   tiles((tx, ty) => wallDecor(p, s, tx, ty));
   chairs(p, s, view);
-  for (const f of [...s.furniture].sort((a, b) => a.y + a.height - (b.y + b.height))) if (overlaps(view, f, 16)) furnitureItem(p, s, f);
+  for (const f of [...s.furniture].sort((a, b) => a.y + a.height - (b.y + b.height))) if (!isTall(f) && overlaps(view, f, 16)) furnitureItem(p, s, f);
   cornerPlants(p, s, view);
 }
 
 export interface EnvironmentChunk { canvas: HTMLCanvasElement; x: number; y: number }
+export interface Environment {
+  chunks: EnvironmentChunk[];
+  /** Tall pieces (trees, cabinets, plants) in one atlas, each sorted with the avatars by its base. */
+  props: { canvas: HTMLCanvasElement; sprites: AtlasSprite[] } | null;
+}
 
-/** The whole static scene of one floor as canvases of at most ENV_CHUNK px, in map coordinates. */
-export function renderEnvironment(map: OfficeMap): EnvironmentChunk[] {
+/** The whole static scene of one floor: floor chunks of at most ENV_CHUNK px, and the tall props. */
+export function renderEnvironment(map: OfficeMap): Environment {
   const scene = buildScene(map);
+  const pieces: AtlasPiece[] = scene.furniture.filter(isTall).map((f) => ({ ...propBox(f), depth: f.y + f.height, draw: (p) => furnitureItem(p, scene, f) }));
+  return { chunks: renderChunks(map, scene), props: buildAtlas(pieces) };
+}
+
+function renderChunks(map: OfficeMap, scene: Scene): EnvironmentChunk[] {
   const width = map.width * T;
   const height = map.height * T;
   const chunks: EnvironmentChunk[] = [];

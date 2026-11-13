@@ -13,10 +13,12 @@
 // shader/uniform code for eval-free versions (otherwise the canvas never starts: "0 fps").
 import 'pixi.js/unsafe-eval';
 import { Application, BitmapText, CanvasSource, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
-import { AVATAR_FRAMES, AVATAR_KEYS, avatarKeyOr, createAnimation, FACINGS, objectLayer, sheetCell, stepAnimation, TILE_SIZE } from '@hrvo/shared';
-import type { AvatarAnimation, AvatarFrame, AvatarKey, Facing, OfficeMap, VoStatus } from '@hrvo/shared';
+import { AVATAR_FRAMES, AVATAR_KEYS, avatarKeyOr, createAnimation, FACINGS, gameObjects, objectLayer, sheetCell, stepAnimation, TILE_SIZE } from '@hrvo/shared';
+import type { AvatarAnimation, AvatarFrame, AvatarKey, CampusGame, Facing, MapObject, OfficeMap, VoStatus } from '@hrvo/shared';
 import { createAvatarSheetCanvas } from './avatar-sheet';
 import { renderEnvironment } from './office-environment';
+import { renderFestive } from './office-festive';
+import type { AtlasSprite } from './pixel-kit';
 import type { OfficeClient, RemoteAvatar } from './office-client';
 
 export const STATUS_COLOUR: Record<VoStatus, number> = {
@@ -55,6 +57,9 @@ class AvatarTextures {
   }
 }
 
+/** An atlas on screen: one texture source, its sub-textures and their sprites. */
+interface SceneAtlas { source: CanvasSource; textures: Texture[]; sprites: Sprite[] }
+
 interface AvatarView {
   root: Container;
   ring: Graphics;
@@ -88,6 +93,20 @@ export class OfficeRenderer {
   /** ADR 054: the environment chunk textures of the floor on screen, and how they are sampled. */
   private envTextures: Texture[] = [];
   private envScaleMode: 'nearest' | 'linear' = 'nearest';
+  /** ADR 055: tall props (trees, cabinets, plants) from one atlas, sorted with the avatars. */
+  private props: SceneAtlas | null = null;
+  /** ADR 055: the festive layer, built only while festive mode is on. */
+  private festiveOn = false;
+  private festiveLayer = new Container();
+  private festive: SceneAtlas | null = null;
+  private bulbs: [Graphics, Graphics] | null = null;
+  private twinkleMs = 0;
+  private bulbCount = 0;
+  private readonly reducedMotion = typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  private map: OfficeMap | null = null;
+  private games: Array<{ object: MapObject; game: CampusGame }> = [];
+  /** ADR 055: a click or tap on a campus game object (the page walks there and opens the game). */
+  onGameObject: ((game: CampusGame, object: MapObject) => void) | null = null;
   private floorId: string | null = null;
   private zoom = 1;
   private destroyed = false;
@@ -104,13 +123,15 @@ export class OfficeRenderer {
     this.textures = new AvatarTextures();
     this.app.canvas.setAttribute('aria-hidden', 'true');
     this.host.appendChild(this.app.canvas);
-    this.world.addChild(this.mapLayer, this.linkLayer, this.avatarLayer);
+    this.world.addChild(this.mapLayer, this.festiveLayer, this.linkLayer, this.avatarLayer);
     this.avatarLayer.sortableChildren = true;
     this.app.stage.addChild(this.world);
     this.app.stage.eventMode = 'static';
     this.app.stage.hitArea = this.app.screen;
     this.app.stage.on('pointerdown', (e) => {
       const p = this.world.toLocal(e.global);
+      const hit = this.games.find((g) => p.x >= g.object.x - 4 && p.x <= g.object.x + g.object.width + 4 && p.y >= g.object.y - 14 && p.y <= g.object.y + g.object.height + 4);
+      if (hit && this.onGameObject) { this.onGameObject(hit.game, hit.object); return; }
       this.client.walkTo({ x: p.x, y: p.y });
     });
     this.host.addEventListener('wheel', this.onWheel, { passive: false });
@@ -130,7 +151,11 @@ export class OfficeRenderer {
     this.textures?.destroy();
     this.textures = null;
     this.releaseEnvironment();
+    this.releaseFestive();
     this.lastSelf = null;
+    this.map = null;
+    this.games = [];
+    this.onGameObject = null;
   }
 
   /** ADR 053: the state of every avatar on the map (browser tests). */
@@ -184,7 +209,8 @@ export class OfficeRenderer {
   private drawMap(map: OfficeMap): void {
     for (const c of this.mapLayer.removeChildren()) c.destroy({ children: true });
     this.releaseEnvironment();
-    for (const chunk of renderEnvironment(map)) {
+    const env = renderEnvironment(map);
+    for (const chunk of env.chunks) {
       const source = new CanvasSource({ resource: chunk.canvas, scaleMode: this.envScaleMode });
       const texture = new Texture({ source });
       this.envTextures.push(texture);
@@ -206,6 +232,85 @@ export class OfficeRenderer {
       label.position.set(d.x + 6, d.y + 7);
       this.mapLayer.addChild(label);
     }
+    this.props = env.props ? this.atlasSprites(env.props, this.mapLayer) : null;
+    this.map = map;
+    this.games = gameObjects(map);
+    if (this.festiveOn) this.buildFestive();
+  }
+
+  /**
+   * One texture for a whole atlas, a sub-texture and sprite per piece: flat pieces go on `flat`,
+   * pieces with a depth into the avatar layer, sorted by their base.
+   */
+  private atlasSprites(atlas: { canvas: HTMLCanvasElement; sprites: AtlasSprite[] }, flat: Container): SceneAtlas {
+    const source = new CanvasSource({ resource: atlas.canvas, scaleMode: this.envScaleMode });
+    const out: SceneAtlas = { source, textures: [], sprites: [] };
+    for (const a of atlas.sprites) {
+      const texture = new Texture({ source, frame: new Rectangle(a.sx, a.sy, a.width, a.height) });
+      const sprite = new Sprite(texture);
+      sprite.position.set(a.x, a.y);
+      sprite.roundPixels = true;
+      if (a.depth === null) flat.addChild(sprite);
+      else { sprite.zIndex = a.depth; this.avatarLayer.addChild(sprite); }
+      out.textures.push(texture);
+      out.sprites.push(sprite);
+    }
+    return out;
+  }
+
+  private releaseAtlas(a: SceneAtlas | null): void {
+    if (!a) return;
+    for (const sp of a.sprites) if (!sp.destroyed) sp.destroy();
+    for (const t of a.textures) t.destroy(false);
+    a.source.destroy();
+  }
+
+  /** ADR 055: festive mode on or off. Off destroys the whole seasonal layer; on builds it again. */
+  setFestive(on: boolean): void {
+    if (on === this.festiveOn) return;
+    this.festiveOn = on;
+    if (on) this.buildFestive();
+    else this.releaseFestive();
+  }
+
+  private buildFestive(): void {
+    this.releaseFestive();
+    if (!this.map || this.destroyed) return;
+    const f = renderFestive(this.map);
+    this.festive = f.atlas ? this.atlasSprites(f.atlas, this.festiveLayer) : null;
+    const a = new Graphics();
+    const b = new Graphics();
+    for (const bulb of f.bulbs) {
+      const g = bulb.phase === 0 ? a : b;
+      g.rect(bulb.x - 1, bulb.y - 1, 3, 3).fill(bulb.colour);
+      g.rect(bulb.x - 2, bulb.y - 2, 5, 5).fill({ color: bulb.colour, alpha: 0.25 });
+    }
+    this.festiveLayer.addChild(a, b);
+    this.bulbs = [a, b];
+    this.bulbCount = f.bulbs.length;
+    this.twinkleMs = 0;
+  }
+
+  private releaseFestive(): void {
+    this.releaseAtlas(this.festive);
+    this.festive = null;
+    for (const g of this.bulbs ?? []) if (!g.destroyed) g.destroy();
+    this.bulbs = null;
+    this.bulbCount = 0;
+    for (const c of this.festiveLayer.removeChildren()) if (!c.destroyed) c.destroy();
+  }
+
+  /** ADR 055: festive layer state (browser tests): on/off, pieces and bulbs currently alive. */
+  festiveInfo(): { on: boolean; pieces: number; bulbs: number } {
+    return { on: this.festiveOn, pieces: this.festive?.sprites.length ?? 0, bulbs: this.bulbCount };
+  }
+
+  /** ADR 055: the campus game objects on screen in host CSS pixels (overlay prompt, browser tests). */
+  gamesOnScreen(): Array<{ game: CampusGame; x: number; y: number; id: number }> {
+    return this.games.map((g) => {
+      const p = this.world.toGlobal({ x: g.object.x + g.object.width / 2, y: g.object.y + g.object.height / 2 });
+      return { game: g.game, x: Math.round(p.x), y: Math.round(p.y), id: g.object.id };
+    });
   }
 
   /** ADR 054: how many static environment textures are alive and how they are sampled (browser tests). */
@@ -216,6 +321,8 @@ export class OfficeRenderer {
   private releaseEnvironment(): void {
     for (const t of this.envTextures) t.destroy(true);
     this.envTextures = [];
+    this.releaseAtlas(this.props);
+    this.props = null;
   }
 
   /**
@@ -227,6 +334,8 @@ export class OfficeRenderer {
     if (mode === this.envScaleMode) return;
     this.envScaleMode = mode;
     for (const t of this.envTextures) t.source.scaleMode = mode;
+    if (this.props) this.props.source.scaleMode = mode;
+    if (this.festive) this.festive.source.scaleMode = mode;
   }
 
   private sprite(id: string, name: string, self: boolean, key: AvatarKey): AvatarView {
@@ -347,6 +456,16 @@ export class OfficeRenderer {
     // Snapped to whole device pixels, so the pixel art does not shimmer while the camera follows.
     const res = this.app.renderer.resolution;
     this.world.position.set(Math.round((this.app.screen.width / 2 - self.x * this.zoom) * res) / res, Math.round((this.app.screen.height / 2 - self.y * this.zoom) * res) / res);
+    // ADR 055: fairy lights twinkle by swapping two prebuilt shapes (none with reduced motion).
+    if (this.bulbs && !this.reducedMotion) {
+      this.twinkleMs += dtMs;
+      if (this.twinkleMs >= 650) {
+        this.twinkleMs = 0;
+        const [a, b] = this.bulbs;
+        a.alpha = a.alpha === 1 ? 0.35 : 1;
+        b.alpha = a.alpha === 1 ? 0.35 : 1;
+      }
+    }
     this.fps = this.app.ticker.FPS;
     this.frameMs = this.frameMs * 0.95 + (performance.now() - t0) * 0.05;
   }

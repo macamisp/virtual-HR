@@ -1,9 +1,9 @@
 'use client';
 
 import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { DoorOpen, Lock, Megaphone, Map as MapIcon, Minus, Navigation, Plus, Users } from 'lucide-react';
-import { ACCESS_MODES, VO_STATUS_LABEL } from '@hrvo/shared';
-import type { AccessMode, OfficeSnapshot, Room, VoStatus } from '@hrvo/shared';
+import { DoorOpen, Lock, Megaphone, Map as MapIcon, Minus, Navigation, Plus, Sparkles, Users } from 'lucide-react';
+import { ACCESS_MODES, avatarKeyOr, distanceToRect, GAME_REACH, gameObjects, nearestWalkable, TILE_SIZE, VO_STATUS_LABEL } from '@hrvo/shared';
+import type { AccessMode, AvatarKey, CampusGame, MapObject, OfficeMap, OfficeSnapshot, Room, VoStatus } from '@hrvo/shared';
 import { AccessDenied, ErrorState, LoadingState } from '@/components/state-views';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -16,6 +16,8 @@ import { OfficeMedia } from '@/components/media/office-media';
 import { OfficeToolbar } from '@/components/media/office-toolbar';
 import { AvatarActions } from '@/components/office/avatar-actions';
 import { AvatarSettings } from '@/components/office/avatar-settings';
+import { GameDialog, GamePrompt } from '@/components/office/campus-games';
+import { useFestiveMode } from '@/lib/office/festive-mode';
 import { CallPerson } from '@/components/call-person';
 import type { OfficeClient } from '@/lib/office/office-client';
 import { CallContext } from '@/components/media/use-call-controller';
@@ -55,11 +57,56 @@ function useClient(snapshot: OfficeSnapshot | undefined, view: View) {
 const noopSubscribe = () => () => undefined;
 const zero = () => 0;
 
-function MapView({ client }: { client: OfficeClient }) {
+/** ADR 055: the campus game object the own avatar stands next to, if any. */
+function nearGame(client: OfficeClient): { game: CampusGame; object: MapObject } | null {
+  const self = client.self;
+  const floor = self ? client.snapshot.floors.find((f) => f.id === self.floorId) : undefined;
+  if (!self || !floor) return null;
+  let best: { game: CampusGame; object: MapObject; d: number } | null = null;
+  for (const g of gameObjects(floor.map as OfficeMap)) {
+    const d = distanceToRect(self, g.object);
+    if (d <= GAME_REACH && (!best || d < best.d)) best = { ...g, d };
+  }
+  return best ? { game: best.game, object: best.object } : null;
+}
+
+/** Where to stand to play at an object: the nearest free spot below it, else beside or above it. */
+function standingSpot(client: OfficeClient, o: MapObject): { x: number; y: number } | null {
+  const g = client.grid();
+  if (!g) return null;
+  const T = TILE_SIZE;
+  const spots = [{ x: o.x + o.width / 2, y: o.y + o.height + T / 2 }, { x: o.x - T / 2, y: o.y + o.height / 2 }, { x: o.x + o.width + T / 2, y: o.y + o.height / 2 }, { x: o.x + o.width / 2, y: o.y - T / 2 }];
+  for (const s of spots) {
+    const p = nearestWalkable(g, s, 0);
+    if (p && distanceToRect(p, o) <= GAME_REACH) return p;
+  }
+  return null;
+}
+
+function MapView({ client, festive, picture }: { client: OfficeClient; festive: boolean; picture: AvatarKey }) {
   const host = useRef<HTMLDivElement | null>(null);
   const renderer = useRef<OfficeRenderer | null>(null);
   const getRenderer = useCallback(() => renderer.current, []);
   const [fps, setFps] = useState(0);
+  // ADR 055: campus games: the one within reach, the one open, and one being walked to.
+  const [near, setNear] = useState<CampusGame | null>(null);
+  const [playing, setPlaying] = useState<CampusGame | null>(null);
+  const pending = useRef<{ game: CampusGame; object: MapObject } | null>(null);
+  const festiveRef = useRef(festive);
+  festiveRef.current = festive;
+  useEffect(() => { renderer.current?.setFestive(festive); }, [festive]);
+  const close = useCallback(() => { setPlaying(null); host.current?.focus(); }, []);
+  useEffect(() => {
+    const t = setInterval(() => {
+      const n = nearGame(client);
+      setNear((cur) => (cur === (n?.game ?? null) ? cur : (n?.game ?? null)));
+      const p = pending.current;
+      if (!p) return;
+      if (n && n.object.id === p.object.id) { pending.current = null; setPlaying(p.game); }
+      else if (client.path.length === 0 && client.keys.x === 0 && client.keys.y === 0) pending.current = null; // stopped elsewhere
+    }, 200);
+    return () => clearInterval(t);
+  }, [client]);
   useEffect(() => {
     let r: OfficeRenderer | null = null;
     let cancelled = false;
@@ -68,6 +115,15 @@ function MapView({ client }: { client: OfficeClient }) {
       r = new R(client, host.current);
       renderer.current = r;
       await r.init();
+      r.setFestive(festiveRef.current);
+      // A click or tap on a game object: play now when within reach, else walk there first.
+      r.onGameObject = (game, object) => {
+        if (nearGame(client)?.object.id === object.id) { setPlaying(game); return; }
+        const spot = standingSpot(client, object);
+        if (!spot) return;
+        pending.current = { game, object };
+        client.walkTo(spot);
+      };
       const bench = Number(new URLSearchParams(window.location.search).get('bench') ?? 0);
       if (bench > 0 && client.snapshot.floors[0]) {
         // After the join, which resets the avatar list.
@@ -91,6 +147,10 @@ function MapView({ client }: { client: OfficeClient }) {
         // ADR 054: the static pixel-art environment (texture count, sampling mode).
         const env = renderer.current.environmentInfo();
         host.current?.setAttribute('data-env', `${env.chunks}:${env.sampling}`);
+        // ADR 055: the festive layer (on/off, pieces, bulbs) and the game objects on screen.
+        const f = renderer.current.festiveInfo();
+        host.current?.setAttribute('data-festive', `${f.on ? 'on' : 'off'}:${f.pieces}:${f.bulbs}`);
+        host.current?.setAttribute('data-games', JSON.stringify(renderer.current.gamesOnScreen()));
       }
     }, 500);
     return () => { cancelled = true; clearInterval(t); r?.destroy(); renderer.current = null; };
@@ -120,7 +180,10 @@ function MapView({ client }: { client: OfficeClient }) {
         role="application"
         aria-label="Office map. Use W A S D or the arrow keys to walk, or click a spot. The list view offers the same actions without the map."
         className="h-full w-full outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        onKeyDown={(e) => { if (KEYS[e.code]) { e.preventDefault(); pressed.current.add(e.code); updateKeys(); } }}
+        onKeyDown={(e) => {
+          if (KEYS[e.code]) { e.preventDefault(); pressed.current.add(e.code); updateKeys(); return; }
+          if (e.code === 'KeyE' && near && !e.repeat) { e.preventDefault(); pressed.current.clear(); updateKeys(); setPlaying(near); }
+        }}
         onKeyUp={(e) => { if (pressed.current.delete(e.code)) updateKeys(); }}
         onBlur={() => { pressed.current.clear(); updateKeys(); }}
         onPointerDown={() => host.current?.focus()}
@@ -131,6 +194,8 @@ function MapView({ client }: { client: OfficeClient }) {
         <Button size="sm" variant="outline" aria-label="Zoom out" onClick={() => renderer.current?.zoomBy(1 / 1.2)}><Minus aria-hidden="true" /></Button>
       </div>
       <p className="absolute bottom-2 left-2 rounded bg-white/80 px-2 py-1 text-xs text-muted-foreground" aria-hidden="true">WASD / arrows to walk · click to go · {fps} fps</p>
+      {near && !playing ? <GamePrompt game={near} onPlay={() => setPlaying(near)} /> : null}
+      {playing ? <GameDialog game={playing} picture={picture} onClose={close} /> : null}
     </div>
   );
 }
@@ -291,6 +356,35 @@ function MyPanel({ client, snapshot }: { client: OfficeClient; snapshot: OfficeS
   );
 }
 
+/** ADR 055: office appearance on this device: festive decorations on or off (saved in the browser). */
+function Appearance({ festive, onFestive }: { festive: boolean; onFestive: (on: boolean) => void }) {
+  const id = useId();
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <p id={`${id}-l`} className="flex items-center gap-1.5 text-sm font-medium"><Sparkles aria-hidden="true" className="h-4 w-4 text-[#d9a94e]" /> Festive mode</p>
+        <p id={`${id}-d`} className="text-xs text-muted-foreground">Christmas decorations, fairy lights and warm light in the office. Saved on this device only.</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={festive}
+        aria-labelledby={`${id}-l`}
+        aria-describedby={`${id}-d`}
+        data-testid="festive-toggle"
+        onClick={() => onFestive(!festive)}
+        className={cn(
+          'relative inline-flex h-7 w-14 shrink-0 items-center rounded-full border-2 px-0.5 text-[10px] font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2',
+          festive ? 'border-[#8e2328] bg-[#c2363b] text-white' : 'border-slate-400 bg-slate-200 text-slate-700',
+        )}
+      >
+        <span aria-hidden="true" className={cn('absolute h-5 w-5 rounded-full bg-white shadow transition-transform', festive ? 'translate-x-7' : 'translate-x-0')} />
+        <span aria-hidden="true" className={cn('w-full', festive ? 'pl-1 text-left' : 'pr-1 text-right')}>{festive ? 'ON' : 'OFF'}</span>
+      </button>
+    </div>
+  );
+}
+
 /** FR-VO-010: broadcast to the whole office (office.broadcast). */
 function BroadcastForm() {
   const send = useBroadcast();
@@ -321,6 +415,7 @@ export default function OfficePage() {
   const choose = (v: View) => { setView(v); try { window.localStorage.setItem(VIEW_KEY, v); } catch { /* storage unavailable */ } };
   const client = useClient(snapshot.data, view);
   const [passwordRoom, setPasswordRoom] = useState<string | null>(null);
+  const [festive, setFestive] = useFestiveMode();
   const [mediaSetup, setMediaSetup] = useState(false);
   if (client) client.onPasswordNeeded = setPasswordRoom;
   if (!allowed) return <AccessDenied what="The virtual office" />;
@@ -363,12 +458,13 @@ export default function OfficePage() {
             {pwRoom ? <PasswordDialog room={pwRoom} onClose={() => setPasswordRoom(null)} onSubmit={(pw) => { void client.teleport({ kind: 'room', roomId: pwRoom.id, password: pw }).then((a) => { if (a.ok) setPasswordRoom(null); }); }} /> : null}
           </div>
           <div className={cn('grid gap-3', view === 'map' ? 'lg:grid-cols-[1fr_22rem]' : 'lg:grid-cols-2')}>
-            {view === 'map' ? <MapView client={client} /> : (
+            {view === 'map' ? <MapView client={client} festive={festive} picture={avatarKeyOr(client.roster.get(snapshot.data.me.id)?.avatar ?? snapshot.data.me.avatarKey)} /> : (
               <Card><CardHeader><CardTitle className="text-base">Rooms</CardTitle></CardHeader><CardContent><Rooms client={client} snapshot={snapshot.data} /></CardContent></Card>
             )}
             {/* min-w-0: a long name or status truncates instead of widening the page on a phone. */}
             <div className="min-w-0 space-y-3">
               <Card><CardHeader><CardTitle className="text-base">Me</CardTitle></CardHeader><CardContent><MyPanel client={client} snapshot={snapshot.data} /></CardContent></Card>
+              <Card><CardHeader><CardTitle className="text-base">Appearance</CardTitle></CardHeader><CardContent><Appearance festive={festive} onFestive={setFestive} /></CardContent></Card>
               <Card><CardHeader><CardTitle className="text-base">Audio and video</CardTitle></CardHeader><CardContent><OfficeMedia client={client} snapshot={snapshot.data} /></CardContent></Card>
               {view === 'map' ? <Card><CardHeader><CardTitle className="text-base">Rooms</CardTitle></CardHeader><CardContent><Rooms client={client} snapshot={snapshot.data} /></CardContent></Card> : null}
               <Card><CardHeader><CardTitle className="text-base">People</CardTitle></CardHeader><CardContent><People client={client} /></CardContent></Card>
