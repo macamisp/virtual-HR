@@ -53,7 +53,7 @@ test.describe.serial('Virtual office: map, movement, people, rooms, list view', 
     await page.getByRole('button', { name: 'List', exact: true }).click();
     await expect(page.getByTestId('office-canvas')).toHaveCount(0);
     const rooms = page.getByRole('list', { name: 'Rooms' });
-    await expect(rooms.getByRole('listitem')).toHaveCount(8);
+    await expect(rooms.getByRole('listitem')).toHaveCount(11); // eight rooms plus the campus (ADR 055)
     await rooms.getByTestId('room-Board room').getByRole('button', { name: 'Go to Board room' }).click();
     await expect(page.getByTestId('office-notice')).toContainText('knock-to-enter');
     await page.getByTestId('office-notice').getByRole('button', { name: 'Knock' }).click();

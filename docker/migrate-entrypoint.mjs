@@ -9,9 +9,15 @@ const ca = encodeURIComponent(need('PGSSLROOTCERT'));
 // TLS verified against the RDS CA bundle, in each tool's own parameter names.
 const prismaUrl = `postgresql://${auth}@${where}?schema=public&sslmode=require&sslaccept=strict&sslcert=${ca}`;
 const pgUrl = `postgresql://${auth}@${where}?sslmode=verify-full&sslrootcert=${ca}`;
+// On Supabase (ADR 052) the lockdown steps strip the default anon/authenticated/service_role grants
+// before and after migrating and verify FORCE RLS, definer owners and role attributes; elsewhere
+// (no Supabase API roles) they are no-ops.
+const lockdown = (phase) => [['node', ['--experimental-strip-types', 'apps/api/prisma/scripts/supabase-lockdown.ts', phase]], { DIRECT_DATABASE_URL: pgUrl }];
 const steps = [
+  lockdown('pre'),
   [['npx', ['prisma', 'migrate', 'deploy', '--schema', 'apps/api/prisma/schema.prisma']], { DIRECT_DATABASE_URL: prismaUrl, DATABASE_URL: prismaUrl }],
   [['node', ['--experimental-strip-types', 'apps/api/prisma/scripts/provision-db-roles.ts']], { DIRECT_DATABASE_URL: pgUrl }],
+  lockdown('post'),
 ];
 for (const [[cmd, args], extra] of steps) {
   const r = spawnSync(cmd, args, { stdio: 'inherit', env: { ...process.env, ...extra } });

@@ -61,6 +61,8 @@ export class OfficeRegistry implements OnModuleDestroy {
         w.place(a, floor, p, now);
       }
       for (const [u, g] of old.grants) w.grants.set(u, g);
+      // ADR 056: open hug / high-five requests survive the reload (seats are read from the avatars).
+      for (const [id, r] of old.requests) w.requests.set(id, r);
     }
   }
 

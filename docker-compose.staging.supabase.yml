@@ -1,0 +1,54 @@
+# Supabase PostgreSQL for the staging/production EC2 stack (ADR 052). Override file: add it AFTER the
+# files you already use, together with the private env file, e.g.
+#
+#   C="docker compose -f docker-compose.staging.yml -f docker-compose.staging.ssh.yml \
+#        -f docker-compose.staging.https.yml -f docker-compose.staging.supabase.yml \
+#        --env-file .env.staging --env-file .env.staging.db --env-file .env.staging.supabase"
+#   $C run --rm --no-deps migrate          # pre-lockdown, prisma migrate deploy, role passwords, post-lockdown
+#   $C up -d --no-deps api                 # only the API is recreated
+#
+# Rollback: run the same `up -d --no-deps api` WITHOUT this file and the Supabase env file.
+# The local `postgres` service, its volume and .env.staging.db are not changed by this file. All
+# variables use SUPABASE_* names so the postgres service's own settings (PGADMIN_*) never change.
+#
+# Connection: Supavisor SESSION mode (port 5432, IPv4). The EC2 host has no IPv6, so the direct
+# endpoint is unreachable without the paid IPv4 add-on; transaction mode (6543) cannot carry the
+# API's LISTEN connection or session-level settings. TLS verify-full against Supabase's CA.
+
+services:
+  api:
+    environment:
+      PGHOST: ${SUPABASE_PGHOST:?set SUPABASE_PGHOST in .env.staging.supabase}
+      PGPORT: "5432"
+      PGDATABASE: postgres
+      PGUSER: ${SUPABASE_APP_USER:?set SUPABASE_APP_USER in .env.staging.supabase}
+      PGPASSWORD: ${SUPABASE_APP_PASSWORD:?set SUPABASE_APP_PASSWORD in .env.staging.supabase}
+      PGRETENTION_USER: ${SUPABASE_RETENTION_USER:?set SUPABASE_RETENTION_USER in .env.staging.supabase}
+      PGRETENTION_PASSWORD: ${SUPABASE_RETENTION_PASSWORD:?set SUPABASE_RETENTION_PASSWORD in .env.staging.supabase}
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /run/supabase-tls/ca.crt
+      # Session-mode pooler: every open client holds a server connection. Keep the API under the pool:
+      # hrvo_app worst case = Prisma engine L + 3 pg pools of P (Prisma pg, attendance app, attendance
+      # admin fallback) + 1 listener = L + 3P + 1 = 10 at 3/2, under the pool size of 15.
+      PRISMA_CONNECTION_LIMIT: ${SUPABASE_PRISMA_CONNECTION_LIMIT:-3}
+      PG_POOL_MAX: ${SUPABASE_PG_POOL_MAX:-2}
+    volumes:
+      - ${SUPABASE_CA_FILE:?set SUPABASE_CA_FILE in .env.staging.supabase}:/run/supabase-tls/ca.crt:ro,z
+
+  migrate:
+    environment:
+      PGHOST: ${SUPABASE_PGHOST:?set SUPABASE_PGHOST in .env.staging.supabase}
+      PGPORT: "5432"
+      PGDATABASE: postgres
+      # Optional on the server: migrations can run from the operator workstation instead
+      # (scripts/supabase-init.mjs), so the API host need not hold the Supabase admin password.
+      # migrate-entrypoint.mjs refuses to start when these are empty.
+      PGADMIN_USER: ${SUPABASE_ADMIN_USER:-}
+      PGADMIN_PASSWORD: ${SUPABASE_ADMIN_PASSWORD:-}
+      PGPASSWORD: ${SUPABASE_APP_PASSWORD:?set SUPABASE_APP_PASSWORD in .env.staging.supabase}
+      PGRETENTION_PASSWORD: ${SUPABASE_RETENTION_PASSWORD:?set SUPABASE_RETENTION_PASSWORD in .env.staging.supabase}
+      PGSSLROOTCERT: /run/supabase-tls/ca.crt
+    volumes:
+      - ${SUPABASE_CA_FILE:?set SUPABASE_CA_FILE in .env.staging.supabase}:/run/supabase-tls/ca.crt:ro,z
+    # `data` is internal-only; `edge` has Internet egress (api_egress is reserved for the API, ADR 047).
+    networks: [data, edge]
