@@ -12,7 +12,7 @@ import {
   dirFromDelta, drawAvatarFrame, FACINGS, facingFromDir, isAvatarKey, OfficeSnapshotSchema, renderAvatarSheet, SHEET_HEIGHT, SHEET_WIDTH, sheetCell, stepAnimation,
 } from '../../../packages/shared/src/office/index.ts';
 import type { AvatarAnimation, AvatarFrame, Facing } from '../../../packages/shared/src/office/index.ts';
-import { encodePng, SHEET_PATH } from '../../../scripts/generate-avatar-sheet.ts';
+import { decodePng, encodePng, SHEET_PATH } from '../../../scripts/generate-avatar-sheet.ts';
 
 const N = AVATAR_SIZE;
 const opaque = (px: Int32Array, x: number, y: number) => px[y * N + x]! !== -1;
@@ -115,8 +115,12 @@ describe('Office avatar presets and art (ADR 053)', () => {
       const alpha = sheet.data[((cell.y + y) * SHEET_WIDTH + cell.x + x) * 4 + 3];
       assert.equal(alpha, opaque(px, x, y) ? 255 : 0);
     }
-    const committed = readFileSync(resolve(SHEET_PATH));
-    assert.ok(committed.equals(encodePng(sheet.width, sheet.height, sheet.data)), `${SHEET_PATH} is stale: run node --experimental-strip-types scripts/generate-avatar-sheet.ts`);
+    // Pixels, not file bytes: compressed bytes differ between zlib builds (local Node vs CI).
+    const committed = decodePng(readFileSync(resolve(SHEET_PATH)));
+    assert.deepEqual([committed.width, committed.height], [sheet.width, sheet.height]);
+    assert.ok(Buffer.from(committed.data).equals(Buffer.from(sheet.data)), `${SHEET_PATH} is stale: run node --experimental-strip-types scripts/generate-avatar-sheet.ts`);
+    // And the encoder round-trips.
+    assert.ok(Buffer.from(decodePng(encodePng(sheet.width, sheet.height, sheet.data)).data).equals(Buffer.from(sheet.data)));
   });
 });
 
