@@ -129,10 +129,10 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
   });
 
   describe('Office layout and administration (FR-VO-001, 004, 007)', { concurrency: false }, () => {
-    it('the first visit creates the default office: one floor, eight rooms, twenty desks; every role may enter', async () => {
+    it('the first visit creates the default office: one floor, eleven rooms (eight plus the campus, ADR 055), twenty desks; every role may enter', async () => {
       snap = await ok(await api('c', '/office'), 200, OfficeSnapshotSchema);
       assert.equal(snap.floors.length, 1);
-      assert.equal(snap.rooms.length, 8);
+      assert.equal(snap.rooms.length, 11);
       assert.equal(snap.desks.length, 20);
       assert.equal(snap.canManage, false);
       assert.equal(room('Board room').accessMode, 'KNOCK');
@@ -144,7 +144,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
       assert.equal(admin.canManage, true);
       assert.equal(admin.rooms.find((r) => r.name === 'HR office')!.canEnter, true, 'admins may enter any room');
       const rows = await adminPool.query(`SELECT count(*)::int AS n FROM rooms WHERE org_id = $1`, [ORG]);
-      assert.equal(rows.rows[0].n, 8);
+      assert.equal(rows.rows[0].n, 11, 'the campus areas are synced like any other room (no schema change)');
     });
 
     it('organisations are isolated: another org gets its own office; ids of ours are not found', async () => {
@@ -398,6 +398,59 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
       assert.equal((await ok<OfficeSnapshot>(await api('b', '/office'), 200, OfficeSnapshotSchema)).me.muteOnLeave, false, 'someone else\'s setting');
       assert.equal((await api('a', '/office/me/preferences', { method: 'PUT', body: { muteOnLeave: 'yes' } })).status, 400);
       assert.equal((await api('a', '/office/me/preferences', { method: 'PUT', body: { muteOnLeave: false, extra: 1 } })).status, 400);
+    });
+
+    it('pixel avatars (ADR 053): everyone starts with the default; my choice is saved, validated, broadcast in the roster and kept inside the organisation', async () => {
+      const profile = `SELECT display_name, email, role, status, vo_status, vo_status_message, vo_mute_on_leave, password_hash, mfa_enabled FROM users WHERE id = $1`;
+      const before = (await adminPool.query(profile, [U.a.id])).rows[0];
+      // Existing users have the default without any change to their account.
+      assert.equal((await ok<OfficeSnapshot>(await api('a', '/office'), 200, OfficeSnapshotSchema)).me.avatarKey, 'sage');
+      assert.equal(B.join.ok && B.join.roster.find((r) => r.id === U.a.id)?.avatar, 'sage', 'the roster carries each person\'s character');
+      const O = await officeSocket('other');
+      assert.ok(O.join.ok && O.join.roster.every((r) => r.id === U.other.id), 'another organisation\'s office has only its own people');
+      const startB = B.inbox.presence.length;
+      const startO = O.inbox.presence.length;
+      const startPos = B.inbox.positions.length;
+
+      assert.deepEqual(await ok(await api('a', '/office/me/avatar', { method: 'PUT', body: { avatarKey: 'ember' } }), 200), { avatarKey: 'ember' });
+      await wait(300);
+      assert.ok(B.inbox.presence.slice(startB).some((p) => 'avatar' in p && p.id === U.a.id && p.avatar === 'ember'), 'a colleague in the office sees the new character');
+      assert.ok(!O.inbox.presence.slice(startO).some((p) => p.id === U.a.id), 'nothing reaches another organisation');
+      assert.ok(B.inbox.positions.slice(startPos).every((m) => m.u.every((e) => e.length === 8)), 'the 10 Hz position entries do not carry the character');
+      // Saved: a refresh (snapshot) and a new sign-in (a fresh join) both get it; nobody else changed.
+      assert.equal((await ok<OfficeSnapshot>(await api('a', '/office'), 200, OfficeSnapshotSchema)).me.avatarKey, 'ember');
+      assert.equal((await ok<OfficeSnapshot>(await api('b', '/office'), 200, OfficeSnapshotSchema)).me.avatarKey, 'sage', 'someone else\'s character');
+      const A2 = await officeSocket('a');
+      assert.equal(A2.join.ok && A2.join.roster.find((r) => r.id === U.a.id)?.avatar, 'ember');
+      A2.s.disconnect();
+      assert.deepEqual((await adminPool.query(profile, [U.a.id])).rows[0], before, 'every other profile field is unchanged');
+
+      // Only allowlisted keys; the user is always the caller (no user id, no URL, nothing extra).
+      for (const body of [{ avatarKey: 'dragon' }, { avatarKey: 'https://example.com/me.png' }, {}, { avatarKey: 'river', userId: U.b.id }, { avatarKey: 'river', orgId: OTHER }]) {
+        assert.equal((await api('a', '/office/me/avatar', { method: 'PUT', body })).status, 400, JSON.stringify(body));
+      }
+      assert.equal((await ok<OfficeSnapshot>(await api('b', '/office'), 200, OfficeSnapshotSchema)).me.avatarKey, 'sage', 'Ben was not changed through Anna');
+      // Another organisation changes only its own user.
+      await ok(await api('other', '/office/me/avatar', { method: 'PUT', body: { avatarKey: 'sol' } }), 200);
+      const keys = await adminPool.query<{ id: string; vo_avatar_key: string }>(`SELECT id, vo_avatar_key FROM users WHERE id = ANY($1::uuid[])`, [[U.a.id, U.b.id, U.other.id]]);
+      assert.deepEqual(Object.fromEntries(keys.rows.map((r) => [r.id, r.vo_avatar_key])), { [U.a.id]: 'ember', [U.b.id]: 'sage', [U.other.id]: 'sol' });
+      O.s.disconnect();
+
+      // RLS: under another organisation's context the row is neither visible nor writable.
+      const appPool = new pg.Pool({ host: process.env.PGHOST || 'localhost', port: Number(process.env.PGPORT || 5433), database: process.env.PGDATABASE || 'hrvo_dev', user: process.env.PGUSER || 'hrvo_app', password: process.env.PGPASSWORD || 'hrvo_app_pass' });
+      const c = await appPool.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query(`SELECT set_config('app.org_id', $1, true)`, [OTHER]);
+        assert.equal((await c.query(`SELECT vo_avatar_key FROM users WHERE id = $1`, [U.a.id])).rows.length, 0);
+        assert.equal((await c.query(`UPDATE users SET vo_avatar_key = 'river' WHERE id = $1`, [U.a.id])).rowCount, 0);
+      } finally {
+        await c.query('ROLLBACK');
+        c.release();
+        await appPool.end();
+      }
+      // The database itself refuses keys outside the allowlist.
+      await assert.rejects(adminPool.query(`UPDATE users SET vo_avatar_key = 'dragon' WHERE id = $1`, [U.a.id]), /users_vo_avatar_key_check/);
     });
 
     it('a dropped connection keeps the avatar for the grace (a reload comes back to the same spot), then it is gone (ADR 048)', async () => {

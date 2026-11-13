@@ -19,7 +19,8 @@ describe('Default office map (FR-VO-001)', () => {
     assert.ok(OfficeMapSchema.safeParse(map).success);
     assert.ok(OfficeDefinitionSchema.safeParse(defaultOffice()).success);
     const rooms = mapRooms(map);
-    assert.deepEqual(rooms.map((r) => r.name), ['Meeting room A', 'Meeting room B', 'Meeting room C', 'Board room', 'Focus room', 'HR office', 'Reception', 'Lounge']);
+    // ADR 055: the campus areas (Garden, Café, Arcade) follow the original eight.
+    assert.deepEqual(rooms.map((r) => r.name), ['Meeting room A', 'Meeting room B', 'Meeting room C', 'Board room', 'Focus room', 'HR office', 'Reception', 'Lounge', 'Garden', 'Café', 'Arcade']);
     assert.deepEqual([...new Set(rooms.map((r) => r.type))].sort(), ['MEETING', 'OPEN', 'PRIVATE']);
     assert.ok(rooms.some((r) => r.access === 'KNOCK') && rooms.some((r) => r.access === 'INVITE'));
     assert.equal(mapDesks(map).length, 20);
@@ -118,6 +119,8 @@ describe('Proximity groups (FR-VO-005, without media)', () => {
     const closed = Object.fromEntries(rooms.map((r) => [r.name, isClosedRoom(r)]));
     assert.deepEqual(closed, {
       'Meeting room A': true, 'Meeting room B': true, 'Meeting room C': true, 'Board room': true, 'Focus room': true, 'HR office': true, Reception: false, Lounge: false,
+      // ADR 055: the campus areas are open areas, never a room call.
+      Garden: false, Café: false, Arcade: false,
     });
     assert.ok(rooms.some((r) => r.type === 'MEETING' && r.access === 'OPEN'), 'the default map has open-access meeting rooms (the case that broke)');
   });

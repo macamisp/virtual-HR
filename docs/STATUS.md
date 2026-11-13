@@ -62,7 +62,7 @@ The only P1 requirement that is MISSING is FR-ORG-008: an onboarding checklist f
 
 **Moved from DONE to PARTIAL, each confirmed in the code:**
 - **FR-AUTH-004, 2FA mandatory for Admin and HR:** an owner could switch off "2FA after a Google sign-in". *Fixed the same day (decision above).*
-- **FR-VO-002, avatars.** An avatar is a coloured disc with initials. There is no photo and no chosen character.
+- **FR-VO-002, avatars.** An avatar is a coloured disc with initials. There is no photo and no chosen character. *2026-11-13: six chosen pixel-art characters (ADR 053); an uploaded photo is still missing.*
 - **FR-VO-005, proximity.** The radius is fixed at 96 when the office is created. No screen or API changes it.
 - **FR-ATT-013, corrections with evidence.** Evidence is an unchecked document id in the API. No screen attaches or shows it, and no test uses it.
 - **FR-ATT-016, live board by team.** The team filter exists in the API, but the board screen never offers it.
@@ -92,7 +92,7 @@ The only P1 requirement that is MISSING is FR-ORG-008: an onboarding checklist f
 - **FR-ORG-012:** the office people search exists, but there is no directory with profile cards.
 
 **VO and MEET**
-- **FR-VO-002:** no avatar photo or character.
+- **FR-VO-002:** a chosen pixel-art character (six presets, walk animation, ADR 053); no uploaded avatar photo.
 - **FR-VO-005:** the proximity radius cannot be configured, and no test checks the volume falloff.
 - **FR-VO-006:** no map editor screen; the map is replaced as JSON through the API.
 - **FR-MEET-001:** a call cannot be started from a chat.
@@ -177,7 +177,7 @@ The only P1 requirement that is MISSING is FR-ORG-008: an onboarding checklist f
    `docs/verification/single-instance-assumptions.md` lists all 16 places that assume one API instance, with the change each needs. A local or single-server install is not affected.
 2. **Mail must be set up to receive account e-mails.** In development run Mailhog with `MAIL_TRANSPORT=smtp`; for real delivery use Resend (`docs/runbooks/mail.md`). With `MAIL_TRANSPORT=memory` nothing arrives. Links use `APP_WEB_URL`, which must be the LAN or public HTTPS address when people open e-mails on other devices.
 3. **Meeting time does not count separately in attendance.** It counts as ordinary active time.
-4. **The office avatar is a disc with initials**, and the proximity radius cannot be changed.
+4. **The office avatar is one of six pixel-art characters; there is no uploaded photo**, and the proximity radius cannot be changed.
 5. **No onboarding checklist for new people, no CSV import, no policy acknowledgement, no invoices, no multi-level approvals, no recurring tasks, no scheduled reports, no web push, no guest links, no map editor and no Microsoft sign-in.** These are the MISSING and PARTIAL items in section 2.
 6. **No metrics package yet.** Database conflict retries show up as a `db_conflict_retry` log line and an in-process counter. At deployment, a CloudWatch log metric filter turns them into an alarm (ADR 038, `infra/terraform/README.md`).
 7. **Calendar sync needs the organisation's own Google and Microsoft OAuth apps.** Without them, the Calendar page says "Not set up on this server yet".
