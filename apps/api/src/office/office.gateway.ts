@@ -12,7 +12,7 @@ import { AttendanceService } from '../attendance/attendance.service.ts';
 import { Permission } from '../../../../packages/shared/src/auth/types.ts';
 import type { JwtPayload } from '../../../../packages/shared/src/index.ts';
 import {
-  JoinDtoSchema, ModeDtoSchema, MoveDtoSchema, RoomAnswerDtoSchema, RoomKnockDtoSchema, TeleportDtoSchema, ViewDtoSchema,
+  avatarKeyOr, JoinDtoSchema, ModeDtoSchema, MoveDtoSchema, RoomAnswerDtoSchema, RoomKnockDtoSchema, TeleportDtoSchema, ViewDtoSchema,
 } from '../../../../packages/shared/src/office/index.ts';
 import type { JoinAck, ManualStatus, MoveAck, TeleportAck } from '../../../../packages/shared/src/office/index.ts';
 import { OfficeRegistry } from './office-registry.ts';
@@ -111,8 +111,8 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
       a = undefined;
     }
     if (!a) {
-      const u = await this.prisma.runWithTenantContext(orgId, async (db) => (await db.query<{ display_name: string | null; email: string; vo_status: ManualStatus; vo_status_message: string }>(
-        `SELECT display_name, email, vo_status, vo_status_message FROM users WHERE id = $1`, [userId])).rows[0]);
+      const u = await this.prisma.runWithTenantContext(orgId, async (db) => (await db.query<{ display_name: string | null; email: string; vo_status: ManualStatus; vo_status_message: string; vo_avatar_key: string }>(
+        `SELECT display_name, email, vo_status, vo_status_message, vo_avatar_key FROM users WHERE id = $1`, [userId])).rows[0]);
       if (!u) return { ok: false, error: 'Unauthorized' };
       let attendanceState: string | null = null;
       try { attendanceState = (await this.attendance.getMyToday(orgId, userId)).state; } catch { attendanceState = null; }
@@ -121,6 +121,7 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
         userId, name: u.display_name ?? u.email, floorId: start.floorId, x: 0, y: 0, dir: 0, roomId: null, lastMoveAt: 0, version: 0,
         attendance: attendanceState, manual: u.vo_status, message: u.vo_status_message, roomOnly: false,
         isAdmin: access.permissions.includes(Permission.ORG_MANAGE), sockets: new Map(), ct: null, goneAt: null, goneSid: null,
+        avatarKey: avatarKeyOr(u.vo_avatar_key),
       };
       world.avatars.set(userId, a);
       world.place(a, start.floorId, start.p, Date.now());

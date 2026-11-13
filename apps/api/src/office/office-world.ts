@@ -10,7 +10,7 @@ import {
   buildGrid, centre, displayStatus, inRect, InterestGrid, isClosedRoom, nearestWalkable, proximityGroups, spawnPoint, TILE_SIZE, validateMove,
 } from '../../../../packages/shared/src/office/index.ts';
 import type {
-  AccessMode, CollisionGrid, ManualStatus, OfficeDefinition, Point, PositionEntry, PositionsMessage, ProximityMessage, Rect, RosterEntry, RoomType, VoStatus,
+  AccessMode, AvatarKey, CollisionGrid, ManualStatus, OfficeDefinition, Point, PositionEntry, PositionsMessage, ProximityMessage, Rect, RosterEntry, RoomType, VoStatus,
 } from '../../../../packages/shared/src/office/index.ts';
 
 export interface RoomInfo {
@@ -56,6 +56,8 @@ export interface Avatar {
   goneAt: number | null;
   /** The login session family that dropped: only it gets its place back (a reload); a new sign-in starts fresh. */
   goneSid: string | null;
+  /** ADR 053: the saved pixel-art character (roster only, not the position stream). */
+  avatarKey: AvatarKey;
 }
 
 export type Denial = 'KNOCK' | 'INVITE' | 'PASSWORD' | 'FULL';
@@ -135,7 +137,20 @@ export class OfficeWorld {
   }
 
   rosterEntry(a: Avatar): RosterEntry {
-    return { id: a.userId, name: a.name, status: this.status(a), statusMessage: a.message, floorId: a.floorId, roomId: a.roomId, away: this.away(a) };
+    return { id: a.userId, name: a.name, status: this.status(a), statusMessage: a.message, floorId: a.floorId, roomId: a.roomId, away: this.away(a), avatar: a.avatarKey };
+  }
+
+  /**
+   * ADR 053: someone saved another character. Everyone in the office gets the new roster entry on
+   * the next tick; the version (and so the position stream) is left alone, since nothing moved.
+   */
+  setAvatar(userId: string, key: AvatarKey): boolean {
+    const a = this.avatars.get(userId);
+    if (!a || a.avatarKey === key) return false;
+    a.avatarKey = key;
+    this.rosterChanged = true;
+    this.changedRoster.add(userId);
+    return true;
   }
 
   /** Observers whose position stream was off get a full neighbourhood again when it comes back. */

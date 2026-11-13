@@ -15,6 +15,7 @@ import { NativeSelect } from '@/components/ui/select';
 import { OfficeMedia } from '@/components/media/office-media';
 import { OfficeToolbar } from '@/components/media/office-toolbar';
 import { AvatarActions } from '@/components/office/avatar-actions';
+import { AvatarSettings } from '@/components/office/avatar-settings';
 import { CallPerson } from '@/components/call-person';
 import type { OfficeClient } from '@/lib/office/office-client';
 import { CallContext } from '@/components/media/use-call-controller';
@@ -84,6 +85,9 @@ function MapView({ client }: { client: OfficeClient }) {
         // For the browser tests: where the own avatar is and whether the office socket is live.
         host.current?.setAttribute('data-self', client.self ? `${Math.round(client.self.x)},${Math.round(client.self.y)}` : '');
         host.current?.setAttribute('data-connected', client.connected ? 'true' : 'false');
+        // ADR 053: each avatar's character, facing, frame and ring (small offices only; never names).
+        const states = renderer.current.avatarStates();
+        host.current?.setAttribute('data-avatar-sprites', states.length <= 64 ? JSON.stringify(states) : '');
       }
     }, 500);
     return () => { cancelled = true; clearInterval(t); r?.destroy(); renderer.current = null; };
@@ -279,6 +283,7 @@ function MyPanel({ client, snapshot }: { client: OfficeClient; snapshot: OfficeS
         ) : <p className="text-sm text-muted-foreground">No free desks.</p>}
       </div>
       {claim.isError ? <p role="alert" className="text-xs text-destructive">{claim.error.message}</p> : null}
+      <AvatarSettings saved={snapshot.me.avatarKey} />
     </div>
   );
 }

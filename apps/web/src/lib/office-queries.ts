@@ -1,8 +1,8 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { OfficeSnapshotSchema, PeopleListSchema, RoomInvitesSchema } from '@hrvo/shared';
-import type { OfficePreferencesDto, RoomUpdateDto, StatusDto } from '@hrvo/shared';
+import { AvatarDtoSchema, OfficeSnapshotSchema, PeopleListSchema, RoomInvitesSchema } from '@hrvo/shared';
+import type { AvatarDto, OfficePreferencesDto, RoomUpdateDto, StatusDto } from '@hrvo/shared';
 import { z } from 'zod';
 import { apiFetch } from './api';
 import { useAuthStore } from './auth-store';
@@ -36,6 +36,18 @@ export function useSetOfficePreferences() {
   return useMutation({
     mutationFn: (dto: OfficePreferencesDto) => apiFetch('/office/me/preferences', { method: 'PUT', body: dto, schema: z.object({ muteOnLeave: z.boolean() }) }),
     onSuccess: (p) => qc.setQueryData<z.infer<typeof OfficeSnapshotSchema>>(officeKeys.snapshot, (s) => (s ? { ...s, me: { ...s.me, muteOnLeave: p.muteOnLeave } } : s)),
+  });
+}
+
+/**
+ * ADR 053: save my office character. The snapshot is updated only from the server's answer, and the
+ * map follows the roster update the server broadcasts, so an unsaved choice never shows on the map.
+ */
+export function useSetAvatar() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (dto: AvatarDto) => apiFetch('/office/me/avatar', { method: 'PUT', body: dto, schema: AvatarDtoSchema }),
+    onSuccess: (a) => qc.setQueryData<z.infer<typeof OfficeSnapshotSchema>>(officeKeys.snapshot, (s) => (s ? { ...s, me: { ...s.me, avatarKey: a.avatarKey } } : s)),
   });
 }
 

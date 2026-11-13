@@ -3,6 +3,8 @@
  */
 import { z } from 'zod';
 import { ACCESS_MODES, OfficeDefinitionSchema, ROOM_TYPES } from './map.ts';
+import { AvatarKeySchema, DEFAULT_AVATAR_KEY } from './avatars.ts';
+import type { AvatarKey } from './avatars.ts';
 
 // ---------------------------------------------------------------- presence (FR-VO-003)
 
@@ -68,6 +70,8 @@ export const OfficeSnapshotSchema = z.object({
     id: z.string(), deskId: z.string().nullable(), manualStatus: z.enum(MANUAL_STATUSES), statusMessage: z.string(),
     /** ADR 048: mute the microphone when leaving the office page during an office call. */
     muteOnLeave: z.boolean().default(false),
+    /** ADR 053: the saved pixel-art character. */
+    avatarKey: AvatarKeySchema.default(DEFAULT_AVATAR_KEY),
   }),
   canManage: z.boolean(),
 });
@@ -188,6 +192,11 @@ export interface RosterEntry {
   roomId: string | null;
   /** ADR 048: in the office but not looking at it (another page, or a dropped tab within the grace). */
   away: boolean;
+  /**
+   * ADR 053: the person's saved character. Sent with the roster (join, and again when it changes),
+   * never in the 10 Hz position stream.
+   */
+  avatar: AvatarKey;
 }
 
 /** Both variants carry the room the server has the avatar in, so the client never guesses it. */
