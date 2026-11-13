@@ -129,10 +129,10 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
   });
 
   describe('Office layout and administration (FR-VO-001, 004, 007)', { concurrency: false }, () => {
-    it('the first visit creates the default office: one floor, eight rooms, twenty desks; every role may enter', async () => {
+    it('the first visit creates the default office: one floor, eleven rooms (eight plus the campus, ADR 055), twenty desks; every role may enter', async () => {
       snap = await ok(await api('c', '/office'), 200, OfficeSnapshotSchema);
       assert.equal(snap.floors.length, 1);
-      assert.equal(snap.rooms.length, 8);
+      assert.equal(snap.rooms.length, 11);
       assert.equal(snap.desks.length, 20);
       assert.equal(snap.canManage, false);
       assert.equal(room('Board room').accessMode, 'KNOCK');
@@ -144,7 +144,7 @@ describe('Virtual office (FR-VO-001..005, 007, 008, 012, 013)', { concurrency: f
       assert.equal(admin.canManage, true);
       assert.equal(admin.rooms.find((r) => r.name === 'HR office')!.canEnter, true, 'admins may enter any room');
       const rows = await adminPool.query(`SELECT count(*)::int AS n FROM rooms WHERE org_id = $1`, [ORG]);
-      assert.equal(rows.rows[0].n, 8);
+      assert.equal(rows.rows[0].n, 11, 'the campus areas are synced like any other room (no schema change)');
     });
 
     it('organisations are isolated: another org gets its own office; ids of ours are not found', async () => {

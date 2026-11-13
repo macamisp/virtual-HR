@@ -20,8 +20,8 @@ test('the environment is static textures; doors stay open; zoom, labels and repe
   await page.goto('/office');
   const canvas = canvasOf(page);
   await expect(canvas.locator('canvas')).toBeVisible();
-  // The default 1920 x 1280 map is four 1024 px chunks, sampled crisply at normal zoom.
-  await expect(canvas).toHaveAttribute('data-env', '4:nearest');
+  // The default 3200 x 1280 map (office and campus, ADR 055) is eight 1024 px chunks, sampled crisply at normal zoom.
+  await expect(canvas).toHaveAttribute('data-env', '8:nearest');
 
   // A doorway is still a doorway: from the middle of the lounge, walk left until under the wide
   // opening in its top wall (tiles 30..35), then straight up through it into the open area.
@@ -41,17 +41,17 @@ test('the environment is static textures; doors stay open; zoom, labels and repe
 
   // Zoomed far out the scene is smoothed; zooming back in is crisp again. Same textures throughout.
   for (let i = 0; i < 6; i += 1) await page.getByRole('button', { name: 'Zoom out' }).click();
-  await expect(canvas).toHaveAttribute('data-env', '4:linear');
+  await expect(canvas).toHaveAttribute('data-env', '8:linear');
   for (let i = 0; i < 8; i += 1) await page.getByRole('button', { name: 'Zoom in' }).click();
-  await expect(canvas).toHaveAttribute('data-env', '4:nearest');
+  await expect(canvas).toHaveAttribute('data-env', '8:nearest');
 
   // Leaving and coming back keeps one scene (old textures are released, not piled up).
   for (let i = 0; i < 3; i += 1) {
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Tasks', exact: true }).click();
     await expect(canvasOf(page)).toHaveCount(0);
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Office', exact: true }).click();
-    await expect(canvasOf(page)).toHaveAttribute('data-env', '4:nearest');
+    await expect(canvasOf(page)).toHaveAttribute('data-env', '8:nearest');
   }
-  await expect(page.getByRole('list', { name: 'Rooms' }).getByRole('listitem')).toHaveCount(8);
+  await expect(page.getByRole('list', { name: 'Rooms' }).getByRole('listitem')).toHaveCount(11);
   expect(errors).toEqual([]);
 });
