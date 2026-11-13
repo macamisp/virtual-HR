@@ -1,16 +1,20 @@
 'use client';
 
 /**
- * PixiJS renderer for the office (FR-VO-001, 002, 003; ADR 015). Everything is drawn from simple
- * shapes in code; there is no image asset. The static map is drawn once and cached as a texture;
- * avatars are reused containers whose status ring is redrawn only when the status changes.
+ * PixiJS renderer for the office (FR-VO-001, 002, 003; ADR 015, 053). Everything is drawn in code;
+ * there is no image asset. The static map is drawn once and cached as a texture. Avatars are
+ * pixel-art characters cut from one spritesheet texture shared by everyone (built once per
+ * renderer from the shared pixel source); each avatar is a reused container whose status ring is
+ * redrawn only when the status changes, and whose walk animation runs here, in the render loop,
+ * inferred from how far the avatar actually moved (no React state, no extra network message).
  */
 // The CSP has no 'unsafe-eval' in production builds; this PixiJS module swaps its generated
 // shader/uniform code for eval-free versions (otherwise the canvas never starts: "0 fps").
 import 'pixi.js/unsafe-eval';
-import { Application, BitmapText, Container, Graphics } from 'pixi.js';
-import { objectLayer, prop, TILE_SIZE, tileLayer } from '@hrvo/shared';
-import type { OfficeMap, VoStatus } from '@hrvo/shared';
+import { Application, BitmapText, CanvasSource, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
+import { AVATAR_FRAMES, AVATAR_KEYS, avatarKeyOr, createAnimation, FACINGS, objectLayer, prop, sheetCell, stepAnimation, TILE_SIZE, tileLayer } from '@hrvo/shared';
+import type { AvatarAnimation, AvatarFrame, AvatarKey, Facing, OfficeMap, VoStatus } from '@hrvo/shared';
+import { createAvatarSheetCanvas } from './avatar-sheet';
 import type { OfficeClient, RemoteAvatar } from './office-client';
 
 export const STATUS_COLOUR: Record<VoStatus, number> = {
@@ -20,26 +24,56 @@ const FLOOR_COLOUR: Record<number, number> = { 1: 0xe8ecf2, 2: 0xe9dcc6, 3: 0xdd
 const WALL = 0x475569;
 const FURNITURE: Record<string, number> = { table: 0xa8a29e, sofa: 0x93c5fd, counter: 0x86efac, plant: 0x4ade80 };
 
-function hue(id: string): number {
-  let h = 0;
-  for (let i = 0; i < id.length; i += 1) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  // Pleasant mid-saturation colours from the hash.
-  const hh = (h % 360) / 360;
-  const f = (n: number) => { const k = (n + hh * 12) % 12; return 0.45 - 0.25 * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
-  return (Math.round(f(0) * 255) << 16) | (Math.round(f(8) * 255) << 8) | Math.round(f(4) * 255);
+/** Where the character stands in its container: feet on the ground ring, centred on the avatar point. */
+const FEET_Y = 13;
+const RING_Y = 11;
+const RING_RX = 14;
+const RING_RY = 5;
+
+/**
+ * Every frame of every character as a sub-texture of one sheet texture (nearest-neighbour, so the
+ * pixels stay crisp when zoomed). Created once per renderer and shared by all avatars.
+ */
+class AvatarTextures {
+  private readonly source = new CanvasSource({ resource: createAvatarSheetCanvas(), scaleMode: 'nearest' });
+  private readonly frames = new Map<string, Texture>();
+
+  constructor() {
+    for (const key of AVATAR_KEYS) for (const facing of FACINGS) for (let f = 0; f < AVATAR_FRAMES.length; f += 1) {
+      const c = sheetCell(key, facing, f as AvatarFrame);
+      this.frames.set(`${key}/${facing}/${f}`, new Texture({ source: this.source, frame: new Rectangle(c.x, c.y, c.width, c.height) }));
+    }
+  }
+
+  get(key: AvatarKey, facing: Facing, frame: AvatarFrame): Texture {
+    return this.frames.get(`${key}/${facing}/${frame}`)!;
+  }
+
+  destroy(): void {
+    for (const t of this.frames.values()) t.destroy(false);
+    this.frames.clear();
+    this.source.destroy();
+  }
 }
 
-const initials = (name: string) => name.split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((p) => p[0]!.toUpperCase()).join('');
-
-interface Sprite {
+interface AvatarView {
   root: Container;
   ring: Graphics;
+  body: Sprite;
+  self: boolean;
   status: VoStatus | null;
   /** ADR 048: drawn faded with a dashed ring and an "away" badge. */
   away: boolean | null;
   badge: BitmapText;
   name: BitmapText;
+  /** ADR 053: the character shown, its walk state, and the texture currently on the body. */
+  key: AvatarKey;
+  anim: AvatarAnimation;
+  shown: string;
 }
+
+/** What one avatar looks like right now (for the browser tests; no personal data beyond the id). */
+export interface AvatarDebug { id: string; self: boolean; key: AvatarKey; facing: Facing; frame: AvatarFrame; walking: boolean; status: VoStatus | null; away: boolean }
 
 export class OfficeRenderer {
   app = new Application();
@@ -47,7 +81,11 @@ export class OfficeRenderer {
   private mapLayer = new Container();
   private linkLayer = new Graphics();
   private avatarLayer = new Container();
-  private sprites = new Map<string, Sprite>();
+  private sprites = new Map<string, AvatarView>();
+  private textures: AvatarTextures | null = null;
+  /** The own avatar's previous position, to see whether it actually moved this frame. */
+  private lastSelf: { x: number; y: number; floorId: string } | null = null;
+  private benchTimer: ReturnType<typeof setInterval> | null = null;
   private floorId: string | null = null;
   private zoom = 1;
   private destroyed = false;
@@ -61,6 +99,7 @@ export class OfficeRenderer {
   async init(): Promise<void> {
     await this.app.init({ resizeTo: this.host, background: 0xf8fafc, antialias: true, autoDensity: true, resolution: Math.min(window.devicePixelRatio || 1, 2) });
     if (this.destroyed) { this.app.destroy(true); return; }
+    this.textures = new AvatarTextures();
     this.app.canvas.setAttribute('aria-hidden', 'true');
     this.host.appendChild(this.app.canvas);
     this.world.addChild(this.mapLayer, this.linkLayer, this.avatarLayer);
@@ -79,9 +118,21 @@ export class OfficeRenderer {
 
   destroy(): void {
     this.destroyed = true;
+    if (this.benchTimer) clearInterval(this.benchTimer);
+    this.benchTimer = null;
     this.host.removeEventListener('wheel', this.onWheel);
     this.host.removeEventListener('contextmenu', this.onContext);
     try { this.app.destroy(true, { children: true }); } catch { /* not initialised yet */ }
+    // Sprites are gone with the stage; the shared sheet texture is released here, once.
+    this.sprites.clear();
+    this.textures?.destroy();
+    this.textures = null;
+    this.lastSelf = null;
+  }
+
+  /** ADR 053: the state of every avatar on the map (browser tests). */
+  avatarStates(): AvatarDebug[] {
+    return [...this.sprites].map(([id, s]) => ({ id, self: s.self, key: s.key, facing: s.anim.facing, frame: s.anim.frame, walking: s.anim.walking, status: s.status, away: !!s.away }));
   }
 
   private onWheel = (e: WheelEvent) => {
@@ -176,40 +227,63 @@ export class OfficeRenderer {
     this.mapLayer.cacheAsTexture(true);
   }
 
-  private sprite(id: string, name: string, self: boolean): Sprite {
+  private sprite(id: string, name: string, self: boolean, key: AvatarKey): AvatarView {
     let s = this.sprites.get(id);
     if (s) return s;
     const root = new Container();
-    const body = new Graphics().circle(0, 0, 12).fill(hue(id));
-    if (self) body.circle(0, 0, 12).stroke({ width: 2, color: 0x0f172a });
+    // Ground shadow and status ring under the feet, then the character, its name and the away badge.
     const ring = new Graphics();
-    const text = new BitmapText({ text: initials(name), style: { fontFamily: 'Arial', fontSize: 10, fill: 0xffffff, fontWeight: 'bold' } });
-    text.anchor.set(0.5);
+    const body = new Sprite(this.textures!.get(key, 'down', 0));
+    body.anchor.set(0.5, 1);
+    body.position.set(0, FEET_Y);
+    body.roundPixels = true;
     const label = new BitmapText({ text: name, style: { fontFamily: 'Arial', fontSize: 11, fill: 0x0f172a } });
     label.anchor.set(0.5, 0);
-    label.position.set(0, 17);
+    label.position.set(0, 18);
     const badge = new BitmapText({ text: 'away', style: { fontFamily: 'Arial', fontSize: 9, fill: 0x64748b } });
     badge.anchor.set(0.5, 1);
-    badge.position.set(0, -18);
+    badge.position.set(0, -20);
     badge.visible = false;
-    root.addChild(ring, body, text, label, badge);
-    s = { root, ring, status: null, away: null, name: label, badge };
+    root.addChild(ring, body, label, badge);
+    s = { root, ring, body, self, status: null, away: null, name: label, badge, key, anim: createAnimation('down'), shown: `${key}/down/0` };
     this.sprites.set(id, s);
     this.avatarLayer.addChild(root);
     return s;
   }
 
-  private setStatus(s: Sprite, status: VoStatus, away = false): void {
+  private setStatus(s: AvatarView, status: VoStatus, away = false): void {
     if (s.status === status && s.away === away) return;
     s.status = status;
     s.away = away;
-    s.ring.clear();
+    const g = s.ring;
+    g.clear();
+    g.ellipse(0, RING_Y, 10, 3.5).fill({ color: 0x000000, alpha: 0.18 });
     if (away) {
-      // Dashed ring: eight arcs with gaps.
-      for (let i = 0; i < 8; i += 1) s.ring.arc(0, 0, 16, (i * Math.PI) / 4, (i * Math.PI) / 4 + Math.PI / 6).stroke({ width: 3, color: STATUS_COLOUR[status] });
-    } else s.ring.circle(0, 0, 16).stroke({ width: 3, color: STATUS_COLOUR[status] });
+      // Dashed ring: twelve dashes round the ellipse.
+      for (let i = 0; i < 12; i += 1) {
+        const a0 = (i * Math.PI) / 6;
+        g.moveTo(Math.cos(a0) * RING_RX, RING_Y + Math.sin(a0) * RING_RY);
+        for (let k = 1; k <= 4; k += 1) {
+          const a = a0 + (k * Math.PI) / 48;
+          g.lineTo(Math.cos(a) * RING_RX, RING_Y + Math.sin(a) * RING_RY);
+        }
+      }
+      g.stroke({ width: 3, color: STATUS_COLOUR[status] });
+    } else g.ellipse(0, RING_Y, RING_RX, RING_RY).stroke({ width: 3, color: STATUS_COLOUR[status] });
+    // The own avatar keeps its dark marker, now a thin ring inside the status ring.
+    if (s.self) g.ellipse(0, RING_Y, RING_RX - 3, RING_RY - 1.5).stroke({ width: 1.5, color: 0x0f172a, alpha: 0.85 });
     s.root.alpha = away ? 0.55 : 1;
     s.badge.visible = away;
+  }
+
+  /** ADR 053: one animation step from how far the avatar moved, and the matching frame of its character. */
+  private animate(s: AvatarView, key: AvatarKey, dx: number, dy: number, dtMs: number): void {
+    stepAnimation(s.anim, dx, dy, dtMs);
+    const shown = `${key}/${s.anim.facing}/${s.anim.frame}`;
+    if (shown === s.shown) return;
+    s.key = key;
+    s.shown = shown;
+    s.body.texture = this.textures!.get(key, s.anim.facing, s.anim.frame);
   }
 
   private frame(dtMs: number): void {
@@ -228,18 +302,31 @@ export class OfficeRenderer {
     const seen = new Set<string>();
     const meId = c.snapshot.me.id;
     for (const a of c.avatars.values()) {
+      const px = a.rx;
+      const py = a.ry;
       a.rx += (a.x - a.rx) * k;
       a.ry += (a.y - a.ry) * k;
-      const name = c.roster.get(a.id)?.name ?? '…';
-      const s = this.sprite(a.id, name, false);
+      const entry = c.roster.get(a.id);
+      const name = entry?.name ?? '…';
+      const key = avatarKeyOr(entry?.avatar);
+      const s = this.sprite(a.id, name, false, key);
       if (s.name.text !== name) s.name.text = name;
       this.setStatus(s, a.status, a.away);
+      // Remote movement is inferred from the eased position the user actually sees.
+      this.animate(s, key, a.rx - px, a.ry - py, dtMs);
       s.root.position.set(a.rx, a.ry);
       s.root.zIndex = a.ry;
       seen.add(a.id);
     }
-    const mine = this.sprite(meId, c.roster.get(meId)?.name ?? 'You', true);
-    this.setStatus(mine, c.roster.get(meId)?.status ?? 'ACTIVE');
+    const meEntry = c.roster.get(meId);
+    // The saved character (the server's roster); an unsaved choice in the picker never shows here.
+    const myKey = avatarKeyOr(meEntry?.avatar ?? c.snapshot.me.avatarKey);
+    const mine = this.sprite(meId, meEntry?.name ?? 'You', true, myKey);
+    this.setStatus(mine, meEntry?.status ?? 'ACTIVE');
+    const last = this.lastSelf;
+    const moved = last && last.floorId === self.floorId ? { dx: self.x - last.x, dy: self.y - last.y } : { dx: 0, dy: 0 };
+    this.animate(mine, myKey, moved.dx, moved.dy, dtMs);
+    this.lastSelf = { x: self.x, y: self.y, floorId: self.floorId };
     mine.root.position.set(self.x, self.y);
     mine.root.zIndex = self.y + 0.5;
     seen.add(meId);
@@ -271,10 +358,11 @@ export class OfficeRenderer {
       const a: RemoteAvatar = { id: `bench-${i}`, x, y, rx: x, ry: y, dir: 0, status: statuses[i % statuses.length]!, roomId: null, away: false };
       bots.push(a);
       this.client.avatars.set(a.id, a);
-      this.client.roster.set(a.id, { id: a.id, name: `Bench ${i + 1}`, status: a.status, statusMessage: '', floorId: this.client.self?.floorId ?? null, roomId: null, away: false });
+      this.client.roster.set(a.id, { id: a.id, name: `Bench ${i + 1}`, status: a.status, statusMessage: '', floorId: this.client.self?.floorId ?? null, roomId: null, away: false, avatar: AVATAR_KEYS[i % AVATAR_KEYS.length]! });
     }
     // 10 Hz targets, like the server.
-    setInterval(() => {
+    if (this.benchTimer) clearInterval(this.benchTimer);
+    this.benchTimer = setInterval(() => {
       for (const a of bots) {
         a.x = Math.max(48, Math.min(w - 48, a.x + (Math.random() - 0.5) * 40));
         a.y = Math.max(48, Math.min(h - 48, a.y + (Math.random() - 0.5) * 40));
