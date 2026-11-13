@@ -43,7 +43,7 @@ PGPASSWORD=$(val SUPABASE_ADMIN_PASSWORD) podman run --rm -i -e PGPASSWORD \
 [ -s "$F.part" ] || fail 4 "empty output"
 # Ciphertext check: an OpenPGP message encrypted to the pinned key, never a plaintext custom-format dump.
 [ "$(head -c 5 "$F.part")" != "PGDMP" ] || fail 4 "output is plaintext"
-gpg --batch --list-packets "$F.part" 2>/dev/null | grep -q "^:pubkey enc packet:" || fail 4 "output is not public-key encrypted"
+gpg --batch --list-only --list-packets "$F.part" 2>/dev/null | grep -q "^:pubkey enc packet:" || fail 4 "output is not public-key encrypted"
 mv "$F.part" "$F"; (cd "$OUT" && sha256sum "$(basename "$F")" > "$(basename "$F").sha256")
 find "$OUT" -maxdepth 1 -name 'supabase-*.dump.gpg*' -mtime +"$KEEP_DAYS" -delete
 echo "ok $(date -u +%FT%TZ) $(basename "$F") $(stat -c %s "$F")" > "$STATUS"

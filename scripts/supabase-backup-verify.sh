@@ -13,7 +13,7 @@ IMAGE=${PG_IMAGE:-docker.io/library/postgres:17-alpine}
 EXPECT_TABLES=${EXPECT_TABLES:-84}
 
 (cd "$(dirname "$F")" && sha256sum -c --quiet "$(basename "$F").sha256") && echo "PASS checksum"
-[ "$(head -c 5 "$F")" != "PGDMP" ] && gpg --batch --list-packets "$F" 2>/dev/null | grep -q "^:pubkey enc packet:" \
+[ "$(head -c 5 "$F")" != "PGDMP" ] && gpg --batch --list-only --list-packets "$F" 2>/dev/null | grep -q "^:pubkey enc packet:" \
   && echo "PASS encrypted (OpenPGP public-key), not plaintext"
 [ $RESTORE = 1 ] || exit 0
 
