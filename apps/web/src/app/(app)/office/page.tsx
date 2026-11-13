@@ -88,6 +88,9 @@ function MapView({ client }: { client: OfficeClient }) {
         // ADR 053: each avatar's character, facing, frame and ring (small offices only; never names).
         const states = renderer.current.avatarStates();
         host.current?.setAttribute('data-avatar-sprites', states.length <= 64 ? JSON.stringify(states) : '');
+        // ADR 054: the static pixel-art environment (texture count, sampling mode).
+        const env = renderer.current.environmentInfo();
+        host.current?.setAttribute('data-env', `${env.chunks}:${env.sampling}`);
       }
     }, 500);
     return () => { cancelled = true; clearInterval(t); r?.destroy(); renderer.current = null; };

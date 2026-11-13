@@ -1,8 +1,9 @@
 'use client';
 
 /**
- * PixiJS renderer for the office (FR-VO-001, 002, 003; ADR 015, 053). Everything is drawn in code;
- * there is no image asset. The static map is drawn once and cached as a texture. Avatars are
+ * PixiJS renderer for the office (FR-VO-001, 002, 003; ADR 015, 053, 054). Everything is drawn in
+ * code; there is no image asset. The static map is pixel art painted once per floor into canvas
+ * textures (office-environment.ts). Avatars are
  * pixel-art characters cut from one spritesheet texture shared by everyone (built once per
  * renderer from the shared pixel source); each avatar is a reused container whose status ring is
  * redrawn only when the status changes, and whose walk animation runs here, in the render loop,
@@ -12,17 +13,15 @@
 // shader/uniform code for eval-free versions (otherwise the canvas never starts: "0 fps").
 import 'pixi.js/unsafe-eval';
 import { Application, BitmapText, CanvasSource, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
-import { AVATAR_FRAMES, AVATAR_KEYS, avatarKeyOr, createAnimation, FACINGS, objectLayer, prop, sheetCell, stepAnimation, TILE_SIZE, tileLayer } from '@hrvo/shared';
+import { AVATAR_FRAMES, AVATAR_KEYS, avatarKeyOr, createAnimation, FACINGS, objectLayer, sheetCell, stepAnimation, TILE_SIZE } from '@hrvo/shared';
 import type { AvatarAnimation, AvatarFrame, AvatarKey, Facing, OfficeMap, VoStatus } from '@hrvo/shared';
 import { createAvatarSheetCanvas } from './avatar-sheet';
+import { renderEnvironment } from './office-environment';
 import type { OfficeClient, RemoteAvatar } from './office-client';
 
 export const STATUS_COLOUR: Record<VoStatus, number> = {
   ACTIVE: 0x16a34a, IDLE: 0xeab308, IN_MEETING: 0x7c3aed, ON_BREAK: 0x0ea5e9, AWAY: 0x9ca3af, DND: 0xdc2626, OFFLINE: 0x6b7280,
 };
-const FLOOR_COLOUR: Record<number, number> = { 1: 0xe8ecf2, 2: 0xe9dcc6, 3: 0xdde7f5, 4: 0xe7e1f3, 5: 0xdcefe3 };
-const WALL = 0x475569;
-const FURNITURE: Record<string, number> = { table: 0xa8a29e, sofa: 0x93c5fd, counter: 0x86efac, plant: 0x4ade80 };
 
 /** Where the character stands in its container: feet on the ground ring, centred on the avatar point. */
 const FEET_Y = 13;
@@ -86,6 +85,9 @@ export class OfficeRenderer {
   /** The own avatar's previous position, to see whether it actually moved this frame. */
   private lastSelf: { x: number; y: number; floorId: string } | null = null;
   private benchTimer: ReturnType<typeof setInterval> | null = null;
+  /** ADR 054: the environment chunk textures of the floor on screen, and how they are sampled. */
+  private envTextures: Texture[] = [];
+  private envScaleMode: 'nearest' | 'linear' = 'nearest';
   private floorId: string | null = null;
   private zoom = 1;
   private destroyed = false;
@@ -127,6 +129,7 @@ export class OfficeRenderer {
     this.sprites.clear();
     this.textures?.destroy();
     this.textures = null;
+    this.releaseEnvironment();
     this.lastSelf = null;
   }
 
@@ -173,58 +176,57 @@ export class OfficeRenderer {
     this.zoom = Math.max(0.4, Math.min(2, this.zoom * f));
   }
 
+  /**
+   * ADR 054: the static scene. The pixel-art environment is painted once per floor into canvas
+   * chunks (office-environment.ts) and shown as sprites; labels sit on top. Nothing is redrawn per
+   * frame, and the avatar layer above is separate.
+   */
   private drawMap(map: OfficeMap): void {
     for (const c of this.mapLayer.removeChildren()) c.destroy({ children: true });
-    const g = new Graphics();
-    const floor = tileLayer(map, 'floor') ?? [];
-    const walls = tileLayer(map, 'walls') ?? [];
-    const T = TILE_SIZE;
-    // Runs of equal tiles per row keep the shape count low.
-    for (let y = 0; y < map.height; y += 1) {
-      let x = 0;
-      while (x < map.width) {
-        const v = floor[y * map.width + x] ?? 0;
-        let end = x + 1;
-        while (end < map.width && (floor[y * map.width + end] ?? 0) === v) end += 1;
-        if (v !== 0) g.rect(x * T, y * T, (end - x) * T, T).fill(FLOOR_COLOUR[v] ?? 0xe5e7eb);
-        x = end;
-      }
+    this.releaseEnvironment();
+    for (const chunk of renderEnvironment(map)) {
+      const source = new CanvasSource({ resource: chunk.canvas, scaleMode: this.envScaleMode });
+      const texture = new Texture({ source });
+      this.envTextures.push(texture);
+      const sprite = new Sprite(texture);
+      sprite.position.set(chunk.x, chunk.y);
+      this.mapLayer.addChild(sprite);
     }
-    // Subtle tile grid on the floor.
-    for (let x = 0; x <= map.width; x += 1) g.moveTo(x * T, 0).lineTo(x * T, map.height * T);
-    for (let y = 0; y <= map.height; y += 1) g.moveTo(0, y * T).lineTo(map.width * T, y * T);
-    g.stroke({ width: 1, color: 0x000000, alpha: 0.04 });
-    for (let y = 0; y < map.height; y += 1) {
-      let x = 0;
-      while (x < map.width) {
-        if ((walls[y * map.width + x] ?? 0) === 0) { x += 1; continue; }
-        let end = x + 1;
-        while (end < map.width && (walls[y * map.width + end] ?? 0) !== 0) end += 1;
-        g.rect(x * T, y * T, (end - x) * T, T).fill(WALL);
-        x = end;
-      }
-    }
-    for (const d of objectLayer(map, 'desks')) {
-      g.roundRect(d.x + 4, d.y + T + 6, d.width - 8, T - 12, 6).fill({ color: 0x64748b, alpha: 0.25 }); // seat
-    }
-    for (const f of objectLayer(map, 'furniture')) {
-      const kind = String(prop(f, 'kind', 'table'));
-      if (kind === 'plant') g.circle(f.x + f.width / 2, f.y + f.height / 2, f.width / 2 - 4).fill(FURNITURE.plant!);
-      else g.roundRect(f.x + 2, f.y + 2, f.width - 4, f.height - 4, 6).fill(FURNITURE[kind] ?? 0xa8a29e).stroke({ width: 1, color: 0x000000, alpha: 0.15 });
-    }
-    this.mapLayer.addChild(g);
+    // Labels on small cream plates, so they read on every floor.
+    const plates = new Graphics();
+    this.mapLayer.addChild(plates);
     for (const r of objectLayer(map, 'rooms')) {
-      const label = new BitmapText({ text: r.name, style: { fontFamily: 'Arial', fontSize: 14, fill: 0x334155 } });
-      label.position.set(r.x + 10, r.y + 6);
-      label.alpha = 0.85;
+      const label = new BitmapText({ text: r.name, style: { fontFamily: 'Arial', fontSize: 14, fill: 0x24324a } });
+      label.position.set(r.x + 12, r.y + 8);
+      plates.rect(r.x + 6, r.y + 5, Math.ceil(label.width) + 12, 22).fill({ color: 0xfbf6ea, alpha: 0.92 }).stroke({ width: 1, color: 0x2e3d5a, alpha: 0.55 });
       this.mapLayer.addChild(label);
     }
     for (const d of objectLayer(map, 'desks')) {
       const label = new BitmapText({ text: d.name, style: { fontFamily: 'Arial', fontSize: 10, fill: 0x1f2937 } });
-      label.position.set(d.x + 6, d.y + 8);
+      label.position.set(d.x + 6, d.y + 7);
       this.mapLayer.addChild(label);
     }
-    this.mapLayer.cacheAsTexture(true);
+  }
+
+  /** ADR 054: how many static environment textures are alive and how they are sampled (browser tests). */
+  environmentInfo(): { chunks: number; sampling: 'nearest' | 'linear' } {
+    return { chunks: this.envTextures.length, sampling: this.envScaleMode };
+  }
+
+  private releaseEnvironment(): void {
+    for (const t of this.envTextures) t.destroy(true);
+    this.envTextures = [];
+  }
+
+  /**
+   * Crisp pixels when the scene is shown at its own size or larger; smooth sampling when it is
+   * shrunk below one screen pixel per art pixel (zoomed far out), where nearest-neighbour shimmers.
+   */
+  private updateSampling(): void {
+    const mode = this.zoom * this.app.renderer.resolution >= 1 ? 'nearest' : 'linear';
+    if (mode === this.envScaleMode) return;
+    this.envScaleMode = mode;
+    for (const t of this.envTextures) t.source.scaleMode = mode;
   }
 
   private sprite(id: string, name: string, self: boolean, key: AvatarKey): AvatarView {
@@ -341,7 +343,10 @@ export class OfficeRenderer {
     if (c.proximity.members.length) this.linkLayer.stroke({ width: 2, color: 0x7c3aed, alpha: 0.35 });
     // Camera follows the user.
     this.world.scale.set(this.zoom);
-    this.world.position.set(this.app.screen.width / 2 - self.x * this.zoom, this.app.screen.height / 2 - self.y * this.zoom);
+    this.updateSampling();
+    // Snapped to whole device pixels, so the pixel art does not shimmer while the camera follows.
+    const res = this.app.renderer.resolution;
+    this.world.position.set(Math.round((this.app.screen.width / 2 - self.x * this.zoom) * res) / res, Math.round((this.app.screen.height / 2 - self.y * this.zoom) * res) / res);
     this.fps = this.app.ticker.FPS;
     this.frameMs = this.frameMs * 0.95 + (performance.now() - t0) * 0.05;
   }
