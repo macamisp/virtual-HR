@@ -12,7 +12,7 @@
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { deflateSync } from 'node:zlib';
+import { deflateSync, inflateSync } from 'node:zlib';
 import { renderAvatarSheet } from '../packages/shared/src/office/avatar-art.ts';
 
 const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
@@ -60,6 +60,37 @@ export function encodePng(width: number, height: number, rgba: Uint8ClampedArray
     chunk('IDAT', deflateSync(raw, { level: 9 })),
     chunk('IEND', new Uint8Array(0)),
   ]);
+}
+
+/**
+ * Pixels of a PNG written by encodePng (8-bit RGBA, filter 0 on every row). Compressed bytes
+ * differ between zlib builds (Node versions, CI), so "is the committed sheet current" compares
+ * these pixels, not the file bytes.
+ */
+export function decodePng(png: Buffer): { width: number; height: number; data: Uint8ClampedArray } {
+  if (!png.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) throw new Error('not a PNG');
+  let width = 0;
+  let height = 0;
+  const idat: Buffer[] = [];
+  for (let i = 8; i < png.length;) {
+    const len = png.readUInt32BE(i);
+    const type = png.toString('ascii', i + 4, i + 8);
+    const body = png.subarray(i + 8, i + 8 + len);
+    if (type === 'IHDR') {
+      width = body.readUInt32BE(0);
+      height = body.readUInt32BE(4);
+      if (body[8] !== 8 || body[9] !== 6) throw new Error('only 8-bit RGBA');
+    } else if (type === 'IDAT') idat.push(body);
+    i += 12 + len;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    const row = y * (width * 4 + 1);
+    if (raw[row] !== 0) throw new Error('only filter 0');
+    data.set(raw.subarray(row + 1, row + 1 + width * 4), y * width * 4);
+  }
+  return { width, height, data };
 }
 
 export const SHEET_PATH = 'docs/assets/office-avatars/avatars.png';
