@@ -79,10 +79,6 @@ export function generateDefaultFloor(): OfficeMap {
     obj('HR office', 46, 20, 13, 8, { type: 'PRIVATE', capacity: 3, access: 'INVITE' }),
     obj('Reception', 1, 30, 20, 9, { type: 'OPEN', capacity: 30, access: 'OPEN' }),
     obj('Lounge', 22, 30, 37, 9, { type: 'OPEN', capacity: 40, access: 'OPEN' }),
-    // ADR 055: open areas, no room call, no access rule.
-    obj('Garden', M, 1, 39, 19, { type: 'OPEN', capacity: 60, access: 'OPEN' }),
-    obj('Café', M, 21, 19, 18, { type: 'OPEN', capacity: 40, access: 'OPEN' }),
-    obj('Arcade', 80, 21, 19, 18, { type: 'OPEN', capacity: 40, access: 'OPEN' }),
   ];
   const desks: MapObject[] = [];
   const furniture: MapObject[] = [];
@@ -101,7 +97,18 @@ export function generateDefaultFloor(): OfficeMap {
     obj('Sofa', 26, 32, 5, 1, { collides: true, kind: 'sofa' }), obj('Sofa', 36, 32, 5, 1, { collides: true, kind: 'sofa' }),
     obj('Sofa', 46, 35, 5, 1, { collides: true, kind: 'sofa' }), obj('Counter', 4, 31, 8, 1, { collides: true, kind: 'counter' }),
     obj('Plant', 2, 12, 1, 1, { collides: true, kind: 'plant' }), obj('Plant', 43, 12, 1, 1, { collides: true, kind: 'plant' }));
-  // ---- Campus furniture (ADR 055). Solid pieces collide like any other furniture; `game` pieces
+  const spawn = [{ id: id++, name: 'spawn', type: '', x: px(10) + TILE_SIZE / 2, y: px(35) + TILE_SIZE / 2, width: 0, height: 0 }];
+
+  // ---- Campus (ADR 055). Everything above keeps the object ids of the original office: the
+  // server matches rooms and desks to their database rows by object id (office-store syncLayout),
+  // so renumbering them would move desk assignments. Campus objects only take ids after them.
+  // Open areas, no room call, no access rule.
+  rooms.push(
+    obj('Garden', M, 1, 39, 19, { type: 'OPEN', capacity: 60, access: 'OPEN' }),
+    obj('Café', M, 21, 19, 18, { type: 'OPEN', capacity: 40, access: 'OPEN' }),
+    obj('Arcade', 80, 21, 19, 18, { type: 'OPEN', capacity: 40, access: 'OPEN' }),
+  );
+  // Campus furniture. Solid pieces collide like any other furniture; `game` pieces
   // open a frontend-only mini-game when someone stands next to them.
   const solid = (name: string, x: number, y: number, w: number, h: number, kind: string, extra: Record<string, string> = {}) =>
     furniture.push(obj(name, x, y, w, h, { collides: true, kind, ...extra }));
@@ -133,7 +140,6 @@ export function generateDefaultFloor(): OfficeMap {
   solid('Flower bed', 78, 3, 2, 1, 'flowers'); solid('Flower bed', 73, 16, 2, 2, 'flowers'); solid('Flower bed', 84, 16, 2, 2, 'flowers');
   solid('Lounger', 92, 13, 1, 2, 'lounger'); solid('Lounger', 94, 13, 1, 2, 'lounger');
   solid('Lounger', 63, 12, 1, 2, 'lounger'); solid('Lounger', 65, 12, 1, 2, 'lounger');
-  const spawn = [{ id: id++, name: 'spawn', type: '', x: px(10) + TILE_SIZE / 2, y: px(35) + TILE_SIZE / 2, width: 0, height: 0 }];
 
   return {
     type: 'map', orientation: 'orthogonal', infinite: false, width: W, height: H, tilewidth: TILE_SIZE, tileheight: TILE_SIZE,
