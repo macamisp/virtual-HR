@@ -18,8 +18,8 @@
  * chunks but into one atlas of "props" that the renderer sorts with the avatars by their base, so
  * a person walking behind a tree is hidden by its canopy and one walking in front is not.
  */
-import { objectLayer, prop, TILE_SIZE, tileLayer } from '@hrvo/shared';
-import type { MapObject, OfficeMap } from '@hrvo/shared';
+import { mapSeats, objectLayer, prop, TILE_SIZE, tileLayer } from '@hrvo/shared';
+import type { MapObject, OfficeMap, Seat } from '@hrvo/shared';
 import {
   BLUE, buildAtlas, CREAM, GLASS, GOLD, GOLD_LIGHT, GRASS, hash, INK, LEAF, LIGHT, MAPLE, NAVY, OAK, overlaps, Painter, pick, SAGE, STONE, TERRA, WATER,
 } from './pixel-kit';
@@ -48,6 +48,8 @@ interface Scene {
   rooms: Array<Rect & { type: string; name: string }>;
   desks: MapObject[];
   furniture: MapObject[];
+  /** ADR 056: the chairs people can sit on (mapSeats). */
+  seats: Seat[];
   /** Things hung on wall faces, planned once: whiteboards, bookshelves, the reception plaque. */
   pieces: WallPiece[];
   /** Wall-face tiles those pieces use (no window or picture there). */
@@ -87,7 +89,7 @@ function buildScene(map: OfficeMap): Scene {
     }
   }
   const rooms = objectLayer(map, 'rooms').map((o) => ({ x: o.x, y: o.y, width: o.width, height: o.height, name: o.name, type: String(prop(o, 'type', 'OPEN')).toUpperCase() }));
-  const scene: Scene = { map, w, h, floor, wall, open, taken, doors, rooms, desks: objectLayer(map, 'desks'), furniture, pieces: [], faceUsed: new Set() };
+  const scene: Scene = { map, w, h, floor, wall, open, taken, doors, rooms, desks: objectLayer(map, 'desks'), furniture, seats: mapSeats(map), pieces: [], faceUsed: new Set() };
   planWallPieces(scene);
   return scene;
 }
@@ -519,23 +521,26 @@ function chair(p: Painter, cx: number, cy: number, back: 'top' | 'bottom', seat:
   p.r(dark, cx - 8, cy - 2, 1, 5); p.r(dark, cx + 7, cy - 2, 1, 5); // arm rests
 }
 
+/**
+ * ADR 056: a chair at every seat of the map (mapSeats, the same list the server lets people sit
+ * on), its back away from the table. Paint only: the seat point itself stays walkable.
+ */
 function chairs(p: Painter, s: Scene, view: Rect): void {
-  // One at every desk seat (the lower half of the desk area), facing the desk.
-  for (const d of s.desks) {
-    if (!overlaps(view, d, 8) || d.height < 2 * T) continue;
-    chair(p, Math.round(d.x + d.width / 2), Math.round(d.y + d.height - T / 2 + 1), 'bottom', SAGE.deep, 0x667d64, SAGE.dark);
+  for (const seat of s.seats) {
+    if (!overlaps(view, { x: seat.x - 12, y: seat.y - 12, width: 24, height: 24 })) continue;
+    const cx = Math.round(seat.x);
+    const cy = Math.round(seat.y);
+    if (seat.kind === 'desk') chair(p, cx, cy + 1, 'bottom', SAGE.deep, 0x667d64, SAGE.dark);
+    else if (seat.kind === 'cafe') sideChair(p, cx, cy, seat.facing === 'right' ? 'left' : 'right');
+    else chair(p, cx, cy + (seat.facing === 'down' ? 6 : -6), seat.facing === 'down' ? 'top' : 'bottom', NAVY.light, NAVY.mid, 0x6f84ab);
   }
-  // Round the meeting tables, where the floor beside them is free.
-  for (const f of s.furniture) {
-    if (!isBigTable(s, f) || !overlaps(view, f, T)) continue;
-    for (let cx = f.x + T / 2; cx < f.x + f.width; cx += T) {
-      const tx = Math.floor(cx / T);
-      const above = Math.floor((f.y - 1) / T);
-      const below = Math.floor((f.y + f.height) / T);
-      if (s.open(tx, above) && !s.taken.has(above * s.w + tx)) chair(p, cx, f.y - 10, 'top', NAVY.light, NAVY.mid, 0x6f84ab);
-      if (s.open(tx, below) && !s.taken.has(below * s.w + tx)) chair(p, cx, f.y + f.height + 9, 'bottom', NAVY.light, NAVY.mid, 0x6f84ab);
-    }
-  }
+}
+
+/** A café chair seen from above, its back on one side. */
+function sideChair(p: Painter, cx: number, cy: number, back: 'left' | 'right'): void {
+  p.r(INK, cx - 6, cy + 7, 12, 2, 0.14);
+  p.r(OAK.deep, cx - 6, cy - 6, 12, 12); p.r(OAK.base, cx - 5, cy - 5, 10, 10); p.r(OAK.light, cx - 5, cy - 5, 10, 1);
+  p.r(OAK.deep, back === 'left' ? cx - 7 : cx + 4, cy - 7, 3, 14);
 }
 
 function pottedPlant(p: Painter, cx: number, base: number, big: boolean): void {
@@ -728,11 +733,6 @@ function bookshelf(p: Painter, f: MapObject): void {
 function cafeTable(p: Painter, f: MapObject): void {
   const cx = Math.round(f.x + f.width / 2);
   const cy = Math.round(f.y + f.height / 2);
-  for (const dx of [-21, 21]) {
-    p.r(INK, cx + dx - 6, cy + 7, 12, 2, 0.14);
-    p.r(OAK.deep, cx + dx - 6, cy - 6, 12, 12); p.r(OAK.base, cx + dx - 5, cy - 5, 10, 10); p.r(OAK.light, cx + dx - 5, cy - 5, 10, 1);
-    p.r(OAK.deep, cx + dx + (dx < 0 ? -6 : 3), cy - 7, 3, 14);
-  }
   p.ellipse(INK, cx + 1, cy + 9, 11, 3, 0.18);
   p.ellipse(OAK.line, cx, cy, 13, 12); p.ellipse(CREAM.base, cx, cy - 1, 12, 10); p.ellipse(CREAM.light, cx - 2, cy - 4, 7, 4);
   p.r(TERRA.base, cx - 7, cy - 1, 4, 4); p.r(CREAM.light, cx - 7, cy - 1, 4, 1); p.r(0x5b3a29, cx - 6, cy, 2, 1); // cup
@@ -795,11 +795,8 @@ function chessTable(p: Painter, f: MapObject): void {
   p.frame(OAK.deep, bx - 1, by - 1, 42, 42);
   for (let c = 0; c < 8; c += 1) { if (c % 3 !== 1) p.r(0x22252f, bx + 1 + c * 5, by + 6, 3, 3); if (c % 4 !== 2) p.r(0xf6f1e4, bx + 1 + c * 5, by + 31, 3, 3); }
   p.r(0x22252f, bx + 16, by + 1, 3, 3); p.r(0xf6f1e4, bx + 21, by + 36, 3, 3); p.r(GOLD, bx + 21, by + 36, 3, 1);
-  chairTop(p, x + w / 2, y - 8); chairBottom(p, x + w / 2, y + h + 6);
 }
 
-const chairTop = (p: Painter, cx: number, cy: number) => { p.r(NAVY.mid, cx - 6, cy - 5, 12, 11); p.r(NAVY.light, cx - 5, cy - 4, 10, 8); p.r(NAVY.mid, cx - 6, cy - 6, 12, 4); };
-const chairBottom = (p: Painter, cx: number, cy: number) => { p.r(INK, cx - 6, cy + 6, 12, 2, 0.14); p.r(NAVY.mid, cx - 6, cy - 5, 12, 11); p.r(NAVY.light, cx - 5, cy - 4, 10, 8); p.r(NAVY.mid, cx - 6, cy + 2, 12, 4); };
 
 /** A board-game table: a Tic-Tac-Toe board or a spread of memory cards, with stools. */
 function gameTable(p: Painter, f: MapObject): void {
@@ -818,7 +815,6 @@ function gameTable(p: Painter, f: MapObject): void {
       p.r(up ? CREAM.light : 0x8f3b76, cx - 21 + i * 11, y + 8 + j * 12, 9, 10); p.r(up ? GOLD : 0xb85a98, cx - 18 + i * 11, y + 11 + j * 12, 3, 3);
     }
   }
-  chairTop(p, cx, y - 8); chairBottom(p, cx, y + h + 6);
 }
 
 function beanbag(p: Painter, f: MapObject): void {

@@ -12,8 +12,8 @@
  * To change a character, edit its entry in AVATAR_PRESETS (colours, hair style, outfit) or a
  * drawing function below, then run `node --experimental-strip-types scripts/generate-avatar-sheet.ts`.
  */
-import { AVATAR_FRAMES, AVATAR_KEYS, AVATAR_SIZE, FACINGS, SHEET_HEIGHT, SHEET_WIDTH, sheetCell } from './avatars.ts';
-import type { AvatarFrame, AvatarKey, Facing } from './avatars.ts';
+import { AVATAR_FRAMES, AVATAR_KEYS, AVATAR_POSES, AVATAR_SIZE, FACINGS, poseCell, SHEET_HEIGHT, SHEET_WIDTH, sheetCell } from './avatars.ts';
+import type { AvatarFrame, AvatarKey, AvatarPose, Facing } from './avatars.ts';
 
 export type HairStyle = 'crop' | 'bob' | 'bun' | 'curls' | 'spiky' | 'ponytail';
 export type Outfit = 'collar' | 'tie' | 'stripe' | 'hoodie' | 'vest' | 'zip';
@@ -368,6 +368,86 @@ function glasses(p: Pixels, view: View): void {
   p.rect(14, 10, 17, 10, frame);
 }
 
+// ---------------------------------------------------------------- action poses (ADR 056)
+
+/** A sleeve and a hand: `sleeve` rects in the top colour (shade on its outer column), then the hand. */
+function limb(p: Pixels, pal: AvatarPalette, sleeve: Array<[number, number, number, number]>, hand: [number, number, number, number], shade = false): void {
+  for (const [x0, y0, x1, y1] of sleeve) p.rect(x0, y0, x1, y1, shade ? pal.topShade : pal.top);
+  p.rect(hand[0], hand[1], hand[2], hand[3], shade ? pal.skinShade : pal.skin);
+}
+
+/** Sitting: the upper body three pixels lower, thighs forward, feet on the floor. */
+function sittingLegs(p: Pixels, pal: AvatarPalette, view: View): void {
+  if (view === 'side') {
+    p.rect(12, 25, 21, 27, pal.bottom); p.rect(12, 27, 21, 27, pal.bottomShade); // thigh
+    p.rect(19, 28, 21, 29, pal.bottom); p.rect(19, 29, 21, 29, pal.bottomShade); // shin
+    p.rect(19, 30, 23, 30, pal.shoes);
+    return;
+  }
+  p.rect(11, 25, 20, 27, pal.bottom); p.rect(18, 25, 20, 27, pal.bottomShade); p.rect(15, 26, 16, 27, pal.bottomShade);
+  if (view === 'front') { p.rect(11, 28, 14, 29, pal.shoes); p.rect(17, 28, 20, 29, pal.shoes); }
+  else { p.rect(12, 28, 14, 29, pal.bottomShade); p.rect(17, 28, 19, 29, pal.bottomShade); }
+}
+
+/** One pose of one character, drawn facing right for the side poses (left ones are mirrored). */
+function drawPose(key: AvatarKey, pose: AvatarPose): Int32Array {
+  const pre = AVATAR_PRESETS[key];
+  const pal = pre.palette;
+  const mirrorOf: Partial<Record<AvatarPose, AvatarPose>> = { 'sit-left': 'sit-right', 'hug-left': 'hug-right', 'highfive-left': 'highfive-right' };
+  const twin = mirrorOf[pose];
+  if (twin) {
+    const right = drawPose(key, twin);
+    const out = new Int32Array(N * N);
+    for (let y = 0; y < N; y += 1) for (let x = 0; x < N; x += 1) out[y * N + x] = right[y * N + (N - 1 - x)]!;
+    return out;
+  }
+  const view: View = pose === 'sit-up' ? 'back' : pose === 'sit-right' || pose === 'hug-right' || pose === 'highfive-right' ? 'side' : 'front';
+  const base = new Pixels();
+  const sitting = pose.startsWith('sit-');
+  const crouch = pose === 'jump-crouch';
+  if (sitting) sittingLegs(base, pal, view);
+  else legs(base, pal, view, pose === 'dance-a' ? 1 : pose === 'dance-b' ? 2 : 0);
+  const upper = sitting ? base.shifted(3) : crouch ? base.shifted(2) : base;
+  torso(upper, pre, view);
+  // Arms that hang as usual are drawn before the head; raised ones after the hair, in front.
+  const raised = ['wave-a', 'wave-b', 'dance-a', 'dance-b', 'jump-air', 'highfive-right'].includes(pose);
+  if (!raised && pose !== 'hug-right') arms(upper, pal, view, 0);
+  head(upper, pal, view);
+  hair(upper, pre, view);
+  if (pre.glasses) glasses(upper, view);
+  // The viewer's right is the character's left hand in the front view; it does the waving.
+  const leftDown = () => limb(upper, pal, [[8, 17, 9, 21]], [8, 22, 9, 23]);
+  const rightUp = (out: number) => limb(upper, pal, [[22 + out, 12, 23 + out, 17]], [22 + out, 9, 23 + out, 11], true);
+  switch (pose) {
+    case 'wave-a': leftDown(); rightUp(1); break;
+    case 'wave-b': leftDown(); limb(upper, pal, [[23, 15, 24, 17], [24, 12, 25, 15]], [25, 9, 26, 11], true); break;
+    case 'dance-a': // a disco point: one arm up and out, the other low and out
+      limb(upper, pal, [[6, 19, 8, 20], [8, 17, 9, 19]], [4, 20, 5, 21]);
+      limb(upper, pal, [[23, 13, 25, 17], [22, 16, 23, 18]], [25, 10, 26, 12], true);
+      break;
+    case 'dance-b': limb(upper, pal, [[5, 17, 9, 18]], [3, 17, 4, 18]); limb(upper, pal, [[22, 17, 26, 18]], [27, 17, 28, 18], true); break;
+    case 'jump-air': limb(upper, pal, [[6, 13, 8, 17], [8, 16, 9, 18]], [5, 10, 6, 12]); limb(upper, pal, [[23, 13, 25, 17], [22, 16, 23, 18]], [25, 10, 26, 12], true); break;
+    case 'hug-right':
+      upper.rect(13, 18, 13, 20, OUTLINE);
+      limb(upper, pal, [[14, 18, 21, 19]], [22, 18, 23, 20]);
+      limb(upper, pal, [[15, 20, 20, 21]], [21, 20, 22, 22], true);
+      break;
+    case 'highfive-right': // forward past the nose, then up: the palm held high in front
+      upper.rect(15, 18, 15, 19, OUTLINE);
+      limb(upper, pal, [[16, 17, 22, 18], [23, 11, 24, 18]], [23, 7, 25, 10]);
+      upper.rect(25, 6, 25, 7, pal.skinShade); upper.rect(23, 6, 23, 6, pal.skinShade); // fingers
+      break;
+    default: break;
+  }
+  outline(base);
+  return base.c;
+}
+
+/** ADR 056: one action pose (sit, wave, dance, jump, hug, high five) as colour values, like a frame. */
+export function drawAvatarPose(key: AvatarKey, pose: AvatarPose): Int32Array {
+  return drawPose(key, pose);
+}
+
 // ---------------------------------------------------------------- frames and the sheet
 
 /** One frame as colour values (-1 = transparent), 32 x 32, row-major. */
@@ -412,6 +492,21 @@ export function renderAvatarSheet(): { width: number; height: number; data: Uint
             data[i + 2] = v & 0xff;
             data[i + 3] = 0xff;
           }
+        }
+      }
+    }
+    for (const pose of AVATAR_POSES) {
+      const px = drawPose(key, pose);
+      const cell = poseCell(key, pose);
+      for (let y = 0; y < N; y += 1) {
+        for (let x = 0; x < N; x += 1) {
+          const v = px[y * N + x]!;
+          if (v === EMPTY) continue;
+          const i = ((cell.y + y) * SHEET_WIDTH + cell.x + x) * 4;
+          data[i] = (v >> 16) & 0xff;
+          data[i + 1] = (v >> 8) & 0xff;
+          data[i + 2] = v & 0xff;
+          data[i + 3] = 0xff;
         }
       }
     }

@@ -40,14 +40,25 @@ export type Facing = (typeof FACINGS)[number];
 export const AVATAR_FRAMES = ['idle', 'stepA', 'stepB'] as const;
 export type AvatarFrame = 0 | 1 | 2;
 
-/** Rows are presets (AVATAR_KEYS order); columns are facing x frame. */
-export const SHEET_COLUMNS = FACINGS.length * AVATAR_FRAMES.length;
+/** ADR 056: action poses, after the walk frames on each row. */
+export const AVATAR_POSES = [
+  'sit-down', 'sit-left', 'sit-right', 'sit-up', 'wave-a', 'wave-b', 'dance-a', 'dance-b', 'jump-crouch', 'jump-air', 'hug-right', 'hug-left', 'highfive-right', 'highfive-left',
+] as const;
+export type AvatarPose = (typeof AVATAR_POSES)[number];
+
+/** Rows are presets (AVATAR_KEYS order); columns are facing x frame, then the action poses. */
+export const WALK_COLUMNS = FACINGS.length * AVATAR_FRAMES.length;
+export const SHEET_COLUMNS = WALK_COLUMNS + AVATAR_POSES.length;
 export const SHEET_WIDTH = SHEET_COLUMNS * AVATAR_SIZE;
 export const SHEET_HEIGHT = AVATAR_KEYS.length * AVATAR_SIZE;
 
 export function sheetCell(key: AvatarKey, facing: Facing, frame: AvatarFrame): { x: number; y: number; width: number; height: number } {
   const col = FACINGS.indexOf(facing) * AVATAR_FRAMES.length + frame;
   return { x: col * AVATAR_SIZE, y: AVATAR_KEYS.indexOf(key) * AVATAR_SIZE, width: AVATAR_SIZE, height: AVATAR_SIZE };
+}
+
+export function poseCell(key: AvatarKey, pose: AvatarPose): { x: number; y: number; width: number; height: number } {
+  return { x: (WALK_COLUMNS + AVATAR_POSES.indexOf(pose)) * AVATAR_SIZE, y: AVATAR_KEYS.indexOf(key) * AVATAR_SIZE, width: AVATAR_SIZE, height: AVATAR_SIZE };
 }
 
 // ---------------------------------------------------------------- direction

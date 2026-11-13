@@ -12,11 +12,11 @@ import { AttendanceService } from '../attendance/attendance.service.ts';
 import { Permission } from '../../../../packages/shared/src/auth/types.ts';
 import type { JwtPayload } from '../../../../packages/shared/src/index.ts';
 import {
-  avatarKeyOr, JoinDtoSchema, ModeDtoSchema, MoveDtoSchema, RoomAnswerDtoSchema, RoomKnockDtoSchema, TeleportDtoSchema, ViewDtoSchema,
+  ActionDtoSchema, avatarKeyOr, JoinDtoSchema, ModeDtoSchema, PAIR_REQUEST_TTL_MS, PairAnswerDtoSchema, PairCancelDtoSchema, PairRequestDtoSchema, SitDtoSchema, MoveDtoSchema, RoomAnswerDtoSchema, RoomKnockDtoSchema, TeleportDtoSchema, ViewDtoSchema,
 } from '../../../../packages/shared/src/office/index.ts';
-import type { JoinAck, ManualStatus, MoveAck, TeleportAck } from '../../../../packages/shared/src/office/index.ts';
+import type { ActionAck, JoinAck, ManualStatus, MoveAck, PairAck, PairRequestMessage, SitAck, TeleportAck } from '../../../../packages/shared/src/office/index.ts';
 import { OfficeRegistry } from './office-registry.ts';
-import type { Avatar, OfficeWorld } from './office-world.ts';
+import type { Avatar, OfficeWorld, WorldEmitter } from './office-world.ts';
 
 /** From AttendanceGateway.authenticate: the JWT and its session family (stable across refresh rotations). */
 interface SocketAuth { user: JwtPayload; familyId?: string }
@@ -24,6 +24,10 @@ interface SocketAuth { user: JwtPayload; familyId?: string }
 const MOVE_RATE_PER_S = 15;
 const PASSWORD_ATTEMPTS_PER_MIN = 5;
 const KNOCK_COOLDOWN_MS = 10_000;
+/** ADR 056: solo actions and sitting, per person; and one hug / high-five request per 3 s. */
+const ACTIONS_PER_WINDOW = 8;
+const ACTION_WINDOW_MS = 5_000;
+const PAIR_COOLDOWN_MS = 3_000;
 
 function parse<T>(schema: ZodType<T>, body: unknown): T | null {
   const r = schema.safeParse(body ?? {});
@@ -45,6 +49,13 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
   private readonly moveWindow = new Map<string, { at: number; n: number }>();
   private readonly passwordTries = new Map<string, { at: number; n: number }>();
   private readonly lastKnock = new Map<string, number>();
+  private readonly actionWindow = new Map<string, { at: number; n: number }>();
+  private readonly lastPair = new Map<string, number>();
+  /** ADR 056: tells one person's sockets about their pair requests. */
+  private readonly personalEmitter: WorldEmitter = {
+    positions: () => undefined, proximity: () => undefined, roster: () => undefined,
+    personal: (userId, event, payload) => this.server?.to(`vo:${userId}`).emit(event, payload),
+  };
 
   constructor(
     private readonly registry: OfficeRegistry,
@@ -59,6 +70,7 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
       positions: (userId, msg) => this.server?.to(`vo:${userId}:pos`).emit('office:positions', msg),
       proximity: (userId, msg) => this.server?.to(`vo:${userId}`).emit('office:proximity', msg),
       roster: (orgId, entry) => this.server?.to(`vo-org:${orgId}`).emit('office:presence', entry),
+      personal: (userId, event, payload) => this.server?.to(`vo:${userId}`).emit(event, payload),
     });
     // FR-VO-003: the attendance engine is the source of truth for the presence ring.
     this.attendanceGateway.onPresence((orgId, userId, state) => {
@@ -180,6 +192,11 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     a.sockets.delete(client.id);
     for (const room of [`vo-org:${orgId}`, `vo:${a.userId}`, `vo:${a.userId}:pos`]) void client.leave(room);
     if (a.sockets.size === 0) {
+      // ADR 056: nobody is behind the avatar any more: no action, no chair, no open request.
+      if (a.action) world.setAction(a, null, Date.now());
+      for (const r of [...world.requests.values()]) if (r.from === a.userId || r.to === a.userId) world.closeRequest(r, 'gone', this.personalEmitter);
+      this.actionWindow.delete(a.userId);
+      this.lastPair.delete(a.userId);
       if (explicit || this.registry.leaveGraceMs === 0) {
         world.remove(a.userId);
         this.server?.to(`vo-org:${orgId}`).emit('office:presence', { id: a.userId, gone: true });
@@ -222,6 +239,8 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     const done = (floorId: string, p: { x: number; y: number } | null): TeleportAck => {
       if (!p) return { ok: false, error: 'No free spot there', code: 'NOT_FOUND' };
       world.place(a, floorId, p, now);
+      // ADR 056: a teleport stands you up from a chair and ends a dance.
+      if (a.action?.kind === 'sit' || a.action?.kind === 'dance') world.setAction(a, null, now);
       return { ok: true, x: a.x, y: a.y, floorId: a.floorId, roomId: a.roomId };
     };
     const deny = (code: 'KNOCK' | 'INVITE' | 'PASSWORD' | 'FULL'): TeleportAck => ({
@@ -303,6 +322,129 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     if (dto.admit) world.grant(dto.userId, dto.roomId);
     this.server.to(`vo:${dto.userId}`).emit('room:answered', { roomId: dto.roomId, admit: dto.admit, by: a.name });
     for (const o of world.occupants(dto.roomId)) if (o.userId !== a.userId) this.server.to(`vo:${o.userId}`).emit('room:knock-handled', { roomId: dto.roomId, userId: dto.userId });
+    return { ok: true };
+  }
+
+  // ---------------------------------------------------------------- ADR 056 avatar actions
+  // All of them act on the caller's own avatar in the caller's own organisation's world, found
+  // through the authenticated socket; nothing here touches attendance, status or meetings.
+
+  private joined(client: Socket): { world: OfficeWorld; a: Avatar } | null {
+    const orgId = client.data?.officeOrg as string | undefined;
+    const world = orgId ? this.registry.peek(orgId) : null;
+    const a = world ? this.avatarOf(world, client) : null;
+    return world && a ? { world, a } : null;
+  }
+
+  private actionAllowed(userId: string, now: number): boolean {
+    const w = this.actionWindow.get(userId);
+    if (!w || now - w.at >= ACTION_WINDOW_MS) { this.actionWindow.set(userId, { at: now, n: 1 }); return true; }
+    w.n += 1;
+    return w.n <= ACTIONS_PER_WINDOW;
+  }
+
+  /** Jump, wave, dance, or stop (ends a dance or a wave). */
+  @SubscribeMessage('office:action')
+  action(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): ActionAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(ActionDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const now = Date.now();
+    if (!this.actionAllowed(j.a.userId, now)) return { ok: false, error: 'Slow down a little', code: 'RATE_LIMITED' };
+    const { world, a } = j;
+    if (dto.kind === 'stop') {
+      if (a.action && a.action.kind !== 'sit') world.setAction(a, null, now);
+      return { ok: true };
+    }
+    // A jump, wave or dance replaces sitting: the person stands up for it.
+    world.setAction(a, dto.kind, now);
+    return { ok: true };
+  }
+
+  @SubscribeMessage('office:sit')
+  sit(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): SitAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(SitDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const now = Date.now();
+    if (!this.actionAllowed(j.a.userId, now)) return { ok: false, error: 'Slow down a little', code: 'RATE_LIMITED' };
+    const r = j.world.sit(j.a, dto.seatId, now);
+    if (!r.ok) {
+      const error = { NO_SEAT: 'There is no chair there', TAKEN: 'Someone is sitting there', TOO_FAR: 'Walk up to the chair first', BLOCKED: 'You cannot reach that chair from here', ROOM: 'That chair is in a room you may not enter' }[r.code];
+      return { ok: false, error, code: r.code };
+    }
+    return { ok: true, x: j.a.x, y: j.a.y, roomId: j.a.roomId };
+  }
+
+  @SubscribeMessage('office:stand')
+  stand(@ConnectedSocket() client: Socket): ActionAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    if (j.a.action?.kind === 'sit') j.world.setAction(j.a, null, Date.now());
+    return { ok: true };
+  }
+
+  /** Ask someone nearby for a hug or a high five; nothing happens until they accept. */
+  @SubscribeMessage('office:pair')
+  pair(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): PairAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(PairRequestDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const { world, a } = j;
+    const now = Date.now();
+    if (now - (this.lastPair.get(a.userId) ?? 0) < PAIR_COOLDOWN_MS) return { ok: false, error: 'You asked a moment ago', code: 'RATE_LIMITED' };
+    // Another organisation's people are not in this world: "not found", like anyone absent.
+    const b = world.avatars.get(dto.to);
+    if (!b || b.userId === a.userId || b.goneAt !== null) return { ok: false, error: 'This person is not here', code: 'NOT_FOUND' };
+    if (!world.pairReach(a, b)) return { ok: false, error: 'Stand next to them first', code: 'TOO_FAR' };
+    for (const r of world.requests.values()) {
+      if (r.from === a.userId) return { ok: false, error: 'You are already waiting for an answer', code: 'PENDING' };
+      if (r.to === b.userId || r.from === b.userId) return { ok: false, error: 'They are busy with another request', code: 'BUSY' };
+    }
+    if (world.status(b) === 'DND' || world.away(b)) return { ok: false, error: 'They are not available right now', code: 'BUSY' };
+    this.lastPair.set(a.userId, now);
+    // OFFICE_PAIR_TTL_MS: shorter in tests (like OFFICE_LEAVE_GRACE_MS); 15 s by default.
+    const ttl = Math.max(1_000, Number(process.env.OFFICE_PAIR_TTL_MS ?? PAIR_REQUEST_TTL_MS) || PAIR_REQUEST_TTL_MS);
+    const r = world.openRequest(dto.kind, a.userId, b.userId, now, ttl);
+    const msg: PairRequestMessage = { id: r.id, kind: r.kind, from: a.userId, fromName: a.name, expiresInMs: r.expiresAt - now };
+    this.server.to(`vo:${b.userId}`).emit('office:pair-request', msg);
+    return { ok: true, id: r.id, expiresInMs: r.expiresAt - now };
+  }
+
+  /** The person asked says yes or no. A yes still needs both to be close together. */
+  @SubscribeMessage('office:pair-answer')
+  pairAnswer(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): ActionAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(PairAnswerDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const { world, a } = j;
+    const r = world.requests.get(dto.id);
+    if (!r || r.to !== a.userId) return { ok: false, error: 'That request is no longer open' };
+    const emit = this.personalEmitter;
+    if (!dto.accept) { world.closeRequest(r, 'declined', emit); return { ok: true }; }
+    const from = world.avatars.get(r.from);
+    if (!from) { world.closeRequest(r, 'gone', emit); return { ok: false, error: 'They have left' }; }
+    if (!world.pairReach(from, a)) { world.closeRequest(r, 'too-far', emit); return { ok: false, error: 'You are no longer next to each other' }; }
+    const now = Date.now();
+    world.setAction(from, r.kind, now, { with: a.userId });
+    world.setAction(a, r.kind, now, { with: from.userId });
+    world.closeRequest(r, 'accepted', emit);
+    return { ok: true };
+  }
+
+  @SubscribeMessage('office:pair-cancel')
+  pairCancel(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): ActionAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(PairCancelDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const r = j.world.requests.get(dto.id);
+    if (!r || r.from !== j.a.userId) return { ok: false, error: 'That request is no longer open' };
+    j.world.closeRequest(r, 'cancelled', this.personalEmitter);
     return { ok: true };
   }
 

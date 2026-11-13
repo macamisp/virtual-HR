@@ -101,7 +101,7 @@ describe('Office avatar presets and art (ADR 053)', () => {
   });
 
   it('the sheet: rows of presets, columns of facing x frame; the committed PNG is what the generator makes', () => {
-    assert.equal(SHEET_WIDTH, 12 * N);
+    assert.equal(SHEET_WIDTH, (12 + 14) * N, 'walk frames, then the 14 action poses (ADR 056)');
     assert.equal(SHEET_HEIGHT, 6 * N);
     assert.deepEqual(sheetCell('sage', 'down', 0), { x: 0, y: 0, width: N, height: N });
     assert.deepEqual(sheetCell('indigo', 'up', 2), { x: 11 * N, y: 5 * N, width: N, height: N });

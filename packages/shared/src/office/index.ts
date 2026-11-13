@@ -6,3 +6,4 @@ export * from './protocol.ts';
 export * from './avatars.ts';
 export * from './avatar-art.ts';
 export * from './campus-games.ts';
+export * from './actions.ts';

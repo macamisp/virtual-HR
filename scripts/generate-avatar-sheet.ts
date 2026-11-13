@@ -5,7 +5,8 @@
  *   node --experimental-strip-types scripts/generate-avatar-sheet.ts out.png 8  # any path, scaled 8x (nearest neighbour)
  *
  * Layout: one row per preset (AVATAR_KEYS order), 12 columns of 32 x 32 frames: down, left, right,
- * up, each idle / step A / step B. Transparent background. No dependencies beyond node:zlib.
+ * up, each idle / step A / step B; then the 14 action poses of ADR 056 (AVATAR_POSES order).
+ * Transparent background. No dependencies beyond node:zlib.
  * The renderer draws the same pixels straight from avatar-art.ts; a test fails if this file is stale.
  */
 import { writeFileSync } from 'node:fs';

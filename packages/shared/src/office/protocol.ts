@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { ACCESS_MODES, OfficeDefinitionSchema, ROOM_TYPES } from './map.ts';
 import { AvatarKeySchema, DEFAULT_AVATAR_KEY } from './avatars.ts';
 import type { AvatarKey } from './avatars.ts';
+import type { AvatarActionState } from './actions.ts';
 
 // ---------------------------------------------------------------- presence (FR-VO-003)
 
@@ -197,6 +198,8 @@ export interface RosterEntry {
    * never in the 10 Hz position stream.
    */
   avatar: AvatarKey;
+  /** ADR 056: what the person is doing (sitting, waving, a hug…), or null. Roster only. */
+  action?: AvatarActionState | null;
 }
 
 /** Both variants carry the room the server has the avatar in, so the client never guesses it. */
