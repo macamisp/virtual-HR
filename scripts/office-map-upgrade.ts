@@ -33,10 +33,23 @@ export function originalOffice(): OfficeDefinition {
   return OfficeDefinitionSchema.parse({ ...def, floors: [{ ...def.floors[0]!, map: { ...m, width: 60, layers } as OfficeMap }] });
 }
 
+/** One prompt reader for the whole run (a new reader per question loses piped input). */
+const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: Boolean(process.stdin.isTTY) });
+let muted = false;
+const out = rl as unknown as { _writeToOutput: (s: string) => void };
+const write = out._writeToOutput.bind(rl);
+out._writeToOutput = (s: string) => { if (!muted || s.includes('\n')) write(muted ? '\n' : s); };
+const lines: string[] = [];
+const waiting: Array<(l: string) => void> = [];
+rl.on('line', (l) => { const w = waiting.shift(); if (w) w(l); else lines.push(l); });
 function ask(q: string, hidden = false): Promise<string> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-  if (hidden) (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput = (s: string) => { if (s.startsWith(q)) process.stdout.write(q); };
-  return new Promise((res) => rl.question(q, (a) => { rl.close(); if (hidden) process.stdout.write('\n'); res(a.trim()); }));
+  process.stdout.write(q);
+  muted = hidden;
+  return new Promise((res) => {
+    const done = (l: string) => { muted = false; res(l.trim()); };
+    const l = lines.shift();
+    if (l !== undefined) done(l); else waiting.push(done);
+  });
 }
 
 const fail = (msg: string): never => { console.error(`STOP: ${msg}`); process.exit(1); };
@@ -67,6 +80,7 @@ async function main(): Promise<void> {
   const storedIsCampus = isDeepStrictEqual(stored, OfficeDefinitionSchema.parse(defaultOffice()));
   console.log(`office version ${before.office.version}; ${before.rooms.length} rooms, ${before.desks.length} desks (${before.desks.filter((d) => d.assignee).length} assigned)`);
   console.log(`stored map: ${storedIsOriginal ? 'the unmodified original 60 x 40 map' : storedIsCampus ? 'already the campus map' : 'CUSTOMISED'}`);
+  if (!rollback && storedIsCampus) fail('already upgraded: the stored map is the campus map, nothing to do');
   if (rollback ? !storedIsCampus : !storedIsOriginal) fail(rollback ? 'the stored map is not the campus map: nothing to roll back' : 'the stored map is not the unmodified original: not overwriting a customised map');
   const tm = target.floors[0]!.map;
   console.log(`target: ${tm.width} x ${tm.height}, ${objectLayer(tm, 'rooms').length} rooms, ${objectLayer(tm, 'desks').length} desks, ${tileLayer(tm, 'walls')!.length} tiles`);
@@ -83,4 +97,4 @@ async function main(): Promise<void> {
   console.log(lostRooms.length || lostDesks.length ? `CHECK: changed rooms ${lostRooms.length}, changed desks ${lostDesks.length}` : 'every room and desk kept its row, settings and assignment');
 }
 
-if (process.argv[1]?.endsWith('office-map-upgrade.ts')) void main();
+if (process.argv[1]?.endsWith('office-map-upgrade.ts')) void main().finally(() => rl.close());
