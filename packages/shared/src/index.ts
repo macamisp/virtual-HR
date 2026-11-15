@@ -54,6 +54,7 @@ export type {
 } from './auth/types.ts';
 export * from './admin/types.ts';
 export * from './reports/types.ts';
+export * from './reports/attendance-analytics.ts';
 export * from './privacy/types.ts';
 export * from './office/index.ts';
 export * from './meetings/types.ts';

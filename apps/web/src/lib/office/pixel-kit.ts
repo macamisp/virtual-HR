@@ -26,6 +26,13 @@ export const GOLD_LIGHT = 0xf3d48a;
 export const GLASS = { base: 0xa9d3e8, light: 0xd8eef8, dark: 0x86b9d3 };
 export const LIGHT = 0xffd27a;
 export const INK = 0x000000;
+// ADR 057: the arcade. Warm walnut boards, indigo walls and rugs, violet upholstery, neon accents.
+export const WALNUT = { light: 0xab7d54, base: 0x9d7049, mid: 0x906541, dark: 0x70492e, deep: 0x573922, line: 0x452c1a };
+export const INDIGO = { light: 0x5a56a8, base: 0x3d3a7a, mid: 0x322f66, dark: 0x262450, deep: 0x1a1838 };
+export const VIOLET = { light: 0xa78be0, base: 0x7c5cc4, mid: 0x6a4cb0, dark: 0x543a92, deep: 0x3c2870 };
+export const NEON = { pink: 0xff5fa2, cyan: 0x4de8e0, purple: 0xb277ff, yellow: 0xffd84a, lime: 0x9be35a, orange: 0xff9a3d, white: 0xfff6fb };
+/** The unlit black of screens, sign boards and cabinet outlines. */
+export const NIGHT = 0x0d0e20;
 
 // ---------------------------------------------------------------- helpers
 

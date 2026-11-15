@@ -62,6 +62,7 @@ model Organization {
   attendanceDaily               AttendanceDaily[]
   draftTimesheets               DraftTimesheet[]
   presenceEvents                PresenceEvent[]
+  officePresenceIntervals       OfficePresenceInterval[]
   auditLogs                     AuditLog[]
   monitoringConsents            MonitoringConsent[]
   invitations                   Invitation[]
@@ -202,6 +203,7 @@ model User {
   attendanceDaily         AttendanceDaily[]
   draftTimesheets         DraftTimesheet[]
   presenceEvents          PresenceEvent[]
+  officePresenceIntervals OfficePresenceInterval[]
   auditLogs               AuditLog[]
   monitoringConsents      MonitoringConsent[]
   invitationsSent         Invitation[]             @relation("InvitedByUser")
@@ -442,6 +444,27 @@ model AttendanceCorrection {
   session      AttendanceSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
 
   @@map("attendance_corrections")
+}
+
+/// ADR 059 (FR-REP-009): when a person was connected to the virtual office (server-timed). No room,
+/// position or activity. A partial unique index (in the migration) allows one open interval per
+/// person; fn_close_stale_office_presence closes intervals left open by a restart.
+model OfficePresenceInterval {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId      String    @map("org_id") @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  startedAt  DateTime  @map("started_at") @db.Timestamptz()
+  endedAt    DateTime? @map("ended_at") @db.Timestamptz()
+  lastSeenAt DateTime  @map("last_seen_at") @db.Timestamptz()
+  /// LEFT | DROPPED | SERVER_RESTART (check constraint), null while open.
+  endReason  String?   @map("end_reason") @db.VarChar(16)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, userId, startedAt])
+  @@map("office_presence_intervals")
 }
 
 model AttendanceDaily {

@@ -6,6 +6,7 @@ import { ACCESS_MODES, OfficeDefinitionSchema, ROOM_TYPES } from './map.ts';
 import { AvatarKeySchema, DEFAULT_AVATAR_KEY } from './avatars.ts';
 import type { AvatarKey } from './avatars.ts';
 import type { AvatarActionState } from './actions.ts';
+import type { NudgeRules } from './nudge.ts';
 
 // ---------------------------------------------------------------- presence (FR-VO-003)
 
@@ -205,6 +206,6 @@ export interface RosterEntry {
 /** Both variants carry the room the server has the avatar in, so the client never guesses it. */
 export type MoveAck = { ok: true; roomId: string | null } | { ok: false; reason: string; x: number; y: number; floorId: string; roomId: string | null };
 export type JoinAck =
-  | { ok: true; self: { x: number; y: number; floorId: string; roomId: string | null }; roster: RosterEntry[] }
+  | { ok: true; self: { x: number; y: number; floorId: string; roomId: string | null }; roster: RosterEntry[]; /** ADR 058: the nudge rules in force (absent from an older server). */ nudge?: NudgeRules }
   | { ok: false; error: string };
 export type TeleportAck = { ok: true; x: number; y: number; floorId: string; roomId: string | null } | { ok: false; error: string; code?: 'KNOCK' | 'INVITE' | 'PASSWORD' | 'FULL' | 'NOT_FOUND' | 'BAD_PASSWORD' | 'RATE_LIMITED' };

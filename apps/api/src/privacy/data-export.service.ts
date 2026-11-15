@@ -44,6 +44,8 @@ export class DataExportService {
         dailySummaries: await one(`SELECT work_date, first_in, last_out, active_seconds, idle_seconds, break_seconds, net_seconds, expected_seconds, late_minutes, early_leave_minutes, overtime_minutes, day_status FROM attendance_daily WHERE user_id = $1 ORDER BY work_date`),
         corrections: await one(`SELECT id, requested_in, requested_out, reason, status, reviewed_at, review_note, created_at FROM attendance_corrections WHERE user_id = $1 ORDER BY created_at`),
         presenceEvents: await one(`SELECT server_ts, event_type, state, ip, meta FROM presence_events WHERE user_id = $1 ORDER BY server_ts DESC`),
+        // ADR 059: when the person was connected to the virtual office (nothing about where or what).
+        officeConnections: await one(`SELECT started_at, ended_at, last_seen_at, end_reason FROM office_presence_intervals WHERE user_id = $1 ORDER BY started_at DESC`),
       },
       timesheets: {
         timesheets: await one(`SELECT id, period_start, period_end, status, attendance_minutes, logged_minutes, billable_minutes, variance_minutes, amount::text, currency, notes, submitted_at, approved_at, rejected_at, rejection_reason FROM timesheets WHERE user_id = $1 ORDER BY period_start`),
