@@ -16,6 +16,7 @@ import {
 } from '../../../../packages/shared/src/office/index.ts';
 import type { ActionAck, JoinAck, ManualStatus, MoveAck, NudgeAck, NudgeAnswerAck, NudgeRequestMessage, PairAck, PairRequestMessage, SitAck, TeleportAck } from '../../../../packages/shared/src/office/index.ts';
 import { OfficeRegistry } from './office-registry.ts';
+import { OfficePresenceStore } from './office-presence.ts';
 import type { Avatar, OfficeWorld, WorldEmitter } from './office-world.ts';
 
 /** From AttendanceGateway.authenticate: the JWT and its session family (stable across refresh rotations). */
@@ -67,6 +68,7 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly attendanceGateway: AttendanceGateway,
     private readonly attendance: AttendanceService,
+    private readonly presence: OfficePresenceStore,
   ) {}
 
   onModuleInit(): void {
@@ -75,6 +77,8 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
       proximity: (userId, msg) => this.server?.to(`vo:${userId}`).emit('office:proximity', msg),
       roster: (orgId, entry) => this.server?.to(`vo-org:${orgId}`).emit('office:presence', entry),
       personal: (userId, event, payload) => this.server?.to(`vo:${userId}`).emit(event, payload),
+      // ADR 059: the grace ran out: the connection ended when it dropped, not now.
+      left: (orgId, userId, droppedAt) => this.presence.closed(orgId, userId, droppedAt, 'DROPPED'),
     });
     // FR-VO-003: the attendance engine is the source of truth for the presence ring.
     this.attendanceGateway.onPresence((orgId, userId, state) => {
@@ -122,6 +126,7 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     // ADR 048: the place is kept for the login session that dropped (a reload, whose refresh rotates the
     // token but not the session family); a new sign-in starts fresh.
     if (a && a.goneAt !== null && a.goneSid !== (auth.familyId ?? null)) {
+      this.presence.closed(orgId, userId, a.goneAt, 'DROPPED'); // ADR 059: the old sign-in's connection ended when it dropped
       world.remove(userId);
       this.server?.to(`vo-org:${orgId}`).emit('office:presence', { id: userId, gone: true });
       a = undefined;
@@ -140,6 +145,7 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
         avatarKey: avatarKeyOr(u.vo_avatar_key),
       };
       world.avatars.set(userId, a);
+      this.presence.opened(orgId, userId, Date.now()); // ADR 059: first office connection
       world.place(a, start.floorId, start.p, Date.now());
       world.rosterChanged = true;
       world.changedRoster.add(userId);
@@ -204,6 +210,7 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
       this.actionWindow.delete(a.userId);
       this.lastPair.delete(a.userId);
       if (explicit || this.registry.leaveGraceMs === 0) {
+        this.presence.closed(orgId, a.userId, Date.now(), explicit ? 'LEFT' : 'DROPPED'); // ADR 059
         world.remove(a.userId);
         this.server?.to(`vo-org:${orgId}`).emit('office:presence', { id: a.userId, gone: true });
         return;

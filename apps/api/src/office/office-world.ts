@@ -79,6 +79,8 @@ export interface WorldEmitter {
   roster(orgId: string, entry: RosterEntry | { id: string; gone: true }): void;
   /** ADR 056: one person's sockets (pair requests and their outcome). */
   personal?(userId: string, event: string, payload: unknown): void;
+  /** ADR 059: a person's avatar was removed after the reload grace; `droppedAt` is when the connection went. */
+  left?(orgId: string, userId: string, droppedAt: number): void;
 }
 
 const seat = (d: DeskInfo): Point => ({ x: d.bounds.x + d.bounds.width / 2, y: d.bounds.y + d.bounds.height - TILE_SIZE / 2 });
@@ -351,7 +353,7 @@ export class OfficeWorld {
     }
     // ADR 048: a dropped connection (reload) keeps its place for the grace, then is gone for everyone.
     for (const a of this.avatars.values()) {
-      if (a.goneAt !== null && now - a.goneAt >= leaveGraceMs) { this.remove(a.userId); emit.roster(this.orgId, { id: a.userId, gone: true }); }
+      if (a.goneAt !== null && now - a.goneAt >= leaveGraceMs) { emit.left?.(this.orgId, a.userId, a.goneAt); this.remove(a.userId); emit.roster(this.orgId, { id: a.userId, gone: true }); }
     }
     const all = [...this.avatars.values()];
     const interest = new InterestGrid(all.map((a) => ({ id: a.userId, floorId: a.floorId, x: a.x, y: a.y })));
