@@ -3,6 +3,10 @@
  */
 import { z } from 'zod';
 import { ACCESS_MODES, OfficeDefinitionSchema, ROOM_TYPES } from './map.ts';
+import { AvatarKeySchema, DEFAULT_AVATAR_KEY } from './avatars.ts';
+import type { AvatarKey } from './avatars.ts';
+import type { AvatarActionState } from './actions.ts';
+import type { NudgeRules } from './nudge.ts';
 
 // ---------------------------------------------------------------- presence (FR-VO-003)
 
@@ -68,6 +72,8 @@ export const OfficeSnapshotSchema = z.object({
     id: z.string(), deskId: z.string().nullable(), manualStatus: z.enum(MANUAL_STATUSES), statusMessage: z.string(),
     /** ADR 048: mute the microphone when leaving the office page during an office call. */
     muteOnLeave: z.boolean().default(false),
+    /** ADR 053: the saved pixel-art character. */
+    avatarKey: AvatarKeySchema.default(DEFAULT_AVATAR_KEY),
   }),
   canManage: z.boolean(),
 });
@@ -188,11 +194,18 @@ export interface RosterEntry {
   roomId: string | null;
   /** ADR 048: in the office but not looking at it (another page, or a dropped tab within the grace). */
   away: boolean;
+  /**
+   * ADR 053: the person's saved character. Sent with the roster (join, and again when it changes),
+   * never in the 10 Hz position stream.
+   */
+  avatar: AvatarKey;
+  /** ADR 056: what the person is doing (sitting, waving, a hug…), or null. Roster only. */
+  action?: AvatarActionState | null;
 }
 
 /** Both variants carry the room the server has the avatar in, so the client never guesses it. */
 export type MoveAck = { ok: true; roomId: string | null } | { ok: false; reason: string; x: number; y: number; floorId: string; roomId: string | null };
 export type JoinAck =
-  | { ok: true; self: { x: number; y: number; floorId: string; roomId: string | null }; roster: RosterEntry[] }
+  | { ok: true; self: { x: number; y: number; floorId: string; roomId: string | null }; roster: RosterEntry[]; /** ADR 058: the nudge rules in force (absent from an older server). */ nudge?: NudgeRules }
   | { ok: false; error: string };
 export type TeleportAck = { ok: true; x: number; y: number; floorId: string; roomId: string | null } | { ok: false; error: string; code?: 'KNOCK' | 'INVITE' | 'PASSWORD' | 'FULL' | 'NOT_FOUND' | 'BAD_PASSWORD' | 'RATE_LIMITED' };

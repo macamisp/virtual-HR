@@ -106,7 +106,12 @@ test.describe.serial('V2 QA sweep', () => {
       const [, ty2] = await selfPos(a);
       await hold(a, 'KeyW', 800);
       const [, ty3] = await selfPos(a);
-      expect(ty3, 'stopped at the table').toBe(ty2);
+      // The client refuses a whole frame's step that would touch the table (it does not clamp to
+      // contact), so the first stop can be up to one step short: MOVE_SPEED 200 px/s x the 100 ms
+      // frame cap = 20 px. Holding on may close that gap, never pass the table: its bottom edge is
+      // y 192 and the avatar's half-size is 10, so 202 is the closest legal y.
+      expect(ty2 - ty3, 'stopped at the table (at most one frame step closer)').toBeLessThanOrEqual(20);
+      expect(ty3, 'never into the table').toBeGreaterThanOrEqual(202);
       expect(ty - ty2, 'only the gap to the table was walkable').toBeLessThan(64);
       // Occupancy: both in Meeting room B shows 2/8 and both names; B sees A move live.
       await goTo(a, 'Meeting room B');

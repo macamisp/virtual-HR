@@ -105,6 +105,7 @@ export class AnonymisationService {
       { dataset: 'Profile (name, email, password, 2FA, timezone)', count: 1, action: 'REPLACE' },
       { dataset: 'Sign-in sessions', count: await count(`SELECT count(*)::int AS n FROM auth_sessions WHERE user_id = $1 AND NOT is_revoked`), action: 'REVOKE' },
       { dataset: 'Raw presence events', count: await count(`SELECT count(*)::int AS n FROM presence_events WHERE user_id = $1`), action: 'DELETE' },
+      { dataset: 'Office connection times', count: await count(`SELECT count(*)::int AS n FROM office_presence_intervals WHERE user_id = $1`), action: 'DELETE' },
       { dataset: 'Attendance session IPs and device ids', count: await count(`SELECT count(*)::int AS n FROM attendance_sessions WHERE user_id = $1`), action: 'REPLACE' },
       { dataset: 'Correction, timesheet and time-entry free text', count: await count(`SELECT count(*)::int AS n FROM time_entries WHERE user_id = $1 AND (note <> '' OR manual_reason IS NOT NULL)`), action: 'REPLACE' },
       { dataset: 'Task comments written by the person', count: await count(`SELECT count(*)::int AS n FROM task_comments WHERE author_id = $1`), action: 'REPLACE' },
@@ -208,7 +209,7 @@ export class AnonymisationService {
     for (const id of shred) await this.documents.shred(actor.orgId, id, 'ANONYMISATION');
     this.resolver.invalidateOrg(actor.orgId);
     return await this.prisma.runWithTenantContext(actor.orgId, async (db) => {
-      await db.query(`UPDATE privacy_requests SET result = COALESCE(result, '{}'::jsonb) || $2::jsonb WHERE id = $1`, [requestId, JSON.stringify({ presenceEvents: deleted.presenceEvents, notifications: deleted.notifications, documentsShredded: shred.length })]);
+      await db.query(`UPDATE privacy_requests SET result = COALESCE(result, '{}'::jsonb) || $2::jsonb WHERE id = $1`, [requestId, JSON.stringify({ presenceEvents: deleted.presenceEvents, notifications: deleted.notifications, officePresence: deleted.officePresence, documentsShredded: shred.length })]);
       return mapRequest((await db.query<RequestRow>(`${REQUEST_SELECT} WHERE r.id = $1`, [requestId])).rows[0]!);
     });
   }

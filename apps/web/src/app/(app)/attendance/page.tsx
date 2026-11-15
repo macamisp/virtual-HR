@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Coffee, Play } from 'lucide-react';
 import { FLAG_META } from '@hrvo/shared';
@@ -16,6 +17,8 @@ import { Label } from '@/components/ui/label';
 import { FormField } from '@/components/form-field';
 import { EmptyState, ErrorState, LoadingState } from '@/components/state-views';
 import { useBreak, useDays, useMyCorrections, useMyMeetings, useRequestCorrection, useToday } from '@/lib/queries';
+import { usePersonAnalytics } from '@/lib/report-queries';
+import { presetRange } from '@/components/attendance-analytics/shared';
 import { addDays, formatClock, formatClockSeconds, formatDateTime, formatDuration, formatWorkDate, startOfWeek, toWorkDate } from '@/lib/format';
 
 const STATE_LABEL: Record<MyToday['state'], string> = {
@@ -413,6 +416,41 @@ function MeetingList({ weekStart }: { weekStart: Date }) {
   );
 }
 
+/** FR-REP-009 (ADR 059): your own week and month: work attendance, meeting time and office connected time, kept apart. */
+function MyAnalyticsCard() {
+  const week = usePersonAnalytics(null, presetRange('this-week'));
+  const month = usePersonAnalytics(null, presetRange('this-month'));
+  const cols: Array<[string, typeof week]> = [['This week', week], ['This month', month]];
+  return (
+    <Card data-testid="my-analytics-card">
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-3 space-y-0">
+        <div>
+          <CardTitle>Work, meetings and office time</CardTitle>
+          <CardDescription>Work attendance is your verified attendance. Office connected time is time connected to the virtual office: it is not work time and is never added to it.</CardDescription>
+        </div>
+        <Link href="/attendance/analytics" className="text-sm font-medium text-primary underline-offset-2 hover:underline">See details</Link>
+      </CardHeader>
+      <CardContent>
+        {week.isError ? <ErrorState error={week.error} onRetry={() => void week.refetch()} /> : null}
+        {week.isPending || month.isPending ? <LoadingState label="Loading" rows={2} /> : null}
+        {week.data && month.data ? (
+          <Table>
+            <TableHeader><TableRow><TableHead /><TableHead className="text-right">Work attendance</TableHead><TableHead className="text-right">Meeting time</TableHead><TableHead className="text-right">Office connected</TableHead></TableRow></TableHeader>
+            <TableBody>{cols.map(([label, q]) => (
+              <TableRow key={label}>
+                <TableCell className="font-medium">{label}</TableCell>
+                <TableCell className="text-right tabular-nums">{formatDuration(q.data!.total.workSeconds)}</TableCell>
+                <TableCell className="text-right tabular-nums">{formatDuration(q.data!.total.meetingSeconds)}</TableCell>
+                <TableCell className="text-right tabular-nums">{formatDuration(q.data!.total.officeSeconds)}</TableCell>
+              </TableRow>
+            ))}</TableBody>
+          </Table>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function MyAttendancePage() {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   return (
@@ -421,6 +459,7 @@ export default function MyAttendancePage() {
       <TodayCard />
       <MyFlags />
       <WeekList weekStart={weekStart} setWeekStart={setWeekStart} />
+      <MyAnalyticsCard />
       <MeetingList weekStart={weekStart} />
       <div className="grid gap-6 lg:grid-cols-2">
         <CorrectionForm />

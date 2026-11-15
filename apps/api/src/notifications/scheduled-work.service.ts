@@ -538,8 +538,10 @@ export class ScheduledWorkService {
       const first = await this.prisma.runWithTenantContext(org.id, (db) => this.onceFor(db, org.id, 'presence-retention', day));
       if (!first) return 0;
       const presence = await this.attendanceRepo.cleanupOldPresenceEvents(org.id, new Date(now.getTime() - org.retention_presence_days * 86_400_000));
+      // ADR 059: office connection intervals follow the same presence retention.
+      const office = await this.attendanceRepo.cleanupOldOfficePresence(org.id, new Date(now.getTime() - org.retention_presence_days * 86_400_000));
       const notifications = await this.attendanceRepo.cleanupOldNotifications(org.id, new Date(now.getTime() - org.retention_notifications_days * 86_400_000));
-      return presence + notifications;
+      return presence + office + notifications;
     });
   }
 }

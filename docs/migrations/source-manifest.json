@@ -1,0 +1,484 @@
+{
+  "scope": "Repository inventory only; not verified against production",
+  "repository_head": "88a15b0",
+  "migrations": [
+    {
+      "migration_name": "20261015000000_init",
+      "sha256": "9cf4ff6e7083e00d7cf74db81471c4ab6633ca352efe1985c67f096101a04aec"
+    },
+    {
+      "migration_name": "20261015000100_auth_hardening",
+      "sha256": "5b37f1d6b4e621ab7523aecc2d619990c9e761ef912329aaa14c5b2ffdcbbd68"
+    },
+    {
+      "migration_name": "20261016000000_tasks_core",
+      "sha256": "c90340768d0f042c3576e4d12af7d4d179beaae7e525205ab1cb0032acb8e9c8"
+    },
+    {
+      "migration_name": "20261016000100_task_planning",
+      "sha256": "90dbef6e1110febc3c3d9db5d687529bb4968fa638174c8f31ffa79661a33d22"
+    },
+    {
+      "migration_name": "20261016000200_notifications_jobs",
+      "sha256": "6b91970f977e899d99e07840eb9787671e7089fbeef000acc0b48d1976769b6d"
+    },
+    {
+      "migration_name": "20261017000000_timesheets",
+      "sha256": "3835de507e3f3b7e41348427fda693a6a5e8e16ae614683625acccb18cb22a6f"
+    },
+    {
+      "migration_name": "20261018000000_documents",
+      "sha256": "bda5852547c99d40233c80487b53b5e09ab69de289cb5bb3bc7003eb3e815df7"
+    },
+    {
+      "migration_name": "20261019000000_vault",
+      "sha256": "3dde2e3834b8f4399b6139423a43419b2e9b73c58a164e99e42bfc2b7e81c2d1"
+    },
+    {
+      "migration_name": "20261020000000_admin_roles_policy",
+      "sha256": "882253db485828531249ce67a827a11782d36b9f7c648d66c9b3e18eda52021c"
+    },
+    {
+      "migration_name": "20261021000000_notification_preferences",
+      "sha256": "bbd4194cb646fd656e8d3d4ab29ee36da3d0d8def8e634b2dfc2e4dcf5949413"
+    },
+    {
+      "migration_name": "20261022000000_compliance_requirements",
+      "sha256": "78c121bc7a97f8a84c47f2fd77fe2edd1ea74ceb842456e4892fcb75e981200f"
+    },
+    {
+      "migration_name": "20261023000000_privacy_requests",
+      "sha256": "8849665fcd2ec683d877d3756a9651e197d630795919b275d8e885d89d4c2b20"
+    },
+    {
+      "migration_name": "20261024000000_virtual_office",
+      "sha256": "38044d41fe6c56d1653f975d666d1ab02382d23065fe8bf49164cc94e3baa41f"
+    },
+    {
+      "migration_name": "20261025000000_meetings",
+      "sha256": "2dda01d1fa4643b354c5737a963d9fb78f913e32c5506e34b18fa468eb76c9f7"
+    },
+    {
+      "migration_name": "20261026000000_chat",
+      "sha256": "8b849bde8c2559d597cc2bb96fc8305a5823c12fddf77920135bc2aad9e04dd6"
+    },
+    {
+      "migration_name": "20261027000000_desktop_agent",
+      "sha256": "9a516f8806ec1b12fbcb1cdd991f6c66742d282aa47135c03cd5b32581650593"
+    },
+    {
+      "migration_name": "20261028000000_attendance_review_flags",
+      "sha256": "ffdc52bdf50a6d90701f5d65d7031b1f1d01e24383b3cef233ac80e3f2ddeeea"
+    },
+    {
+      "migration_name": "20261029000000_calendar_sync",
+      "sha256": "92b12b984b84ff43f61e4c66c7ead08812a48caf494b7071e7a5a29c270d7149"
+    },
+    {
+      "migration_name": "20261030000000_esignature",
+      "sha256": "7ce1410f17f7854473ad739917f65bb473206d338107ac22dfa3670ccdce5603"
+    },
+    {
+      "migration_name": "20261031000000_meeting_recording",
+      "sha256": "c02addc532978b245b10864ce59a745f194024191c9fff05b130c4a2bdafbf0d"
+    },
+    {
+      "migration_name": "20261101000000_leave_holidays",
+      "sha256": "8bd89c0272d74abbebf5b7d543b0e5795093ea5c3d2557288f04a74955d7f696"
+    },
+    {
+      "migration_name": "20261101000100_leave_holidays_rls",
+      "sha256": "8183ea2a177e8d433e6ab0524a7e544677baccdbb5e995272842e08456319e0f"
+    },
+    {
+      "migration_name": "20261101000200_session_secret_last_used",
+      "sha256": "d3494b622cc5561a435ff69f53c68542c16d540efda508dcaa29e4ed9dd66650"
+    },
+    {
+      "migration_name": "20261101000300_holiday_defaults_new_orgs",
+      "sha256": "33122b1130009e412c1c5d0ad09fa379ab09abec041557e728ffc1e2eaf1180b"
+    },
+    {
+      "migration_name": "20261102000000_office_calls_chat",
+      "sha256": "8af8e32203b43ff1dbd7502c1b55172edf204d39a819f4718e7321bfc6f966d8"
+    },
+    {
+      "migration_name": "20261102000100_meeting_calls_fk_on_update",
+      "sha256": "0ecbabcdfd8bce136fbacdf1170fbb0e8f74a89b23e3644c244fa35d1e646911"
+    },
+    {
+      "migration_name": "20261103000000_team_names",
+      "sha256": "266e92bac9c8018e5c38431d511adbed67da4b2108b1f460274f9fddde6576b1"
+    },
+    {
+      "migration_name": "20261103000100_schedule_grace_breaks",
+      "sha256": "e50d083355977342f993599e840a6cbe39418c312f4bec5f36d8ea032e87c090"
+    },
+    {
+      "migration_name": "20261103000200_subcontractor_details",
+      "sha256": "e7859b4fa5a8c8592b09c3e0ab3dbb9b77e3976c73e03b8c51c760cdecb6f221"
+    },
+    {
+      "migration_name": "20261104000000_access_denied_log",
+      "sha256": "a5f73c4b6f2f64d219e2e40a2238c09892d9c0fb7aaa302b88eba7492ae53c4d"
+    },
+    {
+      "migration_name": "20261104000100_totp_replay",
+      "sha256": "9ca604bbdc8cdefb7d76f90d499e61249e7bcebaabb1a78525dafcecb232d9c8"
+    },
+    {
+      "migration_name": "20261105000000_workspace_signup",
+      "sha256": "6b3685d4cd4a62893cb014c7b6db82f0b3dc32363c6e5e9b3847f62e1e56a62a"
+    },
+    {
+      "migration_name": "20261106000000_office_call_preferences",
+      "sha256": "3480c8a92f3e44f80f59f9d141372f917ebd3a0a2214391e870c5513f1765d51"
+    },
+    {
+      "migration_name": "20261107000000_meeting_call_evidence",
+      "sha256": "1e2a7016b2b530703caeadad1857ef332453c050f4dbe063af49d39fbc7b8a72"
+    },
+    {
+      "migration_name": "20261107000100_work_entries",
+      "sha256": "fa1ae377c7362c7c9512c3ec76d42ef9a4bca03909d77d79f4f6db16123f0b9d"
+    },
+    {
+      "migration_name": "20261107000200_overtime_onsite",
+      "sha256": "19f12a2d1af3cada2039072b7a75a9306a46b8edb8983c4fef4f25cdd73cc3b6"
+    }
+  ],
+  "prisma_models": [
+    {
+      "model": "Organization",
+      "table": "organizations"
+    },
+    {
+      "model": "User",
+      "table": "users"
+    },
+    {
+      "model": "Team",
+      "table": "teams"
+    },
+    {
+      "model": "WorkSchedule",
+      "table": "work_schedules"
+    },
+    {
+      "model": "AttendanceSession",
+      "table": "attendance_sessions"
+    },
+    {
+      "model": "AttendanceSegment",
+      "table": "attendance_segments"
+    },
+    {
+      "model": "HeartbeatNonce",
+      "table": "heartbeat_nonces"
+    },
+    {
+      "model": "DeviceSequence",
+      "table": "device_sequences"
+    },
+    {
+      "model": "SessionSecret",
+      "table": "session_secrets"
+    },
+    {
+      "model": "AttendanceCorrection",
+      "table": "attendance_corrections"
+    },
+    {
+      "model": "AttendanceDaily",
+      "table": "attendance_daily"
+    },
+    {
+      "model": "DraftTimesheet",
+      "table": "draft_timesheets_legacy"
+    },
+    {
+      "model": "PresenceEvent",
+      "table": "presence_events"
+    },
+    {
+      "model": "AuditLog",
+      "table": "audit_logs"
+    },
+    {
+      "model": "MonitoringConsent",
+      "table": "monitoring_consents"
+    },
+    {
+      "model": "Invitation",
+      "table": "invitations"
+    },
+    {
+      "model": "EmailVerificationToken",
+      "table": "email_verification_tokens"
+    },
+    {
+      "model": "OauthIdentity",
+      "table": "oauth_identities"
+    },
+    {
+      "model": "OwnershipTransfer",
+      "table": "ownership_transfers"
+    },
+    {
+      "model": "AuthSession",
+      "table": "auth_sessions"
+    },
+    {
+      "model": "PasswordResetToken",
+      "table": "password_reset_tokens"
+    },
+    {
+      "model": "Project",
+      "table": "projects"
+    },
+    {
+      "model": "ProjectMember",
+      "table": "project_members"
+    },
+    {
+      "model": "Task",
+      "table": "tasks"
+    },
+    {
+      "model": "TaskChecklistItem",
+      "table": "task_checklist_items"
+    },
+    {
+      "model": "TaskComment",
+      "table": "task_comments"
+    },
+    {
+      "model": "TaskAttachment",
+      "table": "task_attachments"
+    },
+    {
+      "model": "TaskActivity",
+      "table": "task_activity"
+    },
+    {
+      "model": "DailyPlan",
+      "table": "daily_plans"
+    },
+    {
+      "model": "DailyPlanItem",
+      "table": "daily_plan_items"
+    },
+    {
+      "model": "WeeklyPlan",
+      "table": "weekly_plans"
+    },
+    {
+      "model": "TaskSavedView",
+      "table": "task_saved_views"
+    },
+    {
+      "model": "Notification",
+      "table": "notifications"
+    },
+    {
+      "model": "NotificationPreference",
+      "table": "notification_preferences"
+    },
+    {
+      "model": "RequiredDocumentCategory",
+      "table": "required_document_categories"
+    },
+    {
+      "model": "PrivacyRequest",
+      "table": "privacy_requests"
+    },
+    {
+      "model": "JobRun",
+      "table": "job_runs"
+    },
+    {
+      "model": "SubcontractorProfile",
+      "table": "subcontractor_profiles"
+    },
+    {
+      "model": "SubcontractorDetail",
+      "table": "subcontractor_details"
+    },
+    {
+      "model": "Timesheet",
+      "table": "timesheets"
+    },
+    {
+      "model": "TimesheetDay",
+      "table": "timesheet_days"
+    },
+    {
+      "model": "TimeEntry",
+      "table": "time_entries"
+    },
+    {
+      "model": "TimesheetApproval",
+      "table": "timesheet_approvals"
+    },
+    {
+      "model": "DocumentFolder",
+      "table": "document_folders"
+    },
+    {
+      "model": "Contract",
+      "table": "contracts"
+    },
+    {
+      "model": "Document",
+      "table": "documents"
+    },
+    {
+      "model": "DocumentVersion",
+      "table": "document_versions"
+    },
+    {
+      "model": "DocumentAcl",
+      "table": "document_acl"
+    },
+    {
+      "model": "DocumentAccessLog",
+      "table": "document_access_logs"
+    },
+    {
+      "model": "VaultReauth",
+      "table": "vault_reauth"
+    },
+    {
+      "model": "DocumentPasswordAttempt",
+      "table": "document_password_attempts"
+    },
+    {
+      "model": "DocumentShareLink",
+      "table": "document_share_links"
+    },
+    {
+      "model": "DocumentRetentionRule",
+      "table": "document_retention_rules"
+    },
+    {
+      "model": "OrgRole",
+      "table": "org_roles"
+    },
+    {
+      "model": "Office",
+      "table": "offices"
+    },
+    {
+      "model": "Room",
+      "table": "rooms"
+    },
+    {
+      "model": "RoomInvite",
+      "table": "room_invites"
+    },
+    {
+      "model": "Desk",
+      "table": "desks"
+    },
+    {
+      "model": "Meeting",
+      "table": "meetings"
+    },
+    {
+      "model": "MeetingAttendee",
+      "table": "meeting_attendees"
+    },
+    {
+      "model": "MeetingParticipant",
+      "table": "meeting_participants"
+    },
+    {
+      "model": "MeetingLobby",
+      "table": "meeting_lobby"
+    },
+    {
+      "model": "MeetingActionItem",
+      "table": "meeting_action_items"
+    },
+    {
+      "model": "Channel",
+      "table": "channels"
+    },
+    {
+      "model": "ChannelMember",
+      "table": "channel_members"
+    },
+    {
+      "model": "Message",
+      "table": "messages"
+    },
+    {
+      "model": "AgentDevice",
+      "table": "agent_devices"
+    },
+    {
+      "model": "AgentPairingCode",
+      "table": "agent_pairing_codes"
+    },
+    {
+      "model": "OfflineSyncBatch",
+      "table": "offline_sync_batches"
+    },
+    {
+      "model": "AttendanceFlag",
+      "table": "attendance_flags"
+    },
+    {
+      "model": "CalendarConnection",
+      "table": "calendar_connections"
+    },
+    {
+      "model": "CalendarOauthState",
+      "table": "calendar_oauth_states"
+    },
+    {
+      "model": "CalendarEventLink",
+      "table": "calendar_event_links"
+    },
+    {
+      "model": "CalendarBusy",
+      "table": "calendar_busy"
+    },
+    {
+      "model": "SignatureRequest",
+      "table": "signature_requests"
+    },
+    {
+      "model": "SignatureSigner",
+      "table": "signature_signers"
+    },
+    {
+      "model": "MeetingRecording",
+      "table": "meeting_recordings"
+    },
+    {
+      "model": "RecordingConsent",
+      "table": "recording_consents"
+    },
+    {
+      "model": "LeaveRequest",
+      "table": "leave_requests"
+    },
+    {
+      "model": "PublicHoliday",
+      "table": "public_holidays"
+    },
+    {
+      "model": "MeetingCall",
+      "table": "meeting_calls"
+    },
+    {
+      "model": "OvertimeRequest",
+      "table": "overtime_requests"
+    },
+    {
+      "model": "OnsiteWorkRequest",
+      "table": "onsite_work_requests"
+    }
+  ]
+}

@@ -532,13 +532,19 @@ describe('Auth hardening E2E (FR-AUTH-002/003/004/008/011, security baseline)', 
       const s = await loginOk(U.sweep.email);
       const socket = await connect(s.accessToken);
       const gone = serverDisconnect(socket);
-      // Change status with triggers suppressed for this transaction only (no NOTIFY sent).
+      // Change status with the NOTIFY trigger suppressed for this transaction only (no NOTIFY sent).
+      // Transactional DISABLE TRIGGER needs only table ownership, not superuser
+      // (session_replication_role is superuser-only, e.g. on Supabase; ADR 052).
       const c = await adminPool.connect();
       try {
         await c.query('BEGIN');
-        await c.query(`SET LOCAL session_replication_role = replica`);
+        await c.query('ALTER TABLE users DISABLE TRIGGER trg_users_status_notify');
         await c.query(`UPDATE users SET status = 'SUSPENDED' WHERE id = $1`, [U.sweep.id]);
+        await c.query('ALTER TABLE users ENABLE TRIGGER trg_users_status_notify');
         await c.query('COMMIT');
+      } catch (err) {
+        await c.query('ROLLBACK');
+        throw err;
       } finally {
         c.release();
       }

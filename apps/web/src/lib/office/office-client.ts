@@ -6,8 +6,9 @@
  * proximity. Framework-free; React subscribes through `subscribe` / `getVersion`.
  */
 import { io, type Socket } from 'socket.io-client';
-import { buildGrid, findPath, inRect, MOVE_SPEED, walkable } from '@hrvo/shared';
+import { buildGrid, DEFAULT_NUDGE_RULES, findPath, inRect, mapSeats, MOVE_SPEED, nudgeReach, walkable } from '@hrvo/shared';
 import type {
+  ActionAck, NudgeAck, NudgeAnswerAck, NudgeClosedMessage, NudgeOutcome, NudgeRequestMessage, NudgeRules, PairAck, PairAction, PairClosedMessage, PairRequestMessage, Seat, SitAck, SoloAction,
   CollisionGrid, JoinAck, MoveAck, OfficeMap, OfficeSnapshot, Point, PositionsMessage, ProximityMessage, RosterEntry, TeleportAck, TeleportDto, VoStatus,
 } from '@hrvo/shared';
 import { API_URL } from '../env';
@@ -42,6 +43,11 @@ export type Notice = { kind: 'info' | 'error'; text: string; action?: { label: s
 
 const SEND_MS = 100;
 
+/** ADR 058: how a nudge ended, for the person who sent it or the person who got it. */
+export interface NudgeResult { id: string; outcome: NudgeOutcome; role: 'sender' | 'recipient'; name: string }
+/** How long that outcome stays on screen. */
+const NUDGE_RESULT_MS = 6_000;
+
 export class OfficeClient {
   socket: Socket | null = null;
   snapshot: OfficeSnapshot;
@@ -51,6 +57,20 @@ export class OfficeClient {
   roster = new Map<string, RosterEntry>();
   proximity: ProximityMessage = { groupId: null, members: [] };
   knocks: Knock[] = [];
+  /** ADR 056: hug / high-five requests waiting for my answer, and the one I am waiting on. */
+  incoming: Array<PairRequestMessage & { until: number }> = [];
+  outgoing: { id: string; kind: PairAction; to: string; toName: string; until: number } | null = null;
+  /** ADR 058: the nudge rules of this server; nudges waiting for my answer; the one I sent; how the last one ended. */
+  nudgeRules: NudgeRules = DEFAULT_NUDGE_RULES;
+  nudgesIn: Array<NudgeRequestMessage & { until: number }> = [];
+  nudgeOut: { id: string; to: string; toName: string; until: number } | null = null;
+  nudgeResult: NudgeResult | null = null;
+  /** Called when a nudge arrives (the page rings its bell). */
+  onNudge: (() => void) | null = null;
+  private nudgeResultTimer: ReturnType<typeof setTimeout> | null = null;
+  /** ADR 056: my own jump / wave / dance, shown at once (the roster confirms it a tick later). */
+  selfAction: { kind: SoloAction; at: number } | null = null;
+  private seatCache = new Map<string, Seat[]>();
   notice: Notice = null;
   connected = false;
   roomOnly = false;
@@ -107,6 +127,12 @@ export class OfficeClient {
       // A move whose acknowledgement will never come must not block every later move (ADR 048 §8).
       this.inFlight = false;
       this.path = [];
+      // ADR 056: the server drops our requests with the connection; so do we.
+      this.incoming = [];
+      this.outgoing = null;
+      this.nudgesIn = [];
+      this.nudgeOut = null;
+      this.selfAction = null;
       this.changed();
       // Kicked by the server (expired token): Socket.IO does not reconnect from this on its own.
       if (reason === 'io server disconnect') void this.reconnectWithFreshToken();
@@ -134,6 +160,17 @@ export class OfficeClient {
     });
     socket.on('office:proximity', (m: ProximityMessage) => { this.proximity = m; this.changed(); });
     socket.on('room:knock', (k: Knock) => { this.knocks = [...this.knocks.filter((x) => !(x.userId === k.userId && x.roomId === k.roomId)), k]; this.changed(); });
+    socket.on('office:pair-request', (m: PairRequestMessage) => {
+      this.incoming = [...this.incoming.filter((x) => x.from !== m.from), { ...m, until: Date.now() + m.expiresInMs }];
+      this.changed();
+    });
+    socket.on('office:pair-closed', (m: PairClosedMessage) => this.onPairClosed(m));
+    socket.on('office:nudge-request', (m: NudgeRequestMessage) => {
+      this.nudgesIn = [...this.nudgesIn.filter((x) => x.id !== m.id), { ...m, until: Date.now() + m.expiresInMs }];
+      this.changed();
+      this.onNudge?.();
+    });
+    socket.on('office:nudge-closed', (m: NudgeClosedMessage) => this.onNudgeClosed(m));
     socket.on('room:knock-handled', (k: { roomId: string; userId: string }) => { this.knocks = this.knocks.filter((x) => !(x.userId === k.userId && x.roomId === k.roomId)); this.changed(); });
     socket.on('room:answered', (a: { roomId: string; admit: boolean; by: string }) => {
       const room = this.snapshot.rooms.find((r) => r.id === a.roomId);
@@ -158,6 +195,7 @@ export class OfficeClient {
   disconnect(): void {
     if (this.sendTimer) clearInterval(this.sendTimer);
     if (this.joinRetry) clearTimeout(this.joinRetry);
+    if (this.nudgeResultTimer) clearTimeout(this.nudgeResultTimer);
     this.unsubAuth?.();
     this.unsubAuth = null;
     this.socket?.emit('office:leave');
@@ -212,6 +250,12 @@ export class OfficeClient {
     this.lastSent = { x: ack.self.x, y: ack.self.y };
     this.roster = new Map(ack.roster.map((r) => [r.id, r]));
     this.avatars.clear();
+    this.incoming = [];
+    this.outgoing = null;
+    // A new connection: the server closed whatever was open on the old one.
+    this.nudgesIn = [];
+    this.nudgeOut = null;
+    this.nudgeRules = ack.nudge ?? DEFAULT_NUDGE_RULES;
     if (this.roomOnly) this.socket!.emit('office:mode', { roomOnly: true });
     this.changed();
   }
@@ -351,6 +395,167 @@ export class OfficeClient {
   answer(k: Knock, admit: boolean): void {
     this.socket?.emit('room:answer', { roomId: k.roomId, userId: k.userId, admit });
     this.knocks = this.knocks.filter((x) => x !== k);
+    this.changed();
+  }
+
+  // ---------------------------------------------------------------- avatar actions (ADR 056)
+
+  /** The chairs of the floor I am on (from the map, like the server's). */
+  seats(): Seat[] {
+    const floorId = this.self?.floorId;
+    if (!floorId) return [];
+    let s = this.seatCache.get(floorId);
+    if (!s) {
+      const f = this.snapshot.floors.find((x) => x.id === floorId);
+      const g = this.grids.get(floorId);
+      s = f && g ? mapSeats(f.map as OfficeMap, g) : [];
+      this.seatCache.set(floorId, s);
+    }
+    return s;
+  }
+
+  /** Whether someone sits on that chair, as the roster says. */
+  seatTaken(seatId: string): boolean {
+    for (const r of this.roster.values()) if (r.floorId === this.self?.floorId && r.action?.kind === 'sit' && r.action.seat === seatId) return true;
+    return false;
+  }
+
+  mySeat(): string | null {
+    const a = this.roster.get(this.snapshot.me.id)?.action;
+    return a?.kind === 'sit' ? a.seat ?? null : null;
+  }
+
+  async act(kind: SoloAction | 'stop'): Promise<ActionAck> {
+    if (!this.socket || !this.connected) return { ok: false, error: 'Not connected', code: 'NOT_JOINED' };
+    if (kind === 'stop') this.selfAction = null;
+    else this.selfAction = { kind, at: performance.now() };
+    const ack = await this.socket.timeout(5_000).emitWithAck('office:action', { kind }).catch(() => ({ ok: false, error: 'No answer' })) as ActionAck;
+    if (!ack.ok) { this.selfAction = null; this.notice = { kind: 'error', text: ack.error }; this.changed(); }
+    return ack;
+  }
+
+  async sit(seatId: string): Promise<SitAck> {
+    if (!this.socket || !this.self || !this.connected) return { ok: false, error: 'Not connected', code: 'NOT_JOINED' };
+    this.path = [];
+    const ack = await this.socket.timeout(5_000).emitWithAck('office:sit', { seatId }).catch(() => ({ ok: false, error: 'No answer' })) as SitAck;
+    if (ack.ok && this.self) {
+      // The server puts us on the chair; nothing to resend.
+      Object.assign(this.self, { x: ack.x, y: ack.y, roomId: ack.roomId });
+      this.lastSent = { x: ack.x, y: ack.y };
+    } else if (!ack.ok) this.notice = { kind: 'error', text: ack.error };
+    this.changed();
+    return ack;
+  }
+
+  async stand(): Promise<void> {
+    await this.socket?.timeout(5_000).emitWithAck('office:stand', {}).catch(() => undefined);
+  }
+
+  async askPair(kind: PairAction, to: string): Promise<PairAck> {
+    if (!this.socket || !this.connected) return { ok: false, error: 'Not connected', code: 'NOT_JOINED' };
+    const ack = await this.socket.timeout(5_000).emitWithAck('office:pair', { kind, to }).catch(() => ({ ok: false, error: 'No answer' })) as PairAck;
+    if (ack.ok) this.outgoing = { id: ack.id, kind, to, toName: this.roster.get(to)?.name ?? 'them', until: Date.now() + ack.expiresInMs };
+    else this.notice = { kind: 'error', text: ack.error };
+    this.changed();
+    return ack;
+  }
+
+  answerPair(id: string, accept: boolean): void {
+    this.incoming = this.incoming.filter((x) => x.id !== id);
+    this.socket?.emit('office:pair-answer', { id, accept }, (ack: ActionAck) => { if (!ack.ok) { this.notice = { kind: 'error', text: ack.error }; this.changed(); } });
+    this.changed();
+  }
+
+  cancelPair(): void {
+    const o = this.outgoing;
+    if (!o) return;
+    this.outgoing = null;
+    this.socket?.emit('office:pair-cancel', { id: o.id });
+    this.changed();
+  }
+
+  private onPairClosed(m: PairClosedMessage): void {
+    this.incoming = this.incoming.filter((x) => x.id !== m.id);
+    if (this.outgoing?.id === m.id) {
+      const who = this.outgoing.toName;
+      const what = m.kind === 'hug' ? 'hug' : 'high five';
+      this.outgoing = null;
+      const text: Record<PairClosedMessage['reason'], string | null> = {
+        accepted: null, declined: `${who} said no to the ${what} this time.`, cancelled: null, timeout: `${who} did not answer your ${what}.`, gone: `${who} has left.`, 'too-far': `You were no longer next to ${who}.`,
+      };
+      const t = text[m.reason];
+      if (t) this.notice = { kind: 'info', text: t };
+    }
+    this.changed();
+  }
+
+  // ---------------------------------------------------------------- ADR 058 nudge
+
+  /**
+   * Why this person cannot be nudged right now, or null when they can. A convenience for the
+   * controls only: the server decides (reach, Do not disturb, cooldown) whatever is shown here.
+   */
+  nudgeBlock(id: string): 'far' | 'dnd' | 'away' | 'pending' | null {
+    const self = this.self;
+    const a = this.avatars.get(id);
+    const r = this.roster.get(id);
+    if (!self || !a || !r || !this.connected) return 'far';
+    if (this.nudgeOut) return 'pending';
+    if (!nudgeReach(self, { floorId: r.floorId, roomId: a.roomId, x: a.x, y: a.y }, this.nudgeRules.reachPx)) return 'far';
+    if (r.status === 'DND') return 'dnd';
+    return a.away ? 'away' : null;
+  }
+
+  async sendNudge(to: string): Promise<NudgeAck> {
+    if (!this.socket || !this.connected) return { ok: false, error: 'Not connected', code: 'NOT_JOINED' };
+    const ack = await this.socket.timeout(5_000).emitWithAck('office:nudge', { to }).catch(() => ({ ok: false, error: 'No answer from the office', code: 'NOT_JOINED' })) as NudgeAck;
+    if (ack.ok) {
+      this.setNudgeResult(null);
+      this.nudgeOut = { id: ack.id, to, toName: this.roster.get(to)?.name ?? 'them', until: Date.now() + ack.expiresInMs };
+    } else {
+      const wait = ack.retryInMs ? ` Try again in ${Math.max(1, Math.ceil(ack.retryInMs / 1000))} s.` : '';
+      this.notice = { kind: ack.code === 'COOLDOWN' || ack.code === 'RATE_LIMITED' ? 'info' : 'error', text: `${ack.error}.${wait}` };
+    }
+    this.changed();
+    return ack;
+  }
+
+  /** Accept or ignore. The card stays until the server says how it ended, so both people see the same thing. */
+  answerNudge(id: string, accept: boolean): void {
+    this.socket?.emit('office:nudge-answer', { id, accept }, (ack: NudgeAnswerAck) => {
+      if (ack.ok) return;
+      this.nudgesIn = this.nudgesIn.filter((x) => x.id !== id);
+      this.notice = { kind: 'error', text: ack.error };
+      this.changed();
+    });
+  }
+
+  cancelNudge(): void {
+    const o = this.nudgeOut;
+    if (o) this.socket?.emit('office:nudge-cancel', { id: o.id });
+  }
+
+  dismissNudgeResult(): void {
+    this.setNudgeResult(null);
+    this.changed();
+  }
+
+  private setNudgeResult(r: NudgeResult | null): void {
+    if (this.nudgeResultTimer) clearTimeout(this.nudgeResultTimer);
+    this.nudgeResult = r;
+    this.nudgeResultTimer = r ? setTimeout(() => { this.nudgeResult = null; this.nudgeResultTimer = null; this.changed(); }, NUDGE_RESULT_MS) : null;
+  }
+
+  private onNudgeClosed(m: NudgeClosedMessage): void {
+    const mine = this.nudgeOut?.id === m.id;
+    const theirs = this.nudgesIn.find((x) => x.id === m.id);
+    if (mine) {
+      this.setNudgeResult({ id: m.id, outcome: m.outcome, role: 'sender', name: this.nudgeOut!.toName });
+      this.nudgeOut = null;
+    } else if (theirs) {
+      this.setNudgeResult({ id: m.id, outcome: m.outcome, role: 'recipient', name: theirs.fromName });
+    }
+    this.nudgesIn = this.nudgesIn.filter((x) => x.id !== m.id);
     this.changed();
   }
 
