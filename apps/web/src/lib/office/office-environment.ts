@@ -11,8 +11,12 @@
  * desk seats are exactly where the map puts them. Decorations (rugs, chairs, corner plants, wall
  * art, windows, light) are paint only; they are not objects and block nothing.
  *
- * Paint order: floors, door sills, wall shadows, light, rugs, walls, wall decor, chairs,
+ * Paint order: floors, door sills, wall shadows, light, rugs, walls, wall decor, neon signs, chairs,
  * furniture, corner plants. Variation is a hash of the tile position, so a map always looks the same.
+ *
+ * ADR 057: the arcade is dressed by the same rules. Its walnut floor, indigo walls, neon signs,
+ * posters, rugs and cabinet glow are paint on the floor chunks; its cabinets stay props. Nothing
+ * there is an object, so nothing collides and nothing is interactive that was not before.
  *
  * ADR 055: tall things (trees, arcade cabinets, potted plants) are not painted into the floor
  * chunks but into one atlas of "props" that the renderer sorts with the avatars by their base, so
@@ -21,7 +25,8 @@
 import { mapSeats, objectLayer, prop, TILE_SIZE, tileLayer } from '@hrvo/shared';
 import type { MapObject, OfficeMap, Seat } from '@hrvo/shared';
 import {
-  BLUE, buildAtlas, CREAM, GLASS, GOLD, GOLD_LIGHT, GRASS, hash, INK, LEAF, LIGHT, MAPLE, NAVY, OAK, overlaps, Painter, pick, SAGE, STONE, TERRA, WATER,
+  BLUE, buildAtlas, CREAM, GLASS, GOLD, GOLD_LIGHT, GRASS, hash, INDIGO, INK, LEAF, LIGHT, MAPLE, NAVY, NEON, NIGHT, OAK, overlaps, Painter, pick, SAGE, STONE, TERRA,
+  VIOLET, WALNUT, WATER,
 } from './pixel-kit';
 import type { AtlasPiece, AtlasSprite, Rect } from './pixel-kit';
 
@@ -54,7 +59,14 @@ interface Scene {
   pieces: WallPiece[];
   /** Wall-face tiles those pieces use (no window or picture there). */
   faceUsed: Set<number>;
+  /** ADR 057: neon signs on the wall above each row of arcade cabinets. */
+  signs: NeonSign[];
+  /** ADR 057: what hangs on each arcade wall-face tile (key: tile index). */
+  arcadeArt: Map<number, ArcadeArt>;
 }
+
+interface NeonSign extends Rect { text: string; colour: number; accent: number }
+type ArcadeArt = 'sconce' | 'rocket' | 'planet' | 'star' | 'bolt' | 'planter' | 'sunset';
 
 interface WallPiece { kind: 'board' | 'shelf' | 'plaque'; x: number; y: number; width: number; seed: number }
 
@@ -89,8 +101,9 @@ function buildScene(map: OfficeMap): Scene {
     }
   }
   const rooms = objectLayer(map, 'rooms').map((o) => ({ x: o.x, y: o.y, width: o.width, height: o.height, name: o.name, type: String(prop(o, 'type', 'OPEN')).toUpperCase() }));
-  const scene: Scene = { map, w, h, floor, wall, open, taken, doors, rooms, desks: objectLayer(map, 'desks'), furniture, seats: mapSeats(map), pieces: [], faceUsed: new Set() };
+  const scene: Scene = { map, w, h, floor, wall, open, taken, doors, rooms, desks: objectLayer(map, 'desks'), furniture, seats: mapSeats(map), pieces: [], faceUsed: new Set(), signs: [], arcadeArt: new Map() };
   planWallPieces(scene);
+  planArcadeWalls(scene);
   return scene;
 }
 
@@ -203,19 +216,17 @@ function floorTile(p: Painter, s: Scene, tx: number, ty: number): void {
       }
       break;
     }
-    case FLOOR.ARCADE: { // deep carpet with a retro confetti pattern
-      p.r(alt ? 0x2b2f52 : 0x292c4d, x, y, T, T);
-      const shapes = [0x46b3a8, GOLD, TERRA.light, 0x8f7bd6];
-      for (let i = 0; i < 4; i += 1) {
-        const h = hash(tx * 5 + i, ty * 11 + i, 66);
-        const sx = x + 2 + (h % 26);
-        const sy = y + 2 + ((h >>> 6) % 26);
-        const c = pick(shapes, h >>> 12);
-        if (h % 3 === 0) { p.r(c, sx, sy, 3, 1); p.r(c, sx + 1, sy + 1, 1, 1); }
-        else if (h % 3 === 1) { p.r(c, sx, sy, 1, 3); p.r(c, sx + 1, sy + 1, 2, 1); }
-        else p.r(c, sx, sy, 2, 2);
+    case FLOOR.ARCADE: { // ADR 057: walnut boards, a small inlay every third tile, a dark border along the walls
+      woodPlanks(p, x, y, [WALNUT.light, WALNUT.base, WALNUT.base, WALNUT.mid], WALNUT.dark, 8);
+      if (tx % 3 === 1 && ty % 3 === 1) {
+        for (let k = -4; k <= 4; k += 1) p.r(WALNUT.deep, x + 16 - (4 - Math.abs(k)), y + 16 + k, (4 - Math.abs(k)) * 2 + 1, 1);
+        for (let k = -2; k <= 2; k += 1) p.r(WALNUT.light, x + 16 - (2 - Math.abs(k)), y + 16 + k, (2 - Math.abs(k)) * 2 + 1, 1);
+        p.r(GOLD, x + 16, y + 16, 1, 1);
       }
-      p.r(0x3a3f6b, x, y, T, 1, 0.6);
+      if (s.wall(tx - 1, ty)) { p.r(WALNUT.deep, x + 5, y, 3, T); p.r(GOLD, x + 9, y, 1, T, 0.5); }
+      if (s.wall(tx + 1, ty)) { p.r(WALNUT.deep, x + T - 8, y, 3, T); p.r(GOLD, x + T - 10, y, 1, T, 0.5); }
+      if (s.wall(tx, ty - 1)) { p.r(WALNUT.deep, x, y + 5, T, 3); p.r(GOLD, x, y + 9, T, 1, 0.5); }
+      if (s.wall(tx, ty + 1)) { p.r(WALNUT.deep, x, y + T - 8, T, 3); p.r(GOLD, x, y + T - 10, T, 1, 0.5); }
       break;
     }
     default: // unknown style: a neutral stone tile
@@ -266,20 +277,25 @@ function wallTile(p: Painter, s: Scene, tx: number, ty: number): void {
   else if (!so) p.r(NAVY.deep, x, y + T - 2, T, 2);
   if ((tx + ty) % 2 === 0) p.r(NAVY.mid, x + 6, y + (n ? 6 : 7), 20, 1, 0.8); // coping joint
   if (face) {
-    // Front face: warm ivory panelling over an oak skirting board.
+    // Front face: warm ivory panelling over an oak skirting board; deep indigo in the arcade (ADR 057).
     const fy = y + CAP;
-    p.r(CREAM.mid, x, fy, T, T - CAP - 4);
-    p.r(CREAM.line, x, fy, T, 2); // shade under the coping
-    p.r(CREAM.base, x, fy + 2, T, 1);
-    p.r(CREAM.dark, x + 15, fy + 3, 1, T - CAP - 7); // panel seam
-    p.r(CREAM.dark, x, fy + 11, T, 1, 0.55); // dado line
-    p.r(OAK.deep, x, y + T - 4, T, 4);
-    p.r(OAK.mid, x, y + T - 4, T, 1);
-    p.r(OAK.line, x, y + T - 1, T, 1);
-    if (!we) p.r(CREAM.line, x, fy, 1, T - CAP - 4);
-    if (!e) p.r(CREAM.line, x + T - 1, fy, 1, T - CAP - 4);
+    const arcade = (s.floor[(ty + 1) * s.w + tx] ?? 0) === FLOOR.ARCADE;
+    const c = arcade ? { mid: INDIGO.mid, line: INDIGO.deep, base: INDIGO.base, dark: INDIGO.dark, skirt: INDIGO.deep, skirtTop: INDIGO.light, skirtLine: NIGHT }
+      : { mid: CREAM.mid, line: CREAM.line, base: CREAM.base, dark: CREAM.dark, skirt: OAK.deep, skirtTop: OAK.mid, skirtLine: OAK.line };
+    p.r(c.mid, x, fy, T, T - CAP - 4);
+    p.r(c.line, x, fy, T, 2); // shade under the coping
+    p.r(c.base, x, fy + 2, T, 1);
+    p.r(c.dark, x + 15, fy + 3, 1, T - CAP - 7); // panel seam
+    p.r(c.dark, x, fy + 11, T, 1, 0.55); // dado line
+    p.r(c.skirt, x, y + T - 4, T, 4);
+    p.r(c.skirtTop, x, y + T - 4, T, 1);
+    p.r(c.skirtLine, x, y + T - 1, T, 1);
+    if (!we) p.r(c.line, x, fy, 1, T - CAP - 4);
+    if (!e) p.r(c.line, x + T - 1, fy, 1, T - CAP - 4);
+    if (arcade) { const tube = Math.floor(tx / 2) % 2 ? NEON.cyan : NEON.pink; p.r(tube, x, fy, T, 2); p.r(NEON.white, x + 1, fy, T - 2, 1, 0.45); p.r(tube, x, fy + 2, T, 2, 0.22); p.r(NIGHT, x, fy, 1, 2); }
     if ((s.floor[(ty + 1) * s.w + tx] ?? 0) === FLOOR.GRASS) ivy(p, tx, ty);
   }
+  arcadeTrim(p, s, tx, ty);
   // Door frames: an oak jamb on the wall end beside a doorway (the opening itself is untouched).
   const door = (dx: number, dy: number) => s.doors.has((ty + dy) * s.w + tx + dx);
   if (door(-1, 0)) { p.r(OAK.deep, x, y, 3, T); p.r(OAK.light, x + 2, y, 1, T); p.r(OAK.line, x, y, 1, T); }
@@ -378,7 +394,9 @@ const isWindow = (s: Scene, tx: number, ty: number): boolean => tx % 3 === 1 && 
 const isLantern = (s: Scene, tx: number, ty: number): boolean => tx % 4 === 2 && plainFace(s, tx, ty) && (s.floor[(ty + 1) * s.w + tx] ?? 0) === FLOOR.GRASS;
 
 function wallDecor(p: Painter, s: Scene, tx: number, ty: number): void {
-  if (!plainFace(s, tx, ty)) return;
+  const art = s.arcadeArt.get(ty * s.w + tx);
+  if (art) { arcadeWallArt(p, art, tx, ty); return; }
+  if (!plainFace(s, tx, ty) || (s.floor[(ty + 1) * s.w + tx] ?? 0) === FLOOR.ARCADE) return;
   const x = tx * T;
   const fy = ty * T + CAP;
   if ((s.floor[(ty + 1) * s.w + tx] ?? 0) === FLOOR.GRASS) {
@@ -426,13 +444,21 @@ function lightPool(p: Painter, cx: number, cy: number, rx: number, ry: number): 
 function lighting(p: Painter, s: Scene, view: Rect): void {
   for (const r of s.rooms) {
     if (!overlaps(view, r)) continue;
-    // Warm light reads as grey haze on the dark arcade carpet: the arcade glows from its cabinets instead.
+    // The arcade has no warm pool: it glows from its cabinets and neon instead (ADR 057).
     const floorAt = s.floor[Math.floor((r.y + r.height / 2) / T) * s.w + Math.floor((r.x + r.width / 2) / T)] ?? 0;
     if (floorAt === FLOOR.ARCADE) continue;
     lightPool(p, Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2), Math.round(Math.min(r.width * 0.42, 300)), Math.round(Math.min(r.height * 0.4, 130)));
   }
   for (const d of s.desks) {
     if (overlaps(view, d, 48)) lightPool(p, Math.round(d.x + d.width / 2), Math.round(d.y + d.height / 2 + 4), 52, 30);
+  }
+  // Each cabinet throws its own colour onto the boards in front of it, in three flat steps.
+  for (const f of s.furniture) {
+    if (kindOf(f) !== 'arcade' || !overlaps(view, f, 48)) continue;
+    const glow = cabinetScheme(s, f).trim;
+    const cx = Math.round(f.x + f.width / 2);
+    const cy = f.y + f.height + 5;
+    p.ellipse(glow, cx, cy, 30, 15, 0.07); p.ellipse(glow, cx, cy, 22, 11, 0.07); p.ellipse(glow, cx, cy, 13, 6, 0.08);
   }
 }
 
@@ -476,6 +502,7 @@ const isBigTable = (s: Scene, f: MapObject): boolean => kindOf(f) === 'table' &&
 function rugs(p: Painter, s: Scene, view: Rect): void {
   for (const f of s.furniture) {
     const kind = kindOf(f);
+    if (onArcadeFloor(s, f)) { arcadeRug(p, s, f, view); continue; }
     if (isBigTable(s, f)) {
       // Under a meeting table, kept inside its room.
       const room = s.rooms.find((r) => overlaps(r, f));
@@ -505,6 +532,186 @@ function rugs(p: Painter, s: Scene, view: Rect): void {
     p.ellipse(SAGE.deep, cx, cy, rx, ry); p.ellipse(0xdfe8da, cx, cy, rx - 3, ry - 3);
     p.ellipse(SAGE.dark, cx, cy, rx - 6, ry - 6); p.ellipse(0xe9efe4, cx, cy, rx - 8, ry - 8);
     p.ellipse(TERRA.light, cx, cy, Math.round(rx * 0.3), Math.round(ry * 0.3)); p.ellipse(0xe9efe4, cx, cy, Math.round(rx * 0.3) - 2, Math.round(ry * 0.3) - 2);
+  }
+}
+
+// ---------------------------------------------------------------- arcade (ADR 057), paint only
+
+const floorUnder = (s: Scene, f: MapObject): number => s.floor[Math.floor((f.y + f.height / 2) / T) * s.w + Math.floor((f.x + f.width / 2) / T)] ?? 0;
+const onArcadeFloor = (s: Scene, f: MapObject): boolean => floorUnder(s, f) === FLOOR.ARCADE;
+
+/** 5 x 7 capitals for the neon signs. */
+const GLYPHS: Record<string, readonly string[]> = {
+  A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  C: ['.####', '#....', '#....', '#....', '#....', '#....', '.####'],
+  D: ['####.', '#...#', '#...#', '#...#', '#...#', '#...#', '####.'],
+  E: ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
+  G: ['.####', '#....', '#....', '#.###', '#...#', '#...#', '.###.'],
+  M: ['#...#', '##.##', '#.#.#', '#.#.#', '#...#', '#...#', '#...#'],
+  N: ['#...#', '##..#', '#.#.#', '#.#.#', '#..##', '#...#', '#...#'],
+  O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+  R: ['####.', '#...#', '#...#', '####.', '#.#..', '#..#.', '#...#'],
+};
+const SIGN_TEXTS = ['ARCADE', 'GAME ON'];
+const SIGN_COLOURS: Array<[number, number]> = [[NEON.pink, NEON.cyan], [NEON.cyan, NEON.yellow]];
+const STAR = ['.....#.....', '....###....', '....###....', '###########', '.#########.', '..#######..', '..#######..', '.####.####.', '.###...###.', '##.......##'];
+const BOLT = ['....###', '...###.', '..###..', '.######', '...###.', '..###..', '.###...', '.##....', '#......'];
+
+/** A bitmap as a neon tube: a soft halo, the tube, and a bright core. */
+function neon(p: Painter, rows: readonly string[], x: number, y: number, scale: number, colour: number): void {
+  const each = (fn: (px: number, py: number) => void) => rows.forEach((row, j) => { for (let i = 0; i < row.length; i += 1) if (row[i] === '#') fn(x + i * scale, y + j * scale); });
+  each((px, py) => p.r(colour, px - 1, py - 1, scale + 2, scale + 2, 0.2));
+  each((px, py) => p.r(colour, px, py, scale, scale));
+  each((px, py) => p.r(NEON.white, px, py, 1, 1, 0.55));
+}
+
+const textWidth = (text: string, scale: number): number => text.length * 6 * scale - scale;
+
+/**
+ * Plans the arcade's wall once: a neon sign above each row of cabinets that stands against a
+ * wall, and something for every wall-face tile a cabinet does not hide.
+ */
+function planArcadeWalls(s: Scene): void {
+  const rows = new Map<number, MapObject[]>();
+  for (const f of s.furniture) {
+    const ty = Math.floor(f.y / T) - 1;
+    if (kindOf(f) !== 'arcade' || !onArcadeFloor(s, f) || !hasFace(s, Math.floor(f.x / T), ty)) continue;
+    rows.set(ty, [...(rows.get(ty) ?? []), f]);
+  }
+  for (const [ty, cabinets] of rows) {
+    cabinets.sort((a, b) => a.x - b.x);
+    // Cabinets no more than three tiles apart share a sign.
+    const groups: MapObject[][] = [];
+    for (const c of cabinets) { const g = groups[groups.length - 1]; if (g && c.x - (g[g.length - 1]!.x + g[g.length - 1]!.width) <= 3 * T) g.push(c); else groups.push([c]); }
+    groups.forEach((g, i) => {
+      const text = SIGN_TEXTS[(s.signs.length) % SIGN_TEXTS.length]!;
+      const width = textWidth(text, 2) + 10;
+      const x = Math.round((g[0]!.x + g[g.length - 1]!.x + g[g.length - 1]!.width) / 2 - width / 2);
+      // The board sits on the wall band above the cabinets; every tile under it must be wall face.
+      for (let tx = Math.floor(x / T); tx <= Math.floor((x + width - 1) / T); tx += 1) if (!hasFace(s, tx, ty)) return;
+      const [colour, accent] = SIGN_COLOURS[i % SIGN_COLOURS.length]!;
+      s.signs.push({ x, y: ty * T, width, height: 18, text, colour, accent });
+    });
+  }
+  const kinds: ArcadeArt[] = ['rocket', 'planet', 'star', 'bolt', 'planter', 'sunset'];
+  let n = 0;
+  for (let ty = 0; ty < s.h; ty += 1) for (let tx = 0; tx < s.w; tx += 1) {
+    if (!hasFace(s, tx, ty) || s.faceUsed.has(ty * s.w + tx) || (s.floor[(ty + 1) * s.w + tx] ?? 0) !== FLOOR.ARCADE) continue;
+    // A cabinet standing against the wall hides the face behind it.
+    if (s.furniture.some((f) => kindOf(f) === 'arcade' && Math.floor(f.x / T) === tx && Math.floor(f.y / T) === ty + 1)) continue;
+    const underSign = s.signs.some((g) => g.y === ty * T && g.x < (tx + 1) * T && g.x + g.width > tx * T);
+    s.arcadeArt.set(ty * s.w + tx, underSign ? 'sconce' : kinds[n++ % kinds.length]!);
+  }
+}
+
+function neonSign(p: Painter, g: NeonSign): void {
+  p.r(INK, g.x + 1, g.y + g.height, g.width - 2, 1, 0.3);
+  p.r(INDIGO.light, g.x, g.y, g.width, g.height); p.r(NIGHT, g.x + 1, g.y + 1, g.width - 2, g.height - 2);
+  for (const cx of [g.x + 2, g.x + g.width - 3]) { p.r(g.accent, cx, g.y + 2, 1, 1); p.r(g.accent, cx, g.y + g.height - 3, 1, 1); } // corner lamps
+  let x = g.x + 5;
+  for (const ch of g.text) { const rows = GLYPHS[ch]; if (rows) neon(p, rows, x, g.y + 2, 2, g.colour); x += 12; }
+}
+
+/** What hangs on one arcade wall-face tile. Everything stays inside the tile's own face. */
+function arcadeWallArt(p: Painter, kind: ArcadeArt, tx: number, ty: number): void {
+  const x = tx * T;
+  const fy = ty * T + CAP;
+  if (kind === 'sconce') { // a small lamp under the sign
+    p.r(GOLD, x + 14, fy + 6, 4, 2); p.r(NIGHT, x + 15, fy + 8, 2, 1);
+    p.ellipse(NEON.purple, x + 16, fy + 11, 7, 4, 0.16); p.r(VIOLET.light, x + 13, fy + 9, 6, 4); p.r(NEON.white, x + 14, fy + 10, 4, 2, 0.8); p.r(VIOLET.dark, x + 13, fy + 13, 6, 1);
+    return;
+  }
+  if (kind === 'star') { neon(p, STAR, x + 10, fy + 3, 1, NEON.yellow); return; }
+  if (kind === 'bolt') { neon(p, BOLT, x + 12, fy + 4, 1, NEON.cyan); return; }
+  if (kind === 'planter') { // a shelf with trailing leaves
+    p.r(WALNUT.deep, x + 7, fy + 9, 18, 2); p.r(WALNUT.light, x + 7, fy + 9, 18, 1);
+    p.r(TERRA.base, x + 10, fy + 5, 5, 4); p.r(TERRA.light, x + 10, fy + 5, 5, 1); p.r(TERRA.base, x + 18, fy + 6, 4, 3); p.r(TERRA.light, x + 18, fy + 6, 4, 1);
+    p.ellipse(LEAF.dark, x + 12, fy + 4, 4, 2); p.r(LEAF.light, x + 11, fy + 3, 2, 1); p.ellipse(LEAF.base, x + 20, fy + 5, 3, 2);
+    p.r(LEAF.base, x + 9, fy + 6, 1, 6); p.r(LEAF.dark, x + 15, fy + 5, 1, 8); p.r(LEAF.light, x + 15, fy + 12, 2, 1); p.r(LEAF.base, x + 22, fy + 7, 1, 5); p.r(LEAF.light, x + 8, fy + 11, 2, 1);
+    return;
+  }
+  // A framed poster, 16 x 12, with original artwork.
+  const px = x + 8;
+  const py = fy + 3;
+  p.r(INK, px + 1, py + 12, 15, 1, 0.3);
+  p.r(GOLD, px, py, 16, 12);
+  if (kind === 'rocket') {
+    p.r(0x141a3a, px + 1, py + 1, 14, 10);
+    for (const [sx, sy] of [[2, 2], [11, 3], [4, 8], [13, 8]] as const) p.r(NEON.white, px + sx, py + sy, 1, 1);
+    p.r(0xe5484d, px + 7, py + 2, 2, 1); p.r(NEON.white, px + 6, py + 3, 4, 5); p.r(NEON.cyan, px + 7, py + 4, 2, 2);
+    p.r(0xe5484d, px + 5, py + 6, 1, 2); p.r(0xe5484d, px + 10, py + 6, 1, 2); p.r(NEON.orange, px + 7, py + 8, 2, 2); p.r(NEON.yellow, px + 7, py + 8, 2, 1);
+  } else if (kind === 'planet') {
+    p.r(VIOLET.deep, px + 1, py + 1, 14, 10);
+    for (const [sx, sy] of [[2, 3], [12, 2], [13, 9]] as const) p.r(NEON.white, px + sx, py + sy, 1, 1);
+    p.ellipse(NEON.orange, px + 8, py + 6, 3, 3); p.r(NEON.yellow, px + 6, py + 4, 2, 1); p.r(0xc9682a, px + 7, py + 8, 3, 1);
+    p.r(NEON.cyan, px + 3, py + 6, 3, 1); p.r(NEON.cyan, px + 11, py + 6, 3, 1); p.r(NEON.cyan, px + 5, py + 7, 7, 1, 0.8);
+  } else { // a sun setting over a grid
+    p.r(0x3b1d5e, px + 1, py + 1, 14, 3); p.r(0x8a2e77, px + 1, py + 4, 14, 2); p.r(NEON.pink, px + 1, py + 6, 14, 1);
+    p.r(NEON.yellow, px + 6, py + 3, 4, 1); p.r(NEON.yellow, px + 5, py + 4, 6, 1); p.r(NEON.orange, px + 5, py + 5, 6, 1); p.r(NEON.orange, px + 4, py + 6, 8, 1);
+    p.r(0x141a3a, px + 1, py + 7, 14, 4); p.r(NEON.purple, px + 1, py + 8, 14, 1, 0.8); p.r(NEON.purple, px + 1, py + 10, 14, 1, 0.8);
+    for (const gx of [3, 6, 9, 12]) p.r(NEON.purple, px + gx, py + 7, 1, 4, 0.7);
+  }
+}
+
+/**
+ * Neon tubes along the walls beside and below the arcade floor (the wall above it has its own
+ * under the coping), with a faint wash of the same colour on the boards.
+ */
+function arcadeTrim(p: Painter, s: Scene, tx: number, ty: number): void {
+  const arcade = (x: number, y: number) => s.open(x, y) && (s.floor[y * s.w + x] ?? 0) === FLOOR.ARCADE && !s.doors.has(y * s.w + x);
+  const x = tx * T;
+  const y = ty * T;
+  const tube = (colour: number, rx: number, ry: number, w: number, h: number, gx: number, gy: number) => {
+    p.r(colour, rx, ry, w, h); p.r(NEON.white, w > h ? rx + 1 : rx, w > h ? ry : ry + 1, w > h ? w - 2 : 1, w > h ? 1 : h - 2, 0.45); p.r(NIGHT, rx, ry, w > h ? 1 : w, w > h ? h : 1);
+    p.r(colour, w > h ? rx : rx + gx * 2, w > h ? ry + gy * 2 : ry, w > h ? w : 4, w > h ? 4 : h, 0.1);
+  };
+  if (arcade(tx + 1, ty)) tube(NEON.cyan, x + T - 2, y, 2, T, 1, 0);
+  if (arcade(tx - 1, ty)) tube(NEON.pink, x, y, 2, T, -2, 0);
+  if (arcade(tx, ty - 1)) tube(NEON.purple, x, y, T, 2, 0, -2);
+}
+
+/** A game-area rug with a border, a row of diamonds along each long side and a fringe. */
+function patternRug(p: Painter, r: Rect, c: { edge: number; field: number; line: number; accent: number }): void {
+  p.r(INK, r.x + 1, r.y + r.height, r.width - 2, 2, 0.16);
+  p.r(c.edge, r.x, r.y, r.width, r.height);
+  p.r(c.field, r.x + 3, r.y + 3, r.width - 6, r.height - 6);
+  p.frame(c.line, r.x + 5, r.y + 5, r.width - 10, r.height - 10);
+  p.frame(c.edge, r.x + 7, r.y + 7, r.width - 14, r.height - 14);
+  for (let i = r.x + 14; i < r.x + r.width - 16; i += 12) {
+    for (const dy of [11, r.height - 14]) { p.r(c.accent, i + 1, r.y + dy, 1, 3); p.r(c.accent, i, r.y + dy + 1, 3, 1); }
+  }
+  for (let i = r.y + 2; i < r.y + r.height - 3; i += 4) { p.r(c.line, r.x - 1, i, 1, 2); p.r(c.line, r.x + r.width, i, 1, 2); } // fringe
+}
+
+/** Rugs under the arcade's play areas. They lie under the furniture and block nothing. */
+function arcadeRug(p: Painter, s: Scene, f: MapObject, view: Rect): void {
+  const kind = kindOf(f);
+  const room = s.rooms.find((r) => overlaps(r, f));
+  const inRoom = (r: Rect): Rect | null => {
+    if (!room) return r;
+    const x0 = Math.max(r.x, room.x + 12);
+    const y0 = Math.max(r.y, room.y + 12);
+    const out = { x: x0, y: y0, width: Math.min(r.x + r.width, room.x + room.width - 12) - x0, height: Math.min(r.y + r.height, room.y + room.height - 12) - y0 };
+    return out.width > f.width && out.height >= 24 ? out : null;
+  };
+  if (kind === 'ping-pong') {
+    const r = inRoom({ x: f.x - 26, y: f.y - 22, width: f.width + 52, height: f.height + 44 });
+    if (r && overlaps(view, r, 4)) patternRug(p, r, { edge: INDIGO.dark, field: 0x3f5fb0, line: NEON.cyan, accent: 0x9fc0ff });
+  } else if (kind === 'game-table') {
+    const r = inRoom({ x: f.x - 30, y: f.y - 26, width: f.width + 60, height: f.height + 52 });
+    if (r && overlaps(view, r, 4)) patternRug(p, r, { edge: 0x1c4f5c, field: 0x2c7c88, line: 0x8fe0d8, accent: NEON.yellow });
+  } else if (kind === 'chess-table') {
+    const cx = Math.round(f.x + f.width / 2);
+    const cy = Math.round(f.y + f.height / 2);
+    const rx = Math.round(f.width / 2) + 28;
+    const ry = Math.round(f.height / 2) + 20;
+    if (!inRoom({ x: cx - rx, y: cy - ry, width: rx * 2, height: ry * 2 }) || !overlaps(view, { x: cx - rx, y: cy - ry, width: rx * 2, height: ry * 2 + 2 }, 4)) return;
+    p.ellipse(INK, cx, cy + 2, rx, ry, 0.14);
+    p.ellipse(VIOLET.deep, cx, cy, rx, ry); p.ellipse(VIOLET.mid, cx, cy, rx - 3, ry - 3); p.ellipse(NEON.purple, cx, cy, rx - 6, ry - 6); p.ellipse(VIOLET.dark, cx, cy, rx - 8, ry - 8);
+    for (let i = 0; i < 12; i += 1) { const a = (i * Math.PI) / 6; p.r(GOLD_LIGHT, Math.round(cx + Math.cos(a) * (rx - 13)), Math.round(cy + Math.sin(a) * (ry - 12)), 2, 2); }
+  } else if (kind === 'sofa' && f.width >= f.height) {
+    const r = { x: f.x + 8, y: f.y - 52, width: f.width - 16, height: 44 };
+    if (clear(s, r) && overlaps(view, r, 4)) patternRug(p, r, { edge: VIOLET.deep, field: 0xb04a8c, line: NEON.pink, accent: NEON.yellow });
   }
 }
 
@@ -605,26 +812,27 @@ function plainTable(p: Painter, s: Scene, f: MapObject): void {
   }
 }
 
-function sofa(p: Painter, f: MapObject): void {
+/** `c`: the upholstery (terracotta by default; violet in the arcade, ADR 057). */
+function sofa(p: Painter, f: MapObject, c: { light: number; base: number; mid: number; dark: number; deep: number } = TERRA): void {
   const { x, y, width: w, height: h } = f;
   p.r(INK, x + 2, y + h - 1, w - 3, 4, 0.18);
-  p.r(TERRA.deep, x, y + 1, w, h - 2);
-  p.r(TERRA.mid, x + 1, y + 2, w - 2, 10); // back rest
-  p.r(TERRA.light, x + 2, y + 2, w - 4, 1);
-  p.r(TERRA.dark, x + 1, y + 11, w - 2, 1);
-  p.r(TERRA.mid, x + 1, y + 2, 7, h - 6); p.r(TERRA.mid, x + w - 8, y + 2, 7, h - 6); // arms
-  p.r(TERRA.light, x + 2, y + 2, 5, 1); p.r(TERRA.light, x + w - 7, y + 2, 5, 1);
+  p.r(c.deep, x, y + 1, w, h - 2);
+  p.r(c.mid, x + 1, y + 2, w - 2, 10); // back rest
+  p.r(c.light, x + 2, y + 2, w - 4, 1);
+  p.r(c.dark, x + 1, y + 11, w - 2, 1);
+  p.r(c.mid, x + 1, y + 2, 7, h - 6); p.r(c.mid, x + w - 8, y + 2, 7, h - 6); // arms
+  p.r(c.light, x + 2, y + 2, 5, 1); p.r(c.light, x + w - 7, y + 2, 5, 1);
   const inner = w - 18;
   const n = Math.max(1, Math.round(inner / 46));
   const cw = inner / n;
   for (let i = 0; i < n; i += 1) {
     const cx = Math.round(x + 9 + i * cw);
     const cwi = Math.round(x + 9 + (i + 1) * cw) - cx;
-    p.r(TERRA.base, cx, y + 12, cwi - 1, h - 17);
-    p.r(TERRA.light, cx, y + 12, cwi - 1, 1);
-    p.r(TERRA.dark, cx + cwi - 1, y + 12, 1, h - 17);
+    p.r(c.base, cx, y + 12, cwi - 1, h - 17);
+    p.r(c.light, cx, y + 12, cwi - 1, 1);
+    p.r(c.dark, cx + cwi - 1, y + 12, 1, h - 17);
   }
-  p.r(TERRA.dark, x + 1, y + h - 5, w - 2, 3); // front edge
+  p.r(c.dark, x + 1, y + h - 5, w - 2, 3); // front edge
   p.r(CREAM.base, x + 11, y + 6, 9, 8); p.r(CREAM.dark, x + 11, y + 13, 9, 1); p.r(CREAM.light, x + 12, y + 7, 7, 1);
   p.r(SAGE.dark, x + w - 21, y + 6, 9, 8); p.r(SAGE.deep, x + w - 21, y + 13, 9, 1); p.r(SAGE.light, x + w - 20, y + 7, 7, 1);
 }
@@ -669,8 +877,9 @@ const isTall = (f: MapObject): boolean => TALL.has(kindOf(f));
 function furnitureItem(p: Painter, s: Scene, f: MapObject): void {
   const kind = kindOf(f);
   if (kind === 'plant') pottedPlant(p, Math.round(f.x + f.width / 2), f.y + f.height - 1, true);
+  else if (kind === 'arcade') arcadeCabinet(p, f, cabinetScheme(s, f));
   else if (CAMPUS[kind]) CAMPUS[kind]!(p, f);
-  else if (kind === 'sofa' && f.width >= f.height && f.width >= 48) sofa(p, f);
+  else if (kind === 'sofa' && f.width >= f.height && f.width >= 48) sofa(p, f, onArcadeFloor(s, f) ? VIOLET : TERRA);
   else if (kind === 'counter' && f.height >= 20) counter(p, f);
   else if (kind === 'table' && f.width >= 24 && f.height >= 20) { if (isDeskTable(s, f)) deskTable(p, f); else plainTable(p, s, f); }
   else cabinet(p, f);
@@ -749,27 +958,69 @@ function coffeeTable(p: Painter, f: MapObject): void {
   p.r(SAGE.dark, x + w - 14, y + 9, 6, 6); p.ellipse(LEAF.base, x + w - 11, y + 8, 4, 3); // succulent
 }
 
-/** An arcade cabinet (1 x 2 tiles): marquee, glowing screen, joystick and buttons. A prop. */
-function arcadeCabinet(p: Painter, f: MapObject): void {
+interface CabinetScheme { body: number; dark: number; light: number; trim: number }
+const CABINETS: Record<string, [CabinetScheme, CabinetScheme]> = {
+  tictactoe: [{ body: 0xd2452f, dark: 0x8f2a1c, light: 0xf07a55, trim: NEON.yellow }, { body: 0x1f8a7a, dark: 0x14594f, light: 0x4fc2ae, trim: NEON.orange }],
+  memory: [{ body: 0x9a3fb0, dark: 0x66277a, light: 0xc978dc, trim: NEON.cyan }, { body: 0xd9478a, dark: 0x962c5c, light: 0xf58bb8, trim: NEON.lime }],
+  puzzle: [{ body: 0x2f66c8, dark: 0x1e4290, light: 0x6e9af0, trim: NEON.pink }, { body: 0xe08a2a, dark: 0x9c5a14, light: 0xf7b765, trim: NEON.cyan }],
+};
+/** Each cabinet's own livery: by its game, alternating between the cabinets of the same game. */
+function cabinetScheme(s: Scene, f: MapObject): CabinetScheme {
+  const g = String(prop(f, 'game', ''));
+  const nth = s.furniture.filter((o) => kindOf(o) === 'arcade' && String(prop(o, 'game', '')) === g && (o.x < f.x || (o.x === f.x && o.y < f.y))).length;
+  return (CABINETS[g] ?? CABINETS.tictactoe!)[nth % 2]!;
+}
+
+/**
+ * An arcade cabinet (1 x 2 tiles): lit marquee, dark screen with the game on it, joystick and
+ * buttons, coin door. A prop. All artwork is original; the screens show the three campus games.
+ */
+function arcadeCabinet(p: Painter, f: MapObject, c: CabinetScheme): void {
   const { x, y, width: w, height: h } = f;
   const g = String(prop(f, 'game', ''));
-  const body = g === 'memory' ? 0x8f3b76 : g === 'puzzle' ? 0x2f6f8f : 0xb5452f;
-  const bodyDark = g === 'memory' ? 0x652a54 : g === 'puzzle' ? 0x214e65 : 0x7f3020;
-  const screen = g === 'memory' ? 0xf5c6e0 : g === 'puzzle' ? 0xbfe6f2 : 0xc9f2c3;
-  p.ellipse(INK, x + w / 2, y + h - 2, w / 2 + 3, 4, 0.22);
-  p.r(INK, x - 1, y - 12, w + 2, h + 11, 0.85);
-  p.r(body, x, y - 11, w, h + 8); p.r(bodyDark, x + w - 5, y - 11, 5, h + 8);
-  p.r(GOLD_LIGHT, x + 2, y - 9, w - 6, 7); p.r(bodyDark, x + 4, y - 7, w - 10, 1); p.r(bodyDark, x + 4, y - 5, w - 14, 1); // marquee
-  p.r(0x14162a, x + 2, y + 1, w - 6, 22); p.r(screen, x + 4, y + 3, w - 10, 18);
-  // Little game art on the screen.
-  if (g === 'tictactoe') { p.r(0x2f6d3a, x + 11, y + 4, 1, 16); p.r(0x2f6d3a, x + 17, y + 4, 1, 16); p.r(0x2f6d3a, x + 5, y + 9, 20, 1); p.r(0x2f6d3a, x + 5, y + 15, 20, 1); p.r(TERRA.dark, x + 6, y + 5, 3, 3); }
-  else if (g === 'memory') { for (let i = 0; i < 3; i += 1) for (let j = 0; j < 2; j += 1) p.r(i === 1 && j === 0 ? GOLD : 0x8f3b76, x + 6 + i * 7, y + 5 + j * 8, 5, 6); }
-  else { for (let i = 0; i < 3; i += 1) for (let j = 0; j < 3; j += 1) if (i + j < 4) p.r(0x2f6f8f, x + 6 + i * 6, y + 5 + j * 5, 5, 4); }
-  p.r(0xffffff, x + 5, y + 4, 4, 1, 0.6);
-  p.r(bodyDark, x + 1, y + 25, w - 4, 10); // control panel
-  p.r(0x22252f, x + 6, y + 27, 3, 5); p.r(TERRA.light, x + 5, y + 26, 5, 2);
-  p.r(GOLD, x + 14, y + 28, 3, 3); p.r(0x46b3a8, x + 19, y + 28, 3, 3);
-  p.r(bodyDark, x + 3, y + 37, w - 8, h - 41); p.r(0x14162a, x + 8, y + h - 14, w - 18, 4); // coin door
+  p.ellipse(INK, x + w / 2, y + h - 2, w / 2 + 3, 4, 0.26);
+  p.r(NIGHT, x - 1, y - 13, w + 2, h + 12);
+  p.r(c.body, x, y - 12, w, h + 9);
+  p.r(c.dark, x + w - 5, y - 12, 5, h + 9); // side panel
+  p.r(c.light, x, y - 12, 1, h + 9);
+  p.r(c.trim, x + w - 6, y - 12, 1, h + 9, 0.85); // edge moulding
+  for (let i = 0; i < 4; i += 1) p.r(c.trim, x + w - 4, y + 40 + i * 5, 3, 2, 0.8); // side stripes
+  // Marquee: a lit panel with the game's emblem.
+  p.r(NIGHT, x + 1, y - 11, w - 7, 10);
+  p.r(c.trim, x + 2, y - 10, w - 9, 8); p.r(NEON.white, x + 2, y - 10, w - 9, 1, 0.6); p.r(c.dark, x + 2, y - 3, w - 9, 1, 0.5);
+  if (g === 'memory') { p.r(NIGHT, x + 5, y - 9, 5, 6); p.r(c.body, x + 6, y - 8, 3, 4); p.r(NIGHT, x + 12, y - 9, 5, 6); p.r(NEON.white, x + 13, y - 8, 3, 4); p.r(c.body, x + 14, y - 7, 1, 2); p.r(NIGHT, x + 19, y - 7, 3, 1); p.r(NIGHT, x + 20, y - 8, 1, 3); }
+  else if (g === 'puzzle') { for (let i = 0; i < 3; i += 1) { p.r(NIGHT, x + 5 + i * 6, y - 9, 5, 6); p.r(i === 1 ? c.light : c.body, x + 6 + i * 6, y - 8, 3, 4); } }
+  else { p.r(NIGHT, x + 5, y - 9, 2, 2); p.r(NIGHT, x + 9, y - 9, 2, 2); p.r(NIGHT, x + 7, y - 7, 2, 2); p.r(NIGHT, x + 5, y - 5, 2, 2); p.r(NIGHT, x + 9, y - 5, 2, 2); p.r(NIGHT, x + 15, y - 9, 6, 6); p.r(c.trim, x + 17, y - 7, 2, 2); }
+  p.r(c.dark, x + 2, y - 1, w - 9, 2); for (let i = x + 4; i < x + w - 9; i += 3) p.r(NIGHT, i, y - 1, 1, 1); // speaker
+  // Screen: dark glass, the game, scanlines and a glare.
+  const sx = x + 3;
+  const sy = y + 3;
+  p.r(NIGHT, x + 2, y + 2, w - 8, 22); p.r(0x141a3a, sx, sy, w - 10, 20);
+  if (g === 'memory') {
+    for (let i = 0; i < 3; i += 1) for (let j = 0; j < 2; j += 1) {
+      const up = i === 1 && j === 0;
+      p.r(up ? NEON.yellow : NEON.purple, sx + 2 + i * 7, sy + 2 + j * 9, 5, 7); p.r(up ? NEON.white : VIOLET.dark, sx + 3 + i * 7, sy + 3 + j * 9, 3, 5);
+      if (up) p.r(NEON.pink, sx + 4 + i * 7, sy + 5, 1, 1);
+    }
+  } else if (g === 'puzzle') {
+    const tiles = [NEON.cyan, NEON.pink, NEON.yellow, NEON.lime, NEON.orange, NEON.purple, NEON.cyan, NEON.pink];
+    tiles.forEach((t, i) => { p.r(t, sx + 2 + (i % 3) * 6, sy + 1 + Math.floor(i / 3) * 6, 5, 5); p.r(NEON.white, sx + 2 + (i % 3) * 6, sy + 1 + Math.floor(i / 3) * 6, 5, 1, 0.5); });
+  } else {
+    p.r(NEON.lime, sx + 7, sy + 1, 1, 18); p.r(NEON.lime, sx + 14, sy + 1, 1, 18); p.r(NEON.lime, sx + 1, sy + 6, 20, 1); p.r(NEON.lime, sx + 1, sy + 13, 20, 1);
+    for (const [ox, oy] of [[2, 1], [16, 8]] as const) { p.r(NEON.pink, sx + ox, sy + oy, 1, 1); p.r(NEON.pink, sx + ox + 3, sy + oy, 1, 1); p.r(NEON.pink, sx + ox + 1, sy + oy + 1, 2, 2); p.r(NEON.pink, sx + ox, sy + oy + 3, 1, 1); p.r(NEON.pink, sx + ox + 3, sy + oy + 3, 1, 1); }
+    for (const [ox, oy] of [[9, 8], [2, 15]] as const) { p.r(NEON.cyan, sx + ox, sy + oy, 4, 4); p.r(0x141a3a, sx + ox + 1, sy + oy + 1, 2, 2); }
+  }
+  for (let yy = sy + 1; yy < sy + 20; yy += 2) p.r(INK, sx, yy, w - 10, 1, 0.16);
+  p.r(0xffffff, sx + 1, sy + 1, 5, 1, 0.5); p.r(0xffffff, sx + 1, sy + 2, 2, 1, 0.35);
+  // Control panel: joystick and three buttons.
+  p.r(c.light, x + 1, y + 25, w - 6, 2); p.r(0x23263a, x + 1, y + 27, w - 6, 9); p.r(NIGHT, x + 1, y + 35, w - 6, 1);
+  p.r(NIGHT, x + 5, y + 32, 5, 2); p.r(0xc9ced8, x + 7, y + 29, 1, 3); p.r(0xe5484d, x + 6, y + 27, 3, 3); p.r(0xffffff, x + 6, y + 27, 1, 1, 0.7);
+  for (const [bx, by, col] of [[13, 30, NEON.yellow], [17, 32, NEON.cyan], [21, 30, NEON.pink]] as const) { p.r(NIGHT, x + bx, y + by + 1, 3, 3); p.r(col, x + bx, y + by, 3, 3); p.r(NEON.white, x + bx, y + by, 1, 1, 0.7); }
+  // Front: a stripe, the coin door with two lit slots, the kick plate and a line of under-glow.
+  p.r(c.trim, x + 2, y + 39, w - 9, 1); p.r(c.light, x + 2, y + 41, w - 9, 1);
+  p.r(NIGHT, x + 7, y + 45, 13, 11); p.r(0x2b2f45, x + 8, y + 46, 11, 9);
+  p.r(NEON.orange, x + 10, y + 48, 2, 4); p.r(NEON.orange, x + 15, y + 48, 2, 4); p.r(NIGHT, x + 10, y + 53, 7, 1);
+  p.r(0x16182a, x, y + h - 7, w, 4); p.r(c.trim, x + 1, y + h - 3, w - 7, 1, 0.8);
 }
 
 function pingPong(p: Painter, f: MapObject): void {
@@ -890,7 +1141,7 @@ function tree(p: Painter, f: MapObject): void {
 
 /** Kind -> painter for the campus furniture (ADR 055). */
 const CAMPUS: Record<string, (p: Painter, f: MapObject) => void> = {
-  'coffee-counter': coffeeCounter, bookshelf, 'cafe-table': cafeTable, 'coffee-table': coffeeTable, arcade: arcadeCabinet,
+  'coffee-counter': coffeeCounter, bookshelf, 'cafe-table': cafeTable, 'coffee-table': coffeeTable,
   'ping-pong': pingPong, 'chess-table': chessTable, 'game-table': gameTable, beanbag, fountain, bench, flowers, lounger, tree,
 };
 
@@ -939,6 +1190,7 @@ function paint(p: Painter, s: Scene, view: Rect): void {
   tiles((tx, ty) => { if (s.wall(tx, ty)) wallTile(p, s, tx, ty); });
   for (const piece of s.pieces) if (overlaps(view, { x: piece.x, y: piece.y, width: piece.width, height: 14 }, 2)) wallPiece(p, piece);
   tiles((tx, ty) => wallDecor(p, s, tx, ty));
+  for (const g of s.signs) if (overlaps(view, g, 2)) neonSign(p, g);
   chairs(p, s, view);
   for (const f of [...s.furniture].sort((a, b) => a.y + a.height - (b.y + b.height))) if (!isTall(f) && overlaps(view, f, 16)) furnitureItem(p, s, f);
   cornerPlants(p, s, view);
