@@ -558,6 +558,7 @@ A virtual-office workspace with built-in HR: automatic attendance, timesheets, t
 | FR-REP-006 | All reports exportable to CSV, XLSX and PDF. | Must | P1 |
 | FR-REP-007 | Scheduled reports emailed to chosen recipients (weekly, monthly). | Should | P2 |
 | FR-REP-008 | Visibility of every report restricted by role and team scope. | Must | P1 |
+| FR-REP-009 | Attendance analytics for authorised HR and managers, and each employee for themselves: per person and day (and week and month), first check-in, last check-out, verified work attendance (with active, break and meeting time), attendance status, late arrival and early leave, virtual office connected time and confirmed meeting time, with date-range, team and person filters, sorting, paging, a person detail view and export for holders of the attendance export permission (audited). The three measures are server-timed, shown separately and never summed: office connection is not work time. Overlaps (several tabs, reconnects) are counted once, days follow the organisation's timezone (midnight and daylight saving), and an interrupted connection never counts past its last server observation. Office connection is stored as start and end times only (no room, position or activity), under the presence retention, and is listed on the transparency page, in the personal data export and in erasure. Visibility follows FR-REP-008; a person outside the viewer's scope is reported as not found. | Should | P2 |
 
 
 

@@ -12,6 +12,7 @@ const NOT_COLLECTED = [
   'Webcam or microphone',
   'Browser history, URLs or page titles',
   'Names of applications you use',
+  'Where you go or what you do in the virtual office (rooms, positions, desks, games, nudges, avatar actions)',
 ];
 
 /** FR-ATT-020: plain-language description of what is collected, plus the user's own raw events. */
@@ -58,6 +59,17 @@ export default function TransparencyPage() {
                 The browser sends a heartbeat every 30 seconds with counters only: seconds active and idle, whether the tab
                 is visible and focused, and whether you are in a call. Raw events are kept for {info.data.retentionDays} days.
               </p>
+              <section aria-labelledby="office-time-title" className="rounded-md border p-3 text-sm" data-testid="office-time-notice">
+                <h2 id="office-time-title" className="mb-1 font-medium">Virtual office connection times</h2>
+                <p className="leading-relaxed">
+                  When you are connected to the virtual office, the server records when your connection started and ended (and,
+                  once a minute while you are connected, that you still are). Nothing about which room you are in, where you
+                  walk, what you play or who you nudge is recorded. HR and your manager see these times as office connected
+                  time, which is not work time; your work attendance is measured as described above. The times are kept
+                  for {info.data.retentionDays} days, are in your <a className="underline" href="/account/privacy">data download</a>,
+                  and you can see them yourself on <a className="underline" href="/attendance/analytics">your attendance analytics page</a>.
+                </p>
+              </section>
             </CardContent>
           </Card>
           <Card>

@@ -122,8 +122,10 @@ export interface IAttendanceRepository {
   findPresenceEventsByUser(orgId: string, userId: string, limit?: number): Promise<PresenceEventRecord[]>;
   cleanupOldPresenceEvents(orgId: string, olderThan: Date): Promise<number>;
   cleanupOldNotifications(orgId: string, olderThan: Date): Promise<number>;
-  /** FR-AUD-003: raw presence events and notifications of one person (retention role). */
-  deleteUserRetentionData(orgId: string, userId: string): Promise<{ presenceEvents: number; notifications: number }>;
+  /** ADR 059: office connection intervals that ended before the cutoff (presence retention). */
+  cleanupOldOfficePresence(orgId: string, olderThan: Date): Promise<number>;
+  /** FR-AUD-003: raw presence events, office connection intervals and notifications of one person (retention role). */
+  deleteUserRetentionData(orgId: string, userId: string): Promise<{ presenceEvents: number; notifications: number; officePresence: number }>;
 
   clearAll(): Promise<void>;
   close(): Promise<void>;
@@ -1277,15 +1279,36 @@ export class PostgresAttendanceRepository implements IAttendanceRepository {
     }
   }
 
-  public async deleteUserRetentionData(orgId: string, userId: string): Promise<{ presenceEvents: number; notifications: number }> {
+  /** ADR 059: office connection intervals follow the presence retention; an open one is never deleted. */
+  public async cleanupOldOfficePresence(orgId: string, olderThan: Date): Promise<number> {
+    if (!orgId || orgId.trim() === '') {
+      throw new Error('Tenant context missing: orgId is required');
+    }
+    const client = await this.retentionPool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.org_id', $1, true)`, [orgId]);
+      const res = await client.query(`DELETE FROM office_presence_intervals WHERE org_id = $1 AND ended_at IS NOT NULL AND ended_at < $2`, [orgId, olderThan]);
+      await client.query('COMMIT');
+      return res.rowCount || 0;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async deleteUserRetentionData(orgId: string, userId: string): Promise<{ presenceEvents: number; notifications: number; officePresence: number }> {
     const client = await this.retentionPool.connect();
     try {
       await client.query('BEGIN');
       await client.query(`SELECT set_config('app.org_id', $1, true)`, [orgId]);
       const p = await client.query(`DELETE FROM presence_events WHERE org_id = $1 AND user_id = $2`, [orgId, userId]);
       const n = await client.query(`DELETE FROM notifications WHERE org_id = $1 AND user_id = $2`, [orgId, userId]);
+      const o = await client.query(`DELETE FROM office_presence_intervals WHERE org_id = $1 AND user_id = $2`, [orgId, userId]);
       await client.query('COMMIT');
-      return { presenceEvents: p.rowCount || 0, notifications: n.rowCount || 0 };
+      return { presenceEvents: p.rowCount || 0, notifications: n.rowCount || 0, officePresence: o.rowCount || 0 };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
       throw err;

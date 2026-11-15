@@ -18,9 +18,13 @@ import { addDays, startOfWeek, toWorkDate } from '@/lib/format';
 import { Permission, useCan } from '@/lib/permissions';
 import { reportQuery, useAttendanceReport, useComplianceReport, useComplianceRequirements, useCostReport, useSaveComplianceRequirements, useTaskReport } from '@/lib/report-queries';
 import type { ReportFilters, ReportKind } from '@/lib/report-queries';
+import { AttendanceAnalyticsTab } from '@/components/attendance-analytics/analytics-tab';
 
-const TABS: Array<{ kind: ReportKind; label: string }> = [
+/** FR-REP-009: the analytics tab has its own filters and export (attendance export permission). */
+type Tab = ReportKind | 'analytics';
+const TABS: Array<{ kind: Tab; label: string }> = [
   { kind: 'attendance', label: 'Attendance' },
+  { kind: 'analytics', label: 'Attendance analytics' },
   { kind: 'hours-cost', label: 'Hours and cost' },
   { kind: 'tasks', label: 'Tasks and workload' },
   { kind: 'compliance', label: 'Compliance' },
@@ -201,9 +205,9 @@ export default function ReportsPage() {
   const all = useCan(Permission.REPORTS_ALL);
   const allowed = team || all;
   const monday = startOfWeek(new Date());
-  const [kind, setKind] = useState<ReportKind>('attendance');
+  const [kind, setKind] = useState<Tab>('attendance');
   const [f, setF] = useState<ReportFilters>({ groupBy: 'user', from: toWorkDate(addDays(monday, -28)), to: toWorkDate(addDays(monday, 6)) });
-  useEffect(() => setF((x) => ({ ...x, groupBy: GROUPS[kind][0]?.[0] })), [kind]);
+  useEffect(() => { if (kind !== 'analytics') setF((x) => ({ ...x, groupBy: GROUPS[kind][0]?.[0] })); }, [kind]);
   if (!allowed) return <AccessDenied what="Reports" />;
   return (
     <div className="space-y-4">
@@ -214,6 +218,7 @@ export default function ReportsPage() {
             className={`-mb-px border-b-2 px-3 py-2 text-sm ${kind === t.kind ? 'border-primary font-medium' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{t.label}</button>
         ))}
       </div>
+      {kind === 'analytics' ? <div role="tabpanel"><AttendanceAnalyticsTab /></div> : <>
       <Card><CardContent className="flex flex-wrap items-end justify-between gap-3 p-4">
         <form className="flex flex-wrap items-end gap-3" aria-label="Filters" onSubmit={(e) => e.preventDefault()}>
           {kind !== 'compliance' ? (
@@ -238,6 +243,7 @@ export default function ReportsPage() {
         {kind === 'tasks' ? <TasksTab f={f} allowed={allowed} /> : null}
         {kind === 'compliance' ? <ComplianceTab f={f} allowed={allowed} /> : null}
       </div>
+      </>}
     </div>
   );
 }

@@ -2,14 +2,16 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  AttendanceAnalyticsSchema,
   AttendanceReportSchema,
+  PersonAnalyticsSchema,
   ComplianceReportSchema,
   ComplianceRequirementsSchema,
   CostReportSchema,
   DashboardSchema,
   TaskReportSchema,
 } from '@hrvo/shared';
-import type { ComplianceRequirementsDto, ReportFormat } from '@hrvo/shared';
+import type { AnalyticsGroup, ANALYTICS_SORTS, ComplianceRequirementsDto, ReportFormat } from '@hrvo/shared';
 import { apiFetch } from './api';
 import { useAuthStore } from './auth-store';
 
@@ -79,4 +81,38 @@ export function useSaveComplianceRequirements() {
       void qc.invalidateQueries({ queryKey: ['reports', 'compliance'] });
     },
   });
+}
+
+// ---------------------------------------------------------------- FR-REP-009 attendance analytics (ADR 059)
+
+export interface AnalyticsFilters {
+  from: string;
+  to: string;
+  groupBy: AnalyticsGroup;
+  teamId?: string;
+  userId?: string;
+  sort: (typeof ANALYTICS_SORTS)[number];
+  dir: 'asc' | 'desc';
+  page: number;
+  pageSize: number;
+}
+
+export function analyticsQuery(f: AnalyticsFilters, format?: 'csv' | 'xlsx' | 'pdf'): string {
+  const p = new URLSearchParams({ from: f.from, to: f.to, groupBy: f.groupBy, sort: f.sort, dir: f.dir, page: String(f.page), pageSize: String(f.pageSize) });
+  if (f.teamId) p.set('teamId', f.teamId);
+  if (f.userId) p.set('userId', f.userId);
+  if (format) p.set('format', format);
+  return p.toString();
+}
+
+export function useAttendanceAnalytics(f: AnalyticsFilters, enabled: boolean) {
+  const q = analyticsQuery(f);
+  return useQuery({ queryKey: ['reports', 'attendance-analytics', q], queryFn: () => apiFetch(`/reports/attendance-analytics?${q}`, { schema: AttendanceAnalyticsSchema }), enabled: useSignedIn() && enabled && f.from <= f.to, placeholderData: (prev) => prev });
+}
+
+/** One person's detail (HR, managers within scope) or, with `userId` null, one's own. */
+export function usePersonAnalytics(userId: string | null, range: { from: string; to: string }, enabled = true) {
+  const q = new URLSearchParams(range).toString();
+  const path = userId ? `/reports/attendance-analytics/people/${encodeURIComponent(userId)}?${q}` : `/attendance/me/analytics?${q}`;
+  return useQuery({ queryKey: ['attendance-analytics-person', userId ?? 'me', q], queryFn: () => apiFetch(path, { schema: PersonAnalyticsSchema }), enabled: useSignedIn() && enabled && range.from <= range.to, retry: false });
 }
