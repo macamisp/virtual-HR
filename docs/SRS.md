@@ -199,7 +199,7 @@ A virtual-office workspace with built-in HR: automatic attendance, timesheets, t
 | 1 | Auto detection of In/Out times | Attendance engine (heartbeat, idle and disconnect logic), virtual-office presence, desktop agent | FR-ATT-001 to 012, 015, 017; Section 6 |
 | 2 | Documentation handling and storage | Document management module with folders, versions, ACL, expiry reminders, search | FR-DOC-001 to 004, 009, 012 to 020 |
 | 3 | Timesheet and task management for each subcontractor | Timesheet and task modules with per-subcontractor rates, projects and approvals | FR-TS-001 to 013, FR-TASK-001 to 016, FR-ORG-002 to 005 |
-| 4 | Ability to have meetings and connect | Virtual office, proximity A/V, meetings, chat | FR-VO-001 to 014, FR-MEET-001 to 014 |
+| 4 | Ability to have meetings and connect | Virtual office, proximity A/V, meetings, chat | FR-VO-001 to 015, FR-MEET-001 to 014 |
 | 5 | Daily and weekly task management lists | Daily plan / Today list, weekly planner, end-of-day report | FR-TASK-003, 004, 005, 016 |
 | 6 | Password-protected documentation for contracts etc. | Confidential vault: re-authentication, per-document password, envelope encryption, share links | FR-DOC-005 to 008, 010, 011 |
 | 7 | Accurate detection of in and out times | Server-authoritative timestamps, 30-second heartbeat, 120-second grace, accuracy targets and tests | FR-ATT-003, 004, 017; NFR-ACC-001 to 004; Section 6 |
@@ -390,6 +390,7 @@ A virtual-office workspace with built-in HR: automatic attendance, timesheets, t
 | FR-VO-012 | A list-view alternative (no map) shall be available for low-bandwidth devices and for accessibility (screen readers, keyboard navigation). | Must | P2 |
 | FR-VO-013 | Capacity: one office supports at least 200 concurrent avatars in P2 and 1,000 in P3 using spatial interest management (users only receive updates from their neighbourhood). | Must | P2 |
 | FR-VO-014 | Emoji reactions and simple emotes above avatars. | Could | P3 |
+| FR-VO-015 | Leisure areas of the office (the arcade first) shall be presented as original pixel art in one cohesive style: flooring, wall signs and posters, lighting, rugs and detailed furniture artwork. This decoration is visual only: it shall not change the map, collision, room access or any interaction, shall be drawn once into cached textures (nothing per frame), shall add no moving effects that ignore the reduced-motion preference, and shall copy no third-party logos, characters or artwork. | Could | P3 |
 
 
 
