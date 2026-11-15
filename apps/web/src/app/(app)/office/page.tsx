@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { DoorOpen, Lock, Megaphone, Map as MapIcon, Minus, Navigation, Plus, Sparkles, Users } from 'lucide-react';
+import { Bell, DoorOpen, Lock, Megaphone, Map as MapIcon, Minus, Navigation, Plus, Sparkles, Users } from 'lucide-react';
 import { ACCESS_MODES, avatarKeyOr, distanceToRect, GAME_REACH, gameObjects, nearestSeat, nearestWalkable, PAIR_LABEL, PAIR_REACH, TILE_SIZE, VO_STATUS_LABEL } from '@hrvo/shared';
 import type { AccessMode, AvatarKey, CampusGame, MapObject, OfficeMap, OfficeSnapshot, Room, VoStatus } from '@hrvo/shared';
 import { AccessDenied, ErrorState, LoadingState } from '@/components/state-views';
@@ -20,6 +20,8 @@ import { GameDialog, GamePrompt } from '@/components/office/campus-games';
 import { AvatarActionMenu } from '@/components/office/avatar-action-menu';
 import type { ActionContext } from '@/components/office/avatar-action-menu';
 import { useFestiveMode } from '@/lib/office/festive-mode';
+import { useNudgeSound } from '@/lib/office/nudge-sound';
+import { NudgeNotices } from '@/components/office/nudge-notices';
 import { CallPerson } from '@/components/call-person';
 import type { OfficeClient } from '@/lib/office/office-client';
 import { CallContext } from '@/components/media/use-call-controller';
@@ -419,6 +421,35 @@ function Appearance({ festive, onFestive }: { festive: boolean; onFestive: (on: 
   );
 }
 
+/** ADR 058: the chime that plays when a colleague nudges you, on or off on this device (saved in the browser). */
+function NudgeSoundSwitch({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
+  const id = useId();
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <p id={`${id}-l`} className="flex items-center gap-1.5 text-sm font-medium"><Bell aria-hidden="true" className="h-4 w-4" /> Nudge sound</p>
+        <p id={`${id}-d`} className="text-xs text-muted-foreground">A short chime when a colleague nearby nudges you. Set your status to Do not disturb to receive no nudges at all. Saved on this device only.</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-labelledby={`${id}-l`}
+        aria-describedby={`${id}-d`}
+        data-testid="nudge-sound-toggle"
+        onClick={() => onChange(!on)}
+        className={cn(
+          'relative inline-flex h-7 w-14 shrink-0 items-center rounded-full border-2 px-0.5 text-[10px] font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 motion-reduce:transition-none',
+          on ? 'border-primary bg-primary text-primary-foreground' : 'border-slate-400 bg-slate-200 text-slate-700',
+        )}
+      >
+        <span aria-hidden="true" className={cn('absolute h-5 w-5 rounded-full bg-white shadow transition-transform motion-reduce:transition-none', on ? 'translate-x-7' : 'translate-x-0')} />
+        <span aria-hidden="true" className={cn('w-full', on ? 'pl-1 text-left' : 'pr-1 text-right')}>{on ? 'ON' : 'OFF'}</span>
+      </button>
+    </div>
+  );
+}
+
 /** FR-VO-010: broadcast to the whole office (office.broadcast). */
 function BroadcastForm() {
   const send = useBroadcast();
@@ -450,6 +481,7 @@ export default function OfficePage() {
   const client = useClient(snapshot.data, view);
   const [passwordRoom, setPasswordRoom] = useState<string | null>(null);
   const [festive, setFestive] = useFestiveMode();
+  const [nudgeSound, setNudgeSound] = useNudgeSound();
   const [mediaSetup, setMediaSetup] = useState(false);
   if (client) client.onPasswordNeeded = setPasswordRoom;
   if (!allowed) return <AccessDenied what="The virtual office" />;
@@ -469,6 +501,7 @@ export default function OfficePage() {
       {client && snapshot.data ? (
         <>
           <OfficeToolbar client={client} setup={mediaSetup} onSetup={setMediaSetup} />
+          <NudgeNotices client={client} sound={nudgeSound} />
           <div aria-live="polite" className="space-y-2">
             {!client.connected ? <Alert><AlertDescription>Connecting to the office…</AlertDescription></Alert> : null}
             {client.notice ? (
@@ -517,6 +550,7 @@ export default function OfficePage() {
             <div className="min-w-0 space-y-3">
               <Card><CardHeader><CardTitle className="text-base">Me</CardTitle></CardHeader><CardContent><MyPanel client={client} snapshot={snapshot.data} /></CardContent></Card>
               <Card><CardHeader><CardTitle className="text-base">Appearance</CardTitle></CardHeader><CardContent><Appearance festive={festive} onFestive={setFestive} /></CardContent></Card>
+              <Card><CardHeader><CardTitle className="text-base">Notifications</CardTitle></CardHeader><CardContent><NudgeSoundSwitch on={nudgeSound} onChange={setNudgeSound} /></CardContent></Card>
               <Card><CardHeader><CardTitle className="text-base">Audio and video</CardTitle></CardHeader><CardContent><OfficeMedia client={client} snapshot={snapshot.data} /></CardContent></Card>
               {view === 'map' ? <Card><CardHeader><CardTitle className="text-base">Rooms</CardTitle></CardHeader><CardContent><Rooms client={client} snapshot={snapshot.data} /></CardContent></Card> : null}
               <Card><CardHeader><CardTitle className="text-base">People</CardTitle></CardHeader><CardContent><People client={client} /></CardContent></Card>

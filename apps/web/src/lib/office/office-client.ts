@@ -6,9 +6,9 @@
  * proximity. Framework-free; React subscribes through `subscribe` / `getVersion`.
  */
 import { io, type Socket } from 'socket.io-client';
-import { buildGrid, findPath, inRect, mapSeats, MOVE_SPEED, walkable } from '@hrvo/shared';
+import { buildGrid, DEFAULT_NUDGE_RULES, findPath, inRect, mapSeats, MOVE_SPEED, nudgeReach, walkable } from '@hrvo/shared';
 import type {
-  ActionAck, PairAck, PairAction, PairClosedMessage, PairRequestMessage, Seat, SitAck, SoloAction,
+  ActionAck, NudgeAck, NudgeAnswerAck, NudgeClosedMessage, NudgeOutcome, NudgeRequestMessage, NudgeRules, PairAck, PairAction, PairClosedMessage, PairRequestMessage, Seat, SitAck, SoloAction,
   CollisionGrid, JoinAck, MoveAck, OfficeMap, OfficeSnapshot, Point, PositionsMessage, ProximityMessage, RosterEntry, TeleportAck, TeleportDto, VoStatus,
 } from '@hrvo/shared';
 import { API_URL } from '../env';
@@ -43,6 +43,11 @@ export type Notice = { kind: 'info' | 'error'; text: string; action?: { label: s
 
 const SEND_MS = 100;
 
+/** ADR 058: how a nudge ended, for the person who sent it or the person who got it. */
+export interface NudgeResult { id: string; outcome: NudgeOutcome; role: 'sender' | 'recipient'; name: string }
+/** How long that outcome stays on screen. */
+const NUDGE_RESULT_MS = 6_000;
+
 export class OfficeClient {
   socket: Socket | null = null;
   snapshot: OfficeSnapshot;
@@ -55,6 +60,14 @@ export class OfficeClient {
   /** ADR 056: hug / high-five requests waiting for my answer, and the one I am waiting on. */
   incoming: Array<PairRequestMessage & { until: number }> = [];
   outgoing: { id: string; kind: PairAction; to: string; toName: string; until: number } | null = null;
+  /** ADR 058: the nudge rules of this server; nudges waiting for my answer; the one I sent; how the last one ended. */
+  nudgeRules: NudgeRules = DEFAULT_NUDGE_RULES;
+  nudgesIn: Array<NudgeRequestMessage & { until: number }> = [];
+  nudgeOut: { id: string; to: string; toName: string; until: number } | null = null;
+  nudgeResult: NudgeResult | null = null;
+  /** Called when a nudge arrives (the page rings its bell). */
+  onNudge: (() => void) | null = null;
+  private nudgeResultTimer: ReturnType<typeof setTimeout> | null = null;
   /** ADR 056: my own jump / wave / dance, shown at once (the roster confirms it a tick later). */
   selfAction: { kind: SoloAction; at: number } | null = null;
   private seatCache = new Map<string, Seat[]>();
@@ -117,6 +130,8 @@ export class OfficeClient {
       // ADR 056: the server drops our requests with the connection; so do we.
       this.incoming = [];
       this.outgoing = null;
+      this.nudgesIn = [];
+      this.nudgeOut = null;
       this.selfAction = null;
       this.changed();
       // Kicked by the server (expired token): Socket.IO does not reconnect from this on its own.
@@ -150,6 +165,12 @@ export class OfficeClient {
       this.changed();
     });
     socket.on('office:pair-closed', (m: PairClosedMessage) => this.onPairClosed(m));
+    socket.on('office:nudge-request', (m: NudgeRequestMessage) => {
+      this.nudgesIn = [...this.nudgesIn.filter((x) => x.id !== m.id), { ...m, until: Date.now() + m.expiresInMs }];
+      this.changed();
+      this.onNudge?.();
+    });
+    socket.on('office:nudge-closed', (m: NudgeClosedMessage) => this.onNudgeClosed(m));
     socket.on('room:knock-handled', (k: { roomId: string; userId: string }) => { this.knocks = this.knocks.filter((x) => !(x.userId === k.userId && x.roomId === k.roomId)); this.changed(); });
     socket.on('room:answered', (a: { roomId: string; admit: boolean; by: string }) => {
       const room = this.snapshot.rooms.find((r) => r.id === a.roomId);
@@ -174,6 +195,7 @@ export class OfficeClient {
   disconnect(): void {
     if (this.sendTimer) clearInterval(this.sendTimer);
     if (this.joinRetry) clearTimeout(this.joinRetry);
+    if (this.nudgeResultTimer) clearTimeout(this.nudgeResultTimer);
     this.unsubAuth?.();
     this.unsubAuth = null;
     this.socket?.emit('office:leave');
@@ -230,6 +252,10 @@ export class OfficeClient {
     this.avatars.clear();
     this.incoming = [];
     this.outgoing = null;
+    // A new connection: the server closed whatever was open on the old one.
+    this.nudgesIn = [];
+    this.nudgeOut = null;
+    this.nudgeRules = ack.nudge ?? DEFAULT_NUDGE_RULES;
     if (this.roomOnly) this.socket!.emit('office:mode', { roomOnly: true });
     this.changed();
   }
@@ -460,6 +486,76 @@ export class OfficeClient {
       const t = text[m.reason];
       if (t) this.notice = { kind: 'info', text: t };
     }
+    this.changed();
+  }
+
+  // ---------------------------------------------------------------- ADR 058 nudge
+
+  /**
+   * Why this person cannot be nudged right now, or null when they can. A convenience for the
+   * controls only: the server decides (reach, Do not disturb, cooldown) whatever is shown here.
+   */
+  nudgeBlock(id: string): 'far' | 'dnd' | 'away' | 'pending' | null {
+    const self = this.self;
+    const a = this.avatars.get(id);
+    const r = this.roster.get(id);
+    if (!self || !a || !r || !this.connected) return 'far';
+    if (this.nudgeOut) return 'pending';
+    if (!nudgeReach(self, { floorId: r.floorId, roomId: a.roomId, x: a.x, y: a.y }, this.nudgeRules.reachPx)) return 'far';
+    if (r.status === 'DND') return 'dnd';
+    return a.away ? 'away' : null;
+  }
+
+  async sendNudge(to: string): Promise<NudgeAck> {
+    if (!this.socket || !this.connected) return { ok: false, error: 'Not connected', code: 'NOT_JOINED' };
+    const ack = await this.socket.timeout(5_000).emitWithAck('office:nudge', { to }).catch(() => ({ ok: false, error: 'No answer from the office', code: 'NOT_JOINED' })) as NudgeAck;
+    if (ack.ok) {
+      this.setNudgeResult(null);
+      this.nudgeOut = { id: ack.id, to, toName: this.roster.get(to)?.name ?? 'them', until: Date.now() + ack.expiresInMs };
+    } else {
+      const wait = ack.retryInMs ? ` Try again in ${Math.max(1, Math.ceil(ack.retryInMs / 1000))} s.` : '';
+      this.notice = { kind: ack.code === 'COOLDOWN' || ack.code === 'RATE_LIMITED' ? 'info' : 'error', text: `${ack.error}.${wait}` };
+    }
+    this.changed();
+    return ack;
+  }
+
+  /** Accept or ignore. The card stays until the server says how it ended, so both people see the same thing. */
+  answerNudge(id: string, accept: boolean): void {
+    this.socket?.emit('office:nudge-answer', { id, accept }, (ack: NudgeAnswerAck) => {
+      if (ack.ok) return;
+      this.nudgesIn = this.nudgesIn.filter((x) => x.id !== id);
+      this.notice = { kind: 'error', text: ack.error };
+      this.changed();
+    });
+  }
+
+  cancelNudge(): void {
+    const o = this.nudgeOut;
+    if (o) this.socket?.emit('office:nudge-cancel', { id: o.id });
+  }
+
+  dismissNudgeResult(): void {
+    this.setNudgeResult(null);
+    this.changed();
+  }
+
+  private setNudgeResult(r: NudgeResult | null): void {
+    if (this.nudgeResultTimer) clearTimeout(this.nudgeResultTimer);
+    this.nudgeResult = r;
+    this.nudgeResultTimer = r ? setTimeout(() => { this.nudgeResult = null; this.nudgeResultTimer = null; this.changed(); }, NUDGE_RESULT_MS) : null;
+  }
+
+  private onNudgeClosed(m: NudgeClosedMessage): void {
+    const mine = this.nudgeOut?.id === m.id;
+    const theirs = this.nudgesIn.find((x) => x.id === m.id);
+    if (mine) {
+      this.setNudgeResult({ id: m.id, outcome: m.outcome, role: 'sender', name: this.nudgeOut!.toName });
+      this.nudgeOut = null;
+    } else if (theirs) {
+      this.setNudgeResult({ id: m.id, outcome: m.outcome, role: 'recipient', name: theirs.fromName });
+    }
+    this.nudgesIn = this.nudgesIn.filter((x) => x.id !== m.id);
     this.changed();
   }
 

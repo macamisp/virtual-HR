@@ -11,7 +11,7 @@ import {
   ACTION_MS, buildGrid, centre, mapSeats, PAIR_REACH, PAIR_REQUEST_TTL_MS, SEAT_REACH, segmentClear, displayStatus, inRect, InterestGrid, isClosedRoom, nearestWalkable, proximityGroups, spawnPoint, TILE_SIZE, validateMove,
 } from '../../../../packages/shared/src/office/index.ts';
 import type {
-  AccessMode, AvatarActionKind, AvatarActionState, AvatarKey, PairAction, PairClosedMessage, Seat, CollisionGrid, ManualStatus, OfficeDefinition, Point, PositionEntry, PositionsMessage, ProximityMessage, Rect, RosterEntry, RoomType, VoStatus,
+  AccessMode, AvatarActionKind, AvatarActionState, AvatarKey, NudgeClosedMessage, NudgeOutcome, PairAction, PairClosedMessage, Seat, CollisionGrid, ManualStatus, OfficeDefinition, Point, PositionEntry, PositionsMessage, ProximityMessage, Rect, RosterEntry, RoomType, VoStatus,
 } from '../../../../packages/shared/src/office/index.ts';
 
 export interface RoomInfo {
@@ -66,6 +66,9 @@ export interface Avatar {
 /** ADR 056: a hug or high-five request waiting for the other person's answer. */
 export interface PairRequest { id: string; kind: PairAction; from: string; to: string; expiresAt: number }
 
+/** ADR 058: a nudge waiting for the other person's answer. */
+export interface Nudge { id: string; from: string; to: string; expiresAt: number }
+
 export type Denial = 'KNOCK' | 'INVITE' | 'PASSWORD' | 'FULL';
 
 export interface WorldEmitter {
@@ -97,6 +100,8 @@ export class OfficeWorld {
   /** ADR 056: the chairs of each floor, from the map; and the open hug / high-five requests. */
   readonly seats = new Map<string, Map<string, Seat>>();
   readonly requests = new Map<string, PairRequest>();
+  /** ADR 058: open nudges, by id. In memory only, like everything else about the world. */
+  readonly nudges = new Map<string, Nudge>();
 
   constructor(
     readonly orgId: string,
@@ -211,6 +216,20 @@ export class OfficeWorld {
     emit?.personal?.(r.to, 'office:pair-closed', msg);
   }
 
+  openNudge(from: string, to: string, now: number, ttlMs: number): Nudge {
+    const n: Nudge = { id: randomUUID(), from, to, expiresAt: now + ttlMs };
+    this.nudges.set(n.id, n);
+    return n;
+  }
+
+  /** ADR 058: ends a nudge and tells both people how (once: a second close of the same nudge does nothing). */
+  closeNudge(n: Nudge, outcome: NudgeOutcome, emit?: WorldEmitter): void {
+    if (!this.nudges.delete(n.id)) return;
+    const msg: NudgeClosedMessage = { id: n.id, from: n.from, to: n.to, outcome };
+    emit?.personal?.(n.from, 'office:nudge-closed', msg);
+    emit?.personal?.(n.to, 'office:nudge-closed', msg);
+  }
+
   /**
    * ADR 053: someone saved another character. Everyone in the office gets the new roster entry on
    * the next tick; the version (and so the position stream) is left alone, since nothing moved.
@@ -322,6 +341,13 @@ export class OfficeWorld {
     for (const r of [...this.requests.values()]) {
       if (!this.avatars.has(r.from) || !this.avatars.has(r.to)) this.closeRequest(r, 'gone', emit);
       else if (now >= r.expiresAt) this.closeRequest(r, 'timeout', emit);
+    }
+    // ADR 058: nudges expire, or end when one of the two is no longer behind their avatar.
+    for (const n of [...this.nudges.values()]) {
+      const from = this.avatars.get(n.from);
+      const to = this.avatars.get(n.to);
+      if (!from || !to || from.goneAt !== null || to.goneAt !== null) this.closeNudge(n, 'gone', emit);
+      else if (now >= n.expiresAt) this.closeNudge(n, 'expired', emit);
     }
     // ADR 048: a dropped connection (reload) keeps its place for the grace, then is gone for everyone.
     for (const a of this.avatars.values()) {

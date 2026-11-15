@@ -12,9 +12,9 @@ import { AttendanceService } from '../attendance/attendance.service.ts';
 import { Permission } from '../../../../packages/shared/src/auth/types.ts';
 import type { JwtPayload } from '../../../../packages/shared/src/index.ts';
 import {
-  ActionDtoSchema, avatarKeyOr, JoinDtoSchema, ModeDtoSchema, PAIR_REQUEST_TTL_MS, PairAnswerDtoSchema, PairCancelDtoSchema, PairRequestDtoSchema, SitDtoSchema, MoveDtoSchema, RoomAnswerDtoSchema, RoomKnockDtoSchema, TeleportDtoSchema, ViewDtoSchema,
+  ActionDtoSchema, avatarKeyOr, JoinDtoSchema, ModeDtoSchema, NUDGE_MAX_WAITING, NudgeAnswerDtoSchema, NudgeCancelDtoSchema, NudgeDtoSchema, nudgeReach, nudgeRules, NUDGES_PER_MINUTE, PAIR_REQUEST_TTL_MS, PairAnswerDtoSchema, PairCancelDtoSchema, PairRequestDtoSchema, SitDtoSchema, MoveDtoSchema, RoomAnswerDtoSchema, RoomKnockDtoSchema, TeleportDtoSchema, ViewDtoSchema,
 } from '../../../../packages/shared/src/office/index.ts';
-import type { ActionAck, JoinAck, ManualStatus, MoveAck, PairAck, PairRequestMessage, SitAck, TeleportAck } from '../../../../packages/shared/src/office/index.ts';
+import type { ActionAck, JoinAck, ManualStatus, MoveAck, NudgeAck, NudgeAnswerAck, NudgeRequestMessage, PairAck, PairRequestMessage, SitAck, TeleportAck } from '../../../../packages/shared/src/office/index.ts';
 import { OfficeRegistry } from './office-registry.ts';
 import type { Avatar, OfficeWorld, WorldEmitter } from './office-world.ts';
 
@@ -28,6 +28,7 @@ const KNOCK_COOLDOWN_MS = 10_000;
 const ACTIONS_PER_WINDOW = 8;
 const ACTION_WINDOW_MS = 5_000;
 const PAIR_COOLDOWN_MS = 3_000;
+const NUDGE_RATE_WINDOW_MS = 60_000;
 
 function parse<T>(schema: ZodType<T>, body: unknown): T | null {
   const r = schema.safeParse(body ?? {});
@@ -51,6 +52,9 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
   private readonly lastKnock = new Map<string, number>();
   private readonly actionWindow = new Map<string, { at: number; n: number }>();
   private readonly lastPair = new Map<string, number>();
+  /** ADR 058: when each sender last nudged each person ("from>to"), and each sender's recent nudges. */
+  private readonly nudgedAt = new Map<string, number>();
+  private readonly nudgeTimes = new Map<string, number[]>();
   /** ADR 056: tells one person's sockets about their pair requests. */
   private readonly personalEmitter: WorldEmitter = {
     positions: () => undefined, proximity: () => undefined, roster: () => undefined,
@@ -149,7 +153,7 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     client.data.officeOrg = orgId;
     await client.join([`vo-org:${orgId}`, `vo:${userId}`]);
     if (dto.positions) { world.forgetKnown(userId); await client.join(`vo:${userId}:pos`); }
-    return { ok: true, self: { x: a.x, y: a.y, floorId: a.floorId, roomId: a.roomId }, roster: world.roster() };
+    return { ok: true, self: { x: a.x, y: a.y, floorId: a.floorId, roomId: a.roomId }, roster: world.roster(), nudge: nudgeRules(process.env) };
   }
 
   /** ADR 048: the office view came on or off screen; the position stream follows the map. */
@@ -195,6 +199,8 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
       // ADR 056: nobody is behind the avatar any more: no action, no chair, no open request.
       if (a.action) world.setAction(a, null, Date.now());
       for (const r of [...world.requests.values()]) if (r.from === a.userId || r.to === a.userId) world.closeRequest(r, 'gone', this.personalEmitter);
+      // ADR 058: and no nudge waiting on them, or for them.
+      for (const n of [...world.nudges.values()]) if (n.from === a.userId || n.to === a.userId) world.closeNudge(n, 'gone', this.personalEmitter);
       this.actionWindow.delete(a.userId);
       this.lastPair.delete(a.userId);
       if (explicit || this.registry.leaveGraceMs === 0) {
@@ -445,6 +451,79 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     const r = j.world.requests.get(dto.id);
     if (!r || r.from !== j.a.userId) return { ok: false, error: 'That request is no longer open' };
     j.world.closeRequest(r, 'cancelled', this.personalEmitter);
+    return { ok: true };
+  }
+
+  // ---------------------------------------------------------------- ADR 058 nudge
+  // A bell for someone nearby. Both people are looked up in the caller's own organisation's world,
+  // found through the authenticated socket, so a nudge can never reach another organisation.
+  // Nothing is stored and nothing but the two people's notifications changes.
+
+  /** Forgets cooldowns that have run out, so the map cannot grow without bound. */
+  private pruneNudges(now: number, cooldownMs: number): void {
+    if (this.nudgedAt.size < 2_000) return;
+    for (const [k, at] of this.nudgedAt) if (now - at >= cooldownMs) this.nudgedAt.delete(k);
+  }
+
+  @SubscribeMessage('office:nudge')
+  nudge(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): NudgeAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(NudgeDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const { world, a } = j;
+    const rules = nudgeRules(process.env);
+    const now = Date.now();
+    if (dto.to === a.userId) return { ok: false, error: 'You cannot nudge yourself', code: 'SELF' };
+    // Another organisation's people are not in this world: "not here", like anyone absent.
+    const b = world.avatars.get(dto.to);
+    if (!b || b.goneAt !== null) return { ok: false, error: 'This person is not here', code: 'NOT_FOUND' };
+    if (!nudgeReach(a, b, rules.reachPx)) return { ok: false, error: 'Walk closer to them first', code: 'TOO_FAR' };
+    if (world.status(b) === 'DND') return { ok: false, error: `${b.name} does not want to be disturbed`, code: 'DND' };
+    if (world.away(b)) return { ok: false, error: `${b.name} is not looking at the office right now`, code: 'AWAY' };
+    let waiting = 0;
+    for (const n of world.nudges.values()) {
+      if (n.from === a.userId) return { ok: false, error: 'You are already waiting for an answer', code: 'PENDING' };
+      if (n.to === b.userId) waiting += 1;
+    }
+    if (waiting >= NUDGE_MAX_WAITING) return { ok: false, error: `${b.name} has several nudges waiting`, code: 'BUSY' };
+    const key = `${a.userId}>${b.userId}`;
+    const since = now - (this.nudgedAt.get(key) ?? -Infinity);
+    if (since < rules.cooldownMs) return { ok: false, error: `You nudged ${b.name} a moment ago`, code: 'COOLDOWN', retryInMs: rules.cooldownMs - since };
+    const recent = (this.nudgeTimes.get(a.userId) ?? []).filter((t) => now - t < NUDGE_RATE_WINDOW_MS);
+    if (recent.length >= NUDGES_PER_MINUTE) return { ok: false, error: 'That is a lot of nudges; wait a little', code: 'RATE_LIMITED', retryInMs: NUDGE_RATE_WINDOW_MS - (now - recent[0]!) };
+    this.nudgeTimes.set(a.userId, [...recent, now]);
+    this.nudgedAt.set(key, now);
+    this.pruneNudges(now, rules.cooldownMs);
+    const n = world.openNudge(a.userId, b.userId, now, rules.ttlMs);
+    const msg: NudgeRequestMessage = { id: n.id, from: a.userId, fromName: a.name, expiresInMs: rules.ttlMs };
+    this.server.to(`vo:${b.userId}`).emit('office:nudge-request', msg);
+    return { ok: true, id: n.id, expiresInMs: rules.ttlMs };
+  }
+
+  /** The person nudged accepts or ignores; both are told. Only that person can answer. */
+  @SubscribeMessage('office:nudge-answer')
+  nudgeAnswer(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): NudgeAnswerAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(NudgeAnswerDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const n = j.world.nudges.get(dto.id);
+    if (!n || n.to !== j.a.userId) return { ok: false, error: 'That nudge is no longer open', code: 'NOT_OPEN' };
+    j.world.closeNudge(n, dto.accept ? 'accepted' : 'ignored', this.personalEmitter);
+    return { ok: true };
+  }
+
+  /** The sender takes it back. Only the sender can. */
+  @SubscribeMessage('office:nudge-cancel')
+  nudgeCancel(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): NudgeAnswerAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(NudgeCancelDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const n = j.world.nudges.get(dto.id);
+    if (!n || n.from !== j.a.userId) return { ok: false, error: 'That nudge is no longer open', code: 'NOT_OPEN' };
+    j.world.closeNudge(n, 'cancelled', this.personalEmitter);
     return { ok: true };
   }
 
