@@ -13,6 +13,25 @@ import { passNoticeGate, signIn } from './helpers';
  */
 const canvasOf = (p: Page) => p.getByTestId('office-canvas');
 const self = async (p: Page) => (await canvasOf(p).getAttribute('data-self'))!.split(',').map(Number) as [number, number];
+/**
+ * Short key presses left or right until the avatar stands still between two x positions. A held
+ * key overshoots by however long the page takes to report the position, which varies with load.
+ */
+async function standAtX(p: Page, lo: number, hi: number): Promise<void> {
+  const mid = (lo + hi) / 2;
+  for (let i = 0; i < 80; i += 1) {
+    const x = (await self(p))[0];
+    if (x > lo && x < hi) {
+      await p.waitForTimeout(300); // and still there once any last step has landed
+      const again = (await self(p))[0];
+      if (again > lo && again < hi) return;
+      continue;
+    }
+    await p.keyboard.press(x >= hi ? 'KeyA' : 'KeyD', { delay: Math.min(400, Math.max(40, Math.abs(x - mid) * 3)) });
+    await p.waitForTimeout(250);
+  }
+  throw new Error(`the avatar did not settle between x ${lo} and ${hi}`);
+}
 const goTo = (p: Page, room: string) => p.getByRole('list', { name: 'Rooms' }).getByTestId(`room-${room}`).getByRole('button', { name: `Go to ${room}` }).click();
 
 test('the environment is static textures; doors stay open; zoom, labels and repeated visits work', async ({ page }) => {
@@ -78,10 +97,8 @@ test('arcade (ADR 057): the decoration adds no texture, blocks nobody and leaves
     await goTo(page, 'Arcade');
     await expect(page.getByTestId('my-status')).toContainText('Arcade');
     await canvas.focus();
-    await page.keyboard.down('KeyD');
-    await expect.poll(async () => (await self(page))[0], { timeout: 10_000, intervals: [50] }).toBeGreaterThan(2930);
-    await page.keyboard.up('KeyD');
-    expect((await self(page))[0]).toBeLessThan(3025);
+    // Right of the game tables (x up to 2922) and left of the beanbag (x from 3030).
+    await standAtX(page, 2945, 3005);
     await page.keyboard.down('KeyS');
     await expect.poll(async () => (await self(page))[1], { timeout: 10_000 }).toBeGreaterThan(1140);
     await page.keyboard.up('KeyS');
@@ -90,15 +107,7 @@ test('arcade (ADR 057): the decoration adds no texture, blocks nobody and leaves
     await page.keyboard.down('KeyW');
     await expect.poll(async () => (await self(page))[1], { timeout: 10_000, intervals: [50] }).toBeLessThan(960);
     await page.keyboard.up('KeyW');
-    // Short steps until the avatar stands under the doorway (x 2816..2912, less its own radius).
-    for (let i = 0; i < 60; i += 1) {
-      const x = (await self(page))[0];
-      if (x > 2836 && x < 2892) break;
-      await page.keyboard.press(x >= 2892 ? 'KeyA' : 'KeyD', { delay: Math.min(400, Math.max(40, Math.abs(x - 2864) * 3)) });
-      await page.waitForTimeout(250);
-    }
-    expect((await self(page))[0]).toBeGreaterThan(2826);
-    expect((await self(page))[0]).toBeLessThan(2902);
+    await standAtX(page, 2836, 2892);
     await page.keyboard.down('KeyW');
     await expect.poll(async () => (await self(page))[1], { timeout: 15_000 }).toBeLessThan(20 * 32);
     await page.keyboard.up('KeyW');
