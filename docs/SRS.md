@@ -199,7 +199,7 @@ A virtual-office workspace with built-in HR: automatic attendance, timesheets, t
 | 1 | Auto detection of In/Out times | Attendance engine (heartbeat, idle and disconnect logic), virtual-office presence, desktop agent | FR-ATT-001 to 012, 015, 017; Section 6 |
 | 2 | Documentation handling and storage | Document management module with folders, versions, ACL, expiry reminders, search | FR-DOC-001 to 004, 009, 012 to 020 |
 | 3 | Timesheet and task management for each subcontractor | Timesheet and task modules with per-subcontractor rates, projects and approvals | FR-TS-001 to 013, FR-TASK-001 to 016, FR-ORG-002 to 005 |
-| 4 | Ability to have meetings and connect | Virtual office, proximity A/V, meetings, chat | FR-VO-001 to 015, FR-MEET-001 to 014 |
+| 4 | Ability to have meetings and connect | Virtual office, proximity A/V, meetings, chat | FR-VO-001 to 016, FR-MEET-001 to 014 |
 | 5 | Daily and weekly task management lists | Daily plan / Today list, weekly planner, end-of-day report | FR-TASK-003, 004, 005, 016 |
 | 6 | Password-protected documentation for contracts etc. | Confidential vault: re-authentication, per-document password, envelope encryption, share links | FR-DOC-005 to 008, 010, 011 |
 | 7 | Accurate detection of in and out times | Server-authoritative timestamps, 30-second heartbeat, 120-second grace, accuracy targets and tests | FR-ATT-003, 004, 017; NFR-ACC-001 to 004; Section 6 |
@@ -391,6 +391,7 @@ A virtual-office workspace with built-in HR: automatic attendance, timesheets, t
 | FR-VO-013 | Capacity: one office supports at least 200 concurrent avatars in P2 and 1,000 in P3 using spatial interest management (users only receive updates from their neighbourhood). | Must | P2 |
 | FR-VO-014 | Emoji reactions and simple emotes above avatars. | Could | P3 |
 | FR-VO-015 | Leisure areas of the office (the arcade first) shall be presented as original pixel art in one cohesive style: flooring, wall signs and posters, lighting, rugs and detailed furniture artwork. This decoration is visual only: it shall not change the map, collision, room access or any interaction, shall be drawn once into cached textures (nothing per frame), shall add no moving effects that ignore the reduced-motion preference, and shall copy no third-party logos, characters or artwork. | Could | P3 |
+| FR-VO-016 | Nudge: a user shall be able to ring a bell on the avatar of a colleague who is near (same floor and room, within a configurable distance). The colleague gets a notification with Accept and Ignore and a short sound once the browser allows sound; both people see the same outcome (pending, accepted, ignored, cancelled, expired, or the other person left). The server shall enforce the distance, a configurable cooldown per person nudged, a per-minute limit, one unanswered nudge per sender, Do not disturb, no nudging oneself and organisation isolation, and shall end open nudges when either person disconnects. Nudges are not stored and change no status, attendance, work time or meeting. Usable by mouse, keyboard and touch; no movement under the reduced-motion preference. | Could | P3 |
 
 
 
