@@ -85,3 +85,41 @@ corners into the Lounge. The product owner chose to **extend the default map**. 
     leaving, and the phone layout.
 - The sticky call toolbar can cover the top rows of the map when the page is scrolled, so objects
   under it cannot be clicked until scrolled into view. This is existing page layout, not changed here.
+
+## Upgrading an organisation that already has an office (2026-11-15)
+
+`ensureOffice` copies the default map once, so an organisation created before this ADR keeps the
+original 60 x 40 map until someone replaces it. `scripts/office-map-upgrade.ts` does that for one
+organisation, through the existing audited route `PUT /office/map` and nothing else (no database
+access, no new route).
+
+- **Who.** Any account of that workspace with `org.manage` (the owner or an administrator), checked
+  with `GET /me/access` and the office snapshot before anything else is read. The script asks for
+  the e-mail and password on the terminal (not echoed), for the 2FA code only when the server asks,
+  and for the workspace when the address belongs to several (`--workspace <slug>` names it up
+  front). `--org <id>` stops the run unless the session is in that organisation. The session is
+  signed out at the end. Nothing secret is printed or stored.
+- **A 401 at sign-in** is the server's single answer for a wrong password, an unknown address, an
+  account without a password (created with Google), a locked or inactive account and a wrong 2FA
+  code; the script now prints the server's message and this list. An account created with Google
+  sets a password with "Forgot your password?"; Google sign-in and 2FA stay as they are.
+- **Which map.** The stored map must be the unmodified original, established twice: its canonical
+  SHA-256 (keys sorted, because the database returns them in its own order) equals the fingerprint
+  recorded from `main`'s `defaultOffice()`, and it equals the original derived from the campus map.
+  If the two disagree, or the map is anything else, the script stops. It also stops unless every
+  room and desk object of the stored map exists in the new one with the same id, name and place,
+  since `syncLayout` matches database rows by object id.
+- **Modes.** One of `--dry-run` (reads only, writes no file), `--apply` or `--rollback` is required.
+  Apply and rollback write a backup first (`office-map-backups/office-map-<org>-v<version>-<time>.json`,
+  mode 600, git-ignored: map, rooms, desks with assignees, invitations), need the typed
+  confirmation `UPGRADE <first 8 characters of the organisation id>`, and re-read the office just
+  before sending so a concurrent change stops the run.
+- **Verification.** After the change the script reads the office again and checks: 100 x 40; the
+  stored map is the intended one; every earlier room has the same row id, name, type, capacity,
+  access mode and bounds; Garden, Café and Arcade exist once; every desk has the same row id, label
+  and assignee; room invitations are the same; the version went up by one. Room passwords are
+  never sent by the API, so the script cannot compare them; `syncLayout` does not write
+  `password_hash`, and the test below compares the rows directly.
+- **Test.** `apps/api/test/office-map-upgrade-script-e2e.test.ts` runs the script against the API:
+  dry run, wrong password, employee, wrong organisation, no confirmation, workspace choice, apply,
+  already upgraded, rollback, customised map.
