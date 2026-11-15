@@ -15,7 +15,7 @@ import pg from 'pg';
 import argon2 from 'argon2';
 import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
-import { ScheduledWorkService } from '../src/notifications/scheduled-work.service.ts';
+import { PostgresAttendanceRepository } from '../src/attendance/attendance-repository.ts';
 import { AttendanceAnalyticsSchema, PersonAnalyticsSchema } from '../../../packages/shared/src/reports/attendance-analytics.ts';
 import type { AttendanceAnalytics, PersonAnalytics } from '../../../packages/shared/src/reports/attendance-analytics.ts';
 import { freshCode } from './support/totp.ts';
@@ -261,8 +261,14 @@ describe('HR attendance analytics (ADR 059)', { concurrency: false }, () => {
     const days = (n: number) => new Date(now.getTime() - n * 86_400_000);
     await adminPool.query(`INSERT INTO office_presence_intervals (org_id, user_id, started_at, ended_at, last_seen_at, end_reason) VALUES
       ($1, $2, $3, $4, $4, 'LEFT'), ($1, $2, $5, $6, $6, 'LEFT')`, [ORG, U.emp2.id, days(120), days(119), days(10), days(9)]);
-    await adminPool.query(`INSERT INTO office_presence_intervals (org_id, user_id, started_at, last_seen_at) VALUES ($1, $2, $3, $3)`, [ORG, U.mgr.id, days(100)]);
-    await app.get(ScheduledWorkService).presenceRetention(now);
+    // Connected since 100 days ago and seen just now: open, and fresh, so no startup sweep of a
+    // parallel test process closes it either.
+    await adminPool.query(`INSERT INTO office_presence_intervals (org_id, user_id, started_at, last_seen_at) VALUES ($1, $2, $3, $4)`, [ORG, U.mgr.id, days(100), now]);
+    // The cleanup the daily presence-retention job runs, for this organisation only (90 days). The
+    // job itself runs for every organisation and records that it ran today, so calling it here would
+    // skip that day's run for other test files' organisations (admin-e2e checks the job itself).
+    const deleted = await app.get(PostgresAttendanceRepository).cleanupOldOfficePresence(ORG, days(90));
+    assert.equal(deleted, 1);
     const left = await adminPool.query<{ user_id: string; ended: boolean }>(`SELECT user_id, ended_at IS NOT NULL AS ended FROM office_presence_intervals WHERE user_id = ANY($1::uuid[]) ORDER BY started_at`, [[U.emp2.id, U.mgr.id]]);
     assert.deepEqual(left.rows.map((r) => [r.user_id, r.ended]), [[U.mgr.id, false], [U.emp2.id, true]], 'the 119-day-old one is gone; an open one is never deleted');
     const c = await adminPool.connect();
