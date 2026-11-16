@@ -80,7 +80,7 @@ describe('Board games survive an API restart (ADR 064)', { concurrency: false },
     assert.ok(join.ok, `${who} joins`);
     const call = <T>(event: string, body: unknown = {}) => s.emitWithAck(event, body) as Promise<T>;
     return {
-      s, inbox, call,
+      s, inbox, call, join,
       invite: (to: Who, kind: 'chess' | 'checkers' = 'chess') => call<BoardAck>('office:board-invite', { to: U[to].id, tableId, kind }),
       answer: (id: string, accept: boolean) => call<BoardAck>('office:board-answer', { id, accept }),
       move: (id: string, m: { from: number; to: number }) => call<BoardAck>('office:board-move', { id, ...m }),
@@ -200,6 +200,8 @@ describe('Board games survive an API restart (ADR 064)', { concurrency: false },
     B = await office('b');
     await wait(200);
     for (const o of [A, B]) {
+      // In the join answer itself (an event alone could arrive before the answer and be dropped).
+      assert.ok(o.join.ok && o.join.board?.id === g.id, 'the join answer carries the running game');
       const back = o.last();
       assert.ok(back, 'the running game comes back on joining');
       assert.equal(back.id, g.id);

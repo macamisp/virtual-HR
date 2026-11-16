@@ -270,7 +270,10 @@ export class OfficeClient {
     this.nudgeRules = ack.nudge ?? DEFAULT_NUDGE_RULES;
     this.boardInvitesIn = [];
     this.boardInviteOut = null;
-    if (this.board && !this.board.state.result) this.board = null; // the server re-sends a game still running
+    // The game this person is playing comes with the answer (ADR 064); a running game shown from an
+    // earlier connection that the server no longer has is gone. A finished one stays until closed.
+    if (ack.board) this.board = ack.board;
+    else if (this.board && !this.board.state.result) this.board = null;
     if (this.roomOnly) this.socket!.emit('office:mode', { roomOnly: true });
     this.changed();
   }

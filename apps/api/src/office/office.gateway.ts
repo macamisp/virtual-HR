@@ -164,10 +164,13 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     client.data.officeOrg = orgId;
     await client.join([`vo-org:${orgId}`, `vo:${userId}`]);
     if (dto.positions) { world.forgetKnown(userId); await client.join(`vo:${userId}:pos`); }
-    // FR-VO-017: a game still running after a reload (within the grace) comes back on screen.
+    // FR-VO-017, ADR 064: a game still running after a reload or an API restart comes back on
+    // screen. It is in the join answer itself, so it cannot arrive before the answer and be taken
+    // for a game of the previous connection; the event is kept for clients that only listen.
     const game = world.boardGameOf(userId);
-    if (game) client.emit('office:board', world.boardSnapshot(game));
-    return { ok: true, self: { x: a.x, y: a.y, floorId: a.floorId, roomId: a.roomId }, roster: world.roster(), nudge: nudgeRules(process.env) };
+    const board = game ? world.boardSnapshot(game) : null;
+    if (board) client.emit('office:board', board);
+    return { ok: true, self: { x: a.x, y: a.y, floorId: a.floorId, roomId: a.roomId }, roster: world.roster(), nudge: nudgeRules(process.env), board };
   }
 
   /** ADR 048: the office view came on or off screen; the position stream follows the map. */
