@@ -69,18 +69,20 @@ test.describe.serial('Office map style (ADR 061)', () => {
     await expect(canvasOf(p)).toHaveAttribute('data-view', 'iso');
     await expect(canvasOf(p)).toHaveAttribute('data-connected', 'true');
 
-    // W walks up the screen: both map coordinates fall.
+    // Click to go, from the Café's arrival point (always the same spot, so the target is always the
+    // same open floor; after a timed key walk it could land on a table): 120 px right of the avatar
+    // on screen is map (+80, -80) at scale 0.75.
     await goTo(p, 'Café');
-    await canvasOf(p).focus();
-    const [x0, y0] = await self(p);
-    await p.keyboard.down('KeyW'); await p.waitForTimeout(350); await p.keyboard.up('KeyW');
-    await expect.poll(async () => { const [x, y] = await self(p); return x < x0 - 10 && y < y0 - 10; }).toBe(true);
-
-    // Click to go: 120 px right of the avatar on screen is map (+80, -80) at scale 0.75.
     const box = (await canvasOf(p).boundingBox())!;
     const before = await self(p);
     await p.mouse.click(box.x + box.width / 2 + 120, box.y + box.height / 2);
     await expect.poll(async () => { const [x, y] = await self(p); return Math.abs(x - before[0] - 80) < 24 && Math.abs(y - before[1] + 80) < 24; }, { timeout: 10_000 }).toBe(true);
+
+    // W walks up the screen: both map coordinates fall.
+    await canvasOf(p).focus();
+    const [x0, y0] = await self(p);
+    await p.keyboard.down('KeyW'); await p.waitForTimeout(350); await p.keyboard.up('KeyW');
+    await expect.poll(async () => { const [x, y] = await self(p); return x < x0 - 10 && y < y0 - 10; }).toBe(true);
 
     // A cabinet opens its game.
     await goTo(p, 'Arcade');
