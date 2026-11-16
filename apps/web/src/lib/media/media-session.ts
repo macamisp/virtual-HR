@@ -37,6 +37,19 @@ const POOR_FOR_MS = 5000;
 let liveMeetingId: string | null = null;
 const setInCall = () => usePresenceStore.getState().setInCall(active > 0, active > 0 ? liveMeetingId : null);
 
+/**
+ * Leaves a room, including one whose connection attempt is still pending. livekit-client 2.22
+ * (single peer connection mode) creates the publisher RTCPeerConnection before the signalling join;
+ * when that join is aborted (Leave, or walking into another room while connecting), the engine was
+ * never opened, so `Room.disconnect()` → `engine.close()` returns early and the connection is never
+ * closed. Close what the engine still holds. A room that did connect has none left (no-op).
+ */
+async function leaveRoom(room: Room): Promise<void> {
+  const engine: Room['engine'] | undefined = room.engine;
+  await room.disconnect().catch(() => undefined);
+  if (engine?.pcManager) await engine.cleanupPeerConnections().catch(() => undefined);
+}
+
 export class MediaSession {
   room: Room | null = null;
   status: SessionStatus = 'idle';
@@ -105,7 +118,9 @@ export class MediaSession {
         refresh();
       })
       .on(RoomEvent.ConnectionStateChanged, (s: ConnectionState) => {
+        if (this.room !== room) return;
         this.status = s === ConnectionState.Connected ? 'connected' : s === ConnectionState.Reconnecting || s === ConnectionState.SignalReconnecting ? 'reconnecting' : this.status;
+        if (s === ConnectionState.Connected) void this.sync();
         refresh();
       })
       .on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
@@ -126,12 +141,22 @@ export class MediaSession {
     try {
       // The signalling address follows the host this page was opened from (docs/runbooks/lan-https.md).
       await room.connect(followPageHost(token.url, window.location), token.token);
+      // A room switch or Leave can happen while the signalling handshake is pending.
+      // Never let an old connection mark a newer session as connected or publish tracks.
+      if (this.room !== room) {
+        await leaveRoom(room);
+        return;
+      }
       this.status = 'connected';
       this.count();
       this.wantMic ??= prefs.micOn;
       this.wantCam ??= prefs.camOn;
       await this.sync();
     } catch (err) {
+      if (this.room !== room) {
+        await leaveRoom(room);
+        return;
+      }
       this.status = 'error';
       this.error = err instanceof Error ? err.message : 'Could not connect to the call';
     }
@@ -149,7 +174,7 @@ export class MediaSession {
     this.clearPoor();
     this.uncount();
     this.hands.clear();
-    if (room) await room.disconnect().catch(() => undefined);
+    if (room) await leaveRoom(room);
     if (this.status !== 'idle') { this.status = 'idle'; this.changed(); }
   }
 
@@ -183,14 +208,49 @@ export class MediaSession {
   /** A new device check (turning media on, joining a meeting): its choice applies again. */
   resetChoices(): void { this.wantMic = null; this.wantCam = null; }
 
+  /**
+   * LiveKit can briefly report the room as connected before its publishing engine is ready,
+   * especially immediately after a room switch. Retry only that transient engine error; do not
+   * retry permission/device errors. The desired mic/camera state is retained for reconnects.
+   */
+  private async setDeviceEnabled(room: Room, kind: 'microphone' | 'camera', enabled: boolean): Promise<void> {
+    const label = kind === 'microphone' ? 'The microphone could not be started' : 'The camera could not be started';
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (this.room !== room || room.state !== ConnectionState.Connected) return;
+      const lp = room.localParticipant;
+      const current = kind === 'microphone' ? lp.isMicrophoneEnabled : lp.isCameraEnabled;
+      if (current === enabled) return;
+      try {
+        if (kind === 'microphone') await lp.setMicrophoneEnabled(enabled);
+        else await lp.setCameraEnabled(enabled);
+        return;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const transientEngineError = /engine not connected within timeout/i.test(message);
+        if (!transientEngineError || attempt === 2) {
+          this.fail(err, label);
+          return;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+      }
+    }
+  }
+
   /** Brings the room's microphone and camera to the wanted state, one change at a time. A click flips what the user sees. */
   private sync(): Promise<void> {
     const room = this.room;
     const run = async () => {
-      if (!room || this.room !== room) return;
+      // A Room object exists before room.connect() has completed. Publishing during that window
+      // produces LiveKit's "engine not connected within timeout" error. Keep the user's intent and
+      // apply it once the room is actually connected (also on reconnect).
+      if (!room || this.room !== room || room.state !== ConnectionState.Connected) return;
       const lp = room.localParticipant;
-      if (this.wantMic !== null && lp.isMicrophoneEnabled !== this.wantMic) await lp.setMicrophoneEnabled(this.wantMic).catch((e: unknown) => this.fail(e, 'The microphone could not be started'));
-      if (this.wantCam !== null && lp.isCameraEnabled !== this.wantCam) await lp.setCameraEnabled(this.wantCam).catch((e: unknown) => this.fail(e, 'The camera could not be started'));
+      if (this.wantMic !== null && lp.isMicrophoneEnabled !== this.wantMic) {
+        await this.setDeviceEnabled(room, 'microphone', this.wantMic);
+      }
+      if (this.room === room && room.state === ConnectionState.Connected && this.wantCam !== null && lp.isCameraEnabled !== this.wantCam) {
+        await this.setDeviceEnabled(room, 'camera', this.wantCam);
+      }
       this.changed();
     };
     this.ops = this.ops.then(run, run);
@@ -207,12 +267,22 @@ export class MediaSession {
     await this.sync();
   }
   /** FR-VO-009: screen share inside any room or meeting. */
-  async toggleShare(): Promise<void> { await this.room?.localParticipant.setScreenShareEnabled(!this.sharing, { audio: true }, { videoCodec: 'vp8', backupCodec: false }).catch((e: unknown) => this.fail(e)); this.changed(); }
+  async toggleShare(): Promise<void> {
+    const room = this.room;
+    if (!room || room.state !== ConnectionState.Connected) return;
+    await room.localParticipant.setScreenShareEnabled(!this.sharing, { audio: true }, { videoCodec: 'vp8', backupCodec: false }).catch((e: unknown) => this.fail(e));
+    this.changed();
+  }
 
   /** The browser blocked sound until the user interacts with the page (autoplay rules). */
   get audioBlocked(): boolean { return !!this.room && !this.room.canPlaybackAudio; }
   /** Called from a click, so the browser allows playback. */
-  async allowAudio(): Promise<void> { await this.room?.startAudio().catch(() => undefined); this.changed(); }
+  async allowAudio(): Promise<void> {
+    const room = this.room;
+    if (!room || room.state !== ConnectionState.Connected) return;
+    await room.startAudio().catch(() => undefined);
+    this.changed();
+  }
 
   /** Mutes or unmutes what the user hears; the microphone and the call are untouched. */
   async setSpeakerMuted(muted: boolean): Promise<void> {
@@ -234,10 +304,11 @@ export class MediaSession {
   }
 
   async raiseHand(raised: boolean): Promise<void> {
-    if (!this.room) return;
+    const room = this.room;
+    if (!room || room.state !== ConnectionState.Connected) return;
     if (raised) this.hands.add('local'); else this.hands.delete('local');
     const msg: MeetingDataMessage = { type: 'hand', raised };
-    await this.room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(msg)), { reliable: true, topic: MEETING_DATA_TOPIC }).catch(() => undefined);
+    await room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(msg)), { reliable: true, topic: MEETING_DATA_TOPIC }).catch(() => undefined);
     this.changed();
   }
 

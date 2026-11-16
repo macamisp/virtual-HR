@@ -22,6 +22,7 @@ export function OfficeToolbar({ client, setup, onSetup }: { client: OfficeClient
   useSession(s);
   const cur = c.current;
   const inCall = !!s.room && !!cur;
+  const mediaReady = inCall && s.status === 'connected';
   const handUp = s.tiles().find((t) => t.isLocal)?.hand ?? false;
   const count = s.tiles().length;
   const route = officeRoute(client);
@@ -62,17 +63,17 @@ export function OfficeToolbar({ client, setup, onSetup }: { client: OfficeClient
           </div>
         ) : (
           <div role="toolbar" aria-label="Call controls" className="flex flex-wrap items-center gap-1">
-            {ctl({ label: s.micOn ? 'Mute' : 'Unmute', on: s.micOn, pressed: s.micOn, disabled: !inCall, onClick: () => void s.toggleMic(), icon: s.micOn ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />, text: s.micOn ? 'Mic on' : 'Mic off' })}
-            {ctl({ label: 'Camera', on: s.camOn, pressed: s.camOn, disabled: !inCall, onClick: () => void s.toggleCam(), icon: s.camOn ? <Video aria-hidden="true" /> : <VideoOff aria-hidden="true" />, text: s.camOn ? 'Camera on' : 'Camera off' })}
+            {ctl({ label: s.micOn ? 'Mute' : 'Unmute', on: s.micOn, pressed: s.micOn, disabled: !mediaReady, onClick: () => void s.toggleMic(), icon: s.micOn ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />, text: s.micOn ? 'Mic on' : 'Mic off' })}
+            {ctl({ label: 'Camera', on: s.camOn, pressed: s.camOn, disabled: !mediaReady, onClick: () => void s.toggleCam(), icon: s.camOn ? <Video aria-hidden="true" /> : <VideoOff aria-hidden="true" />, text: s.camOn ? 'Camera on' : 'Camera off' })}
             {ctl({ label: s.speakerMuted ? 'Unmute speakers' : 'Mute speakers', on: !s.speakerMuted, pressed: !s.speakerMuted, onClick: () => void s.setSpeakerMuted(!s.speakerMuted), icon: s.speakerMuted ? <VolumeX aria-hidden="true" /> : <Volume2 aria-hidden="true" />, text: s.speakerMuted ? 'Sound off' : 'Sound on' })}
-            {ctl({ label: s.sharing ? 'Stop sharing' : 'Share screen', on: s.sharing, pressed: s.sharing, disabled: !inCall, onClick: () => void s.toggleShare(), icon: <MonitorUp aria-hidden="true" />, text: s.sharing ? 'Stop sharing' : 'Share' })}
-            {ctl({ label: handUp ? 'Lower hand' : 'Raise hand', on: handUp, pressed: handUp, disabled: !inCall, onClick: () => void s.raiseHand(!handUp), icon: <Hand aria-hidden="true" />, text: handUp ? 'Lower hand' : 'Raise hand' })}
-            {ctl({ label: 'Audio only', on: s.audioOnly, pressed: s.audioOnly, disabled: !inCall, onClick: () => void s.setAudioOnly(!s.audioOnly), icon: <AudioLines aria-hidden="true" />, text: 'Audio only' })}
+            {ctl({ label: s.sharing ? 'Stop sharing' : 'Share screen', on: s.sharing, pressed: s.sharing, disabled: !mediaReady, onClick: () => void s.toggleShare(), icon: <MonitorUp aria-hidden="true" />, text: s.sharing ? 'Stop sharing' : 'Share' })}
+            {ctl({ label: handUp ? 'Lower hand' : 'Raise hand', on: handUp, pressed: handUp, disabled: !mediaReady, onClick: () => void s.raiseHand(!handUp), icon: <Hand aria-hidden="true" />, text: handUp ? 'Lower hand' : 'Raise hand' })}
+            {ctl({ label: 'Audio only', on: s.audioOnly, pressed: s.audioOnly, disabled: !mediaReady, onClick: () => void s.setAudioOnly(!s.audioOnly), icon: <AudioLines aria-hidden="true" />, text: 'Audio only' })}
             {cur?.kind === 'meeting' ? <Button size="sm" variant="outline" asChild><Link href={`/meetings/${cur.meetingId}`}>Return to meeting</Link></Button> : null}
             {ctl({ label: inCall ? 'Leave call' : 'Turn off audio and video', danger: true, onClick: () => void c.leave(), icon: <PhoneOff aria-hidden="true" />, text: inCall ? 'Leave' : 'Turn off' })}
           </div>
         )}
-        {inCall && s.audioBlocked && !s.speakerMuted ? <Button size="sm" variant="secondary" onClick={() => void s.allowAudio()}><Volume2 aria-hidden="true" /> Allow sound</Button> : null}
+        {mediaReady && s.audioBlocked && !s.speakerMuted ? <Button size="sm" variant="secondary" onClick={() => void s.allowAudio()}><Volume2 aria-hidden="true" /> Allow sound</Button> : null}
       </div>
       {setup && !c.officeMediaEnabled ? (
         <PreJoin title="Audio and video in the office" joinLabel="Turn on" onCancel={() => onSetup(false)} onJoin={(p) => { c.enableOfficeMedia(p); onSetup(false); }} />

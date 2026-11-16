@@ -40,6 +40,24 @@ const liveKinds = (p: Page) => p.evaluate(() => {
 });
 const openPcs = (p: Page) => p.evaluate(() => (window as unknown as { __pcs: RTCPeerConnection[] }).__pcs.filter((x) => x.connectionState !== 'closed').length);
 const note = (type: string, description: string) => { test.info().annotations.push({ type, description }); console.log(`[qa] ${type}: ${description}`); };
+/** The controls that act on the LiveKit room (the speaker switch is a local preference and is not one of them). */
+const ROOM_CONTROLS_OFF = ['Unmute', 'Camera', 'Share screen', 'Raise hand', 'Audio only'];
+const ROOM_CONTROLS_ON = ['Mute', 'Camera', 'Share screen', 'Raise hand', 'Audio only'];
+/**
+ * Holds the page's LiveKit signalling connections (`/rtc`) until released, so the toolbar can be
+ * checked while the call is still connecting. The first `hold` connections wait; later ones pass.
+ */
+async function holdSignalling(p: Page, hold = 1): Promise<{ release: () => void; held: () => number }> {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  let seen = 0;
+  await p.routeWebSocket((u) => u.pathname.startsWith('/rtc'), async (ws) => {
+    seen += 1;
+    if (seen <= hold) await gate;
+    try { ws.connectToServer(); } catch { /* the page already gave up on this connection */ }
+  });
+  return { release, held: () => Math.min(seen, hold) };
+}
 
 test.describe.serial('Office call toolbar (ADR 048 §3b)', () => {
   test('desktop: every control works on its own and matches what the colleague sees and hears', async ({ browser }) => {
@@ -223,8 +241,13 @@ test.describe.serial('Office call toolbar (ADR 048 §3b)', () => {
       // Network drop: the toolbar says Reconnecting…, then connected; audio flows again.
       await a.context().setOffline(true);
       await expect(a.getByTestId('office-call-status')).toContainText('Reconnecting…', { timeout: 30_000 });
+      // While LiveKit reconnects nothing can be published: the room's controls wait, the speakers do not.
+      for (const name of ROOM_CONTROLS_ON) await expect(btn(a, name), `${name} while reconnecting`).toBeDisabled();
+      await expect(btn(a, 'Mute speakers')).toBeEnabled();
       await a.context().setOffline(false);
       await expect(bar(a)).toHaveAttribute('data-status', 'connected', { timeout: 60_000 });
+      for (const name of ROOM_CONTROLS_ON) await expect(btn(a, name), `${name} after reconnecting`).toBeEnabled();
+      await expect(bar(a), 'the microphone choice survives the reconnect').toHaveAttribute('data-mic', 'on');
       await expect.poll(() => hearsAudio(b), { timeout: 30_000 }).toBe(true);
       note('network', `offline: toolbar showed Reconnecting…; back online: connected, audio flows (tokens ${tokens - t0} new)`);
 
@@ -290,6 +313,97 @@ test.describe.serial('Office call toolbar (ADR 048 §3b)', () => {
       await btn(a, 'Leave call').tap();
       await expect(remoteOf(b)).toHaveCount(0);
       await expect.poll(() => localTracks(a), { timeout: 10_000 }).toMatchObject({ live: 0 });
+    } finally {
+      await b.context().close();
+      await a.context().close();
+    }
+  });
+
+  /**
+   * Hotfix (LiveKit connect): publishing before the room is connected failed with LiveKit's
+   * "engine not connected within timeout", so the microphone stayed off. B waits in a room; A's
+   * LiveKit signalling is held so the toolbar can be checked while A's call is still connecting.
+   */
+  async function aloneThenB(browser: Browser, bRoom: string): Promise<{ a: Page; b: Page }> {
+    const a = await open(browser, USERS.worker.email);
+    const b = await open(browser, USERS.lead.email);
+    await goTo(b, bRoom);
+    await turnOn(b);
+    await goTo(a, 'Lounge');
+    await expect(a.getByTestId('my-status')).toContainText('Lounge');
+    await turnOn(a);
+    await expect(a.getByTestId('office-call-status')).toContainText('Nobody to talk to here');
+    return { a, b };
+  }
+
+  test('connecting: the room controls wait for LiveKit, the speakers do not; then the microphone reaches the colleague', async ({ browser }) => {
+    test.setTimeout(240_000);
+    const { a, b } = await aloneThenB(browser, 'Meeting room A');
+    try {
+      const sig = await holdSignalling(a);
+      await goTo(a, 'Meeting room A');
+      await expect(bar(a)).toHaveAttribute('data-status', 'connecting', { timeout: 30_000 });
+      await expect(a.getByTestId('office-call-status')).toContainText('Connecting…');
+      for (const name of ROOM_CONTROLS_OFF) await expect(btn(a, name), `${name} while connecting`).toBeDisabled();
+      await expect(btn(a, 'Leave call')).toBeEnabled();
+      // The speakers are a local preference (ADR 048 §3b): usable before the call is up.
+      await btn(a, 'Mute speakers').click();
+      await expect(bar(a)).toHaveAttribute('data-speaker', 'off');
+      await btn(a, 'Unmute speakers').click();
+      await expect(bar(a)).toHaveAttribute('data-speaker', 'on');
+      await a.waitForTimeout(1500);
+      await expect(bar(a), 'still connecting while the signalling is held').toHaveAttribute('data-status', 'connecting');
+      expect(sig.held()).toBe(1);
+      expect(await liveKinds(a), 'nothing is published before the room is connected').toEqual({ audio: 0, video: 0 });
+
+      sig.release();
+      await expect(bar(a)).toHaveAttribute('data-status', 'connected', { timeout: 30_000 });
+      await expect(a.getByTestId('office-call-status')).toContainText('Connected · Meeting room A · 2 in call');
+      for (const name of ROOM_CONTROLS_ON) await expect(btn(a, name), `${name} once connected`).toBeEnabled();
+      // The device check's choice (microphone on) is applied once connected and reaches B.
+      await expect(bar(a)).toHaveAttribute('data-mic', 'on', { timeout: 20_000 });
+      await expect(remoteOf(b)).toHaveAttribute('data-identity', USERS.worker.id);
+      await expect(remoteOf(b).getByLabel('Microphone on')).toBeVisible({ timeout: 20_000 });
+      await expect.poll(() => hearsAudio(b), { timeout: 20_000 }).toBe(true);
+      // Straight after connecting, the camera publishes on the first click.
+      await btn(a, 'Camera').click();
+      await expect(bar(a)).toHaveAttribute('data-cam', 'on', { timeout: 20_000 });
+      await remoteOf(b).scrollIntoViewIfNeeded();
+      await expect.poll(() => paintedFrames(remoteOf(b).locator('video')), { timeout: 20_000 }).toBeGreaterThan(0);
+      expect(await liveKinds(a), 'one microphone, one camera').toEqual({ audio: 1, video: 1 });
+      note('connecting', 'controls disabled while LiveKit was connecting; microphone and camera published once connected');
+    } finally {
+      await b.context().close();
+      await a.context().close();
+    }
+  });
+
+  test('a room change while the call is still connecting: the old connection never takes over; the microphone reaches the new room', async ({ browser }) => {
+    test.setTimeout(240_000);
+    const { a, b } = await aloneThenB(browser, 'Meeting room B');
+    let tokens = 0;
+    a.on('request', (r) => { if (r.method() === 'POST' && r.url().endsWith('/media/token')) tokens += 1; });
+    try {
+      // Only the first (Meeting room A) signalling connection is held; Meeting room B's passes.
+      const sig = await holdSignalling(a);
+      await goTo(a, 'Meeting room A');
+      await expect(bar(a)).toHaveAttribute('data-status', 'connecting', { timeout: 30_000 });
+      await expect(a.getByTestId('my-status')).toContainText('Meeting room A');
+      await goTo(a, 'Meeting room B');
+      await expect(a.getByTestId('office-call-status')).toContainText('Connected · Meeting room B · 2 in call', { timeout: 30_000 });
+      // The abandoned Meeting room A handshake may finish now: it must not mark or publish anything.
+      sig.release();
+      await a.waitForTimeout(4000);
+      await expect(a.getByTestId('office-call-status')).toContainText('Connected · Meeting room B · 2 in call');
+      await expect(bar(a)).toHaveAttribute('data-status', 'connected');
+      await expect(bar(a)).toHaveAttribute('data-mic', 'on');
+      await expect(remoteOf(b)).toHaveAttribute('data-identity', USERS.worker.id);
+      await expect(remoteOf(b).getByLabel('Microphone on')).toBeVisible({ timeout: 20_000 });
+      await expect.poll(() => hearsAudio(b), { timeout: 20_000 }).toBe(true);
+      expect(await liveKinds(a), 'one live microphone').toEqual({ audio: 1, video: 0 });
+      expect(await openPcs(a), 'nothing left open from Meeting room A').toBeLessThanOrEqual(2);
+      expect(tokens, 'one token per room: Meeting room A, then B').toBe(2);
+      note('room-switch', `switched while connecting: connected in Meeting room B, tokens ${tokens}, open peer connections ${await openPcs(a)}`);
     } finally {
       await b.context().close();
       await a.context().close();
