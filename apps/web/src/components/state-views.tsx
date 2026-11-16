@@ -53,13 +53,17 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
   );
 }
 
+/**
+ * Shown on ~40 pages with different permissions (some for admins only, some for everyone with a
+ * given right), so it names no roles: the server decides who may see what.
+ */
 export function AccessDenied({ what }: { what: string }) {
   return (
     <Alert variant="warning" data-testid="access-denied">
       <ShieldOff className="h-4 w-4" aria-hidden="true" />
       <AlertTitle>You don&apos;t have access</AlertTitle>
       <AlertDescription>
-        {what} is available to team leads, managers and HR. Ask an administrator if you need access.
+        {what} is not available with your current role. Ask an administrator if you need access.
       </AlertDescription>
     </Alert>
   );
