@@ -218,6 +218,62 @@ Sign-in, sessions, logout, 2FA (where enforced), roles and permissions; organisa
 | Chess and ping-pong | furniture only, not games |
 | Mini-game scores, festive mode per organisation | not stored (by design so far) |
 
+## 16. Office visual redesign (follow-up, same day)
+
+The product owner reported that the Office still did not look like the requested design, and that
+functional tests alone could not show it.
+
+| Finding | Detail |
+|---|---|
+| Cause 1 | Only the Arcade had been redesigned (ADR 057). The open office, reception, meeting rooms, private rooms, lounge, café and garden still had ADR 054's flat first pass |
+| Cause 2 (data) | The three local iCET offices still have the legacy 60 x 40 map (version 1): no Café, Arcade or Garden. Only Acme Demo was upgraded. Fixing that means running the audited `scripts/office-map-upgrade.ts` per workspace (owner action, ADR 055). It was not run: a workspace's map is its owner's |
+| Not the cause | Wrong frontend (the painter in use is the redesigned one); missing assets (all art is drawn in code); configuration |
+| Reference image | Not available in the repository or on the workstation. The design follows the written direction of ADR 054 and the arcade's level of detail |
+
+The fix, `c3c1c61` (ADR 060), is paint only:
+- every indoor area gets its own floor, wall face and wall art;
+- each workstation gets a rug, desk props and a charcoal chair;
+- reception gets a compass medallion; the café gets calmer tiles and pendant light; the garden is striped;
+- the garland hangs higher, so the wall art shows;
+- zoomed out, the map is centred on an axis where it fits.
+
+No map, room, desk, seat, collision, API or database change.
+
+**Files changed:** `apps/web/src/lib/office/office-environment.ts`, `pixel-kit.ts`, `office-festive.ts`, `office-renderer.ts`, `docs/adr/060-office-wide-pixel-redesign.md`.
+
+**Screenshots:** before and after, side by side, in `docs/assets/office-redesign-2026-11-16/`. They cover the open office, reception, meeting room, lounge, café, arcade, garden, the zoomed-out overview, and the phone office and arcade views.
+
+**Pixel change with the same framing:**
+
+| Area | Changed |
+|---|---|
+| Open office | 59% |
+| Overview | 49% |
+| Phone office | 48% |
+| Café | 32% |
+| Meeting room | 27% |
+| Reception | 24% |
+| Lounge | 21% |
+| Garden | 10% |
+| Arcade | 8% |
+| Phone arcade | 0.2% (unchanged, as intended) |
+
+**Tests on the final code:**
+- web typecheck and lint: clean;
+- Playwright office specs 16, 25, 34–39 and 42–46: 42/42;
+- browser journeys for avatar, movement, actions, nudge, DND, campus and mini-game: pass;
+- room ids, desks, desk assignments and stored maps: unchanged (paint only).
+
+A first version also clamped the camera to the map at normal zoom. That moved the user off-centre at the map edges and failed spec 46 (nudge) twice, so it was dropped before commit.
+
+**Remaining visual differences:**
+- wall faces are 15 px high at normal zoom, so wall art is small;
+- the lounge is still mostly open floor (the map has three sofas there);
+- with the camera following the user, the zoomed-out overview still cuts the map horizontally on narrower screens;
+- there is no exact match to a reference design, because none was provided.
+
+**Status:** PASS for the redesign being visible on the Acme Demo office. BLOCKED for the iCET workspaces' campus areas until their owner runs the map upgrade.
+
 ## How to repeat
 
 1. From the worktree, run `npx tsc`, then `npm run lint` and `npm run web:typecheck`.
