@@ -8,10 +8,10 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
-  ACTION_MS, buildGrid, centre, mapSeats, PAIR_REACH, PAIR_REQUEST_TTL_MS, SEAT_REACH, segmentClear, displayStatus, inRect, InterestGrid, isClosedRoom, nearestWalkable, proximityGroups, spawnPoint, TILE_SIZE, validateMove,
+  ACTION_MS, BOARD_INVITE_TTL_MS, buildGrid, centre, distanceToRect, GAME_REACH, inCheck, mapSeats, newBoard, objectLayer, PAIR_REACH, prop, PAIR_REQUEST_TTL_MS, SEAT_REACH, segmentClear, displayStatus, inRect, InterestGrid, isClosedRoom, nearestWalkable, proximityGroups, spawnPoint, TILE_SIZE, validateMove,
 } from '../../../../packages/shared/src/office/index.ts';
 import type {
-  AccessMode, AvatarActionKind, AvatarActionState, AvatarKey, NudgeClosedMessage, NudgeOutcome, PairAction, PairClosedMessage, Seat, CollisionGrid, ManualStatus, OfficeDefinition, Point, PositionEntry, PositionsMessage, ProximityMessage, Rect, RosterEntry, RoomType, VoStatus,
+  AccessMode, AvatarActionKind, AvatarActionState, AvatarKey, BoardGameKind, BoardInviteClosed, BoardPlayer, BoardResult, BoardSnapshot, BoardState, MapObject, NudgeClosedMessage, NudgeOutcome, PairAction, PairClosedMessage, Seat, CollisionGrid, ManualStatus, OfficeDefinition, Point, PositionEntry, PositionsMessage, ProximityMessage, Rect, RosterEntry, RoomType, VoStatus,
 } from '../../../../packages/shared/src/office/index.ts';
 
 export interface RoomInfo {
@@ -68,6 +68,9 @@ export interface PairRequest { id: string; kind: PairAction; from: string; to: s
 
 /** ADR 058: a nudge waiting for the other person's answer. */
 export interface Nudge { id: string; from: string; to: string; expiresAt: number }
+/** FR-VO-017 (ADR 062): an invitation to a board game at a table, and a game being played. */
+export interface BoardInvite { id: string; kind: BoardGameKind; tableId: number; floorId: string; from: string; to: string; expiresAt: number }
+export interface BoardGame { id: string; kind: BoardGameKind; tableId: number; floorId: string; white: BoardPlayer; black: BoardPlayer; state: BoardState }
 
 export type Denial = 'KNOCK' | 'INVITE' | 'PASSWORD' | 'FULL';
 
@@ -104,6 +107,9 @@ export class OfficeWorld {
   readonly requests = new Map<string, PairRequest>();
   /** ADR 058: open nudges, by id. In memory only, like everything else about the world. */
   readonly nudges = new Map<string, Nudge>();
+  /** FR-VO-017: open board-game invitations and the games being played. In memory only. */
+  readonly boardInvites = new Map<string, BoardInvite>();
+  readonly boardGames = new Map<string, BoardGame>();
 
   constructor(
     readonly orgId: string,
@@ -232,6 +238,73 @@ export class OfficeWorld {
     emit?.personal?.(n.to, 'office:nudge-closed', msg);
   }
 
+
+  // ---------------------------------------------------------------- FR-VO-017 board games (ADR 062)
+
+  /** The table a game can be played at: a chess table (chess or checkers), or a game table set to one of them. */
+  boardTable(floorId: string, tableId: number, kind: BoardGameKind): MapObject | null {
+    const f = this.definition.floors.find((x) => x.id === floorId);
+    const t = f ? objectLayer(f.map, 'furniture').find((o) => o.id === tableId) : undefined;
+    if (!t) return null;
+    const k = String(prop(t, 'kind', '')).toLowerCase();
+    const game = String(prop(t, 'game', '')).toLowerCase();
+    return k === 'chess-table' || (k === 'game-table' && game === kind) ? t : null;
+  }
+
+  /** Standing (or sitting) at the table: same floor, within the reach of a game object. */
+  atTable(a: Avatar, floorId: string, table: MapObject): boolean {
+    return a.floorId === floorId && a.goneAt === null && distanceToRect(a, table) <= GAME_REACH + 12;
+  }
+
+  boardGameOf(userId: string): BoardGame | null {
+    for (const g of this.boardGames.values()) if (g.white.id === userId || g.black.id === userId) return g;
+    return null;
+  }
+
+  tableBusy(floorId: string, tableId: number): boolean {
+    for (const g of this.boardGames.values()) if (g.floorId === floorId && g.tableId === tableId) return true;
+    return false;
+  }
+
+  openBoardInvite(kind: BoardGameKind, floorId: string, tableId: number, from: string, to: string, now: number, ttlMs = BOARD_INVITE_TTL_MS): BoardInvite {
+    const i: BoardInvite = { id: randomUUID(), kind, floorId, tableId, from, to, expiresAt: now + ttlMs };
+    this.boardInvites.set(i.id, i);
+    return i;
+  }
+
+  closeBoardInvite(i: BoardInvite, reason: BoardInviteClosed['reason'], emit?: WorldEmitter): void {
+    if (!this.boardInvites.delete(i.id)) return;
+    const msg: BoardInviteClosed = { id: i.id, reason };
+    emit?.personal?.(i.from, 'office:board-invite-closed', msg);
+    emit?.personal?.(i.to, 'office:board-invite-closed', msg);
+  }
+
+  /** The person who invited plays white (moves first). */
+  startBoardGame(i: BoardInvite, from: Avatar, to: Avatar, emit?: WorldEmitter): BoardGame {
+    const g: BoardGame = { id: i.id, kind: i.kind, tableId: i.tableId, floorId: i.floorId, white: { id: from.userId, name: from.name }, black: { id: to.userId, name: to.name }, state: newBoard(i.kind) };
+    this.boardGames.set(g.id, g);
+    this.closeBoardInvite(i, 'accepted', emit);
+    this.sendBoard(g, emit);
+    return g;
+  }
+
+  boardSnapshot(g: BoardGame): BoardSnapshot {
+    return { id: g.id, kind: g.kind, tableId: g.tableId, white: g.white, black: g.black, state: g.state, check: inCheck(g.state) };
+  }
+
+  sendBoard(g: BoardGame, emit?: WorldEmitter): void {
+    const snap = this.boardSnapshot(g);
+    emit?.personal?.(g.white.id, 'office:board', snap);
+    emit?.personal?.(g.black.id, 'office:board', snap);
+  }
+
+  /** Ends a game (resigned, a player left): both are told the result once; the game is then gone. */
+  endBoardGame(g: BoardGame, result: BoardResult, emit?: WorldEmitter): void {
+    if (!this.boardGames.delete(g.id)) return;
+    g.state = { ...g.state, result: g.state.result ?? result };
+    this.sendBoard(g, emit);
+  }
+
   /**
    * ADR 053: someone saved another character. Everyone in the office gets the new roster entry on
    * the next tick; the version (and so the position stream) is left alone, since nothing moved.
@@ -350,6 +423,17 @@ export class OfficeWorld {
       const to = this.avatars.get(n.to);
       if (!from || !to || from.goneAt !== null || to.goneAt !== null) this.closeNudge(n, 'gone', emit);
       else if (now >= n.expiresAt) this.closeNudge(n, 'expired', emit);
+    }
+    // FR-VO-017: board invitations lapse, or end when one of the two has gone; a game ends when a player has left.
+    for (const i of [...this.boardInvites.values()]) {
+      const from = this.avatars.get(i.from);
+      const to = this.avatars.get(i.to);
+      if (!from || !to || from.goneAt !== null || to.goneAt !== null) this.closeBoardInvite(i, 'gone', emit);
+      else if (now >= i.expiresAt) this.closeBoardInvite(i, 'timeout', emit);
+    }
+    for (const g of [...this.boardGames.values()]) {
+      if (!this.avatars.has(g.white.id)) this.endBoardGame(g, { winner: 'b', reason: 'left' }, emit);
+      else if (!this.avatars.has(g.black.id)) this.endBoardGame(g, { winner: 'w', reason: 'left' }, emit);
     }
     // ADR 048: a dropped connection (reload) keeps its place for the grace, then is gone for everyone.
     for (const a of this.avatars.values()) {

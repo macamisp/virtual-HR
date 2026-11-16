@@ -8,3 +8,4 @@ export * from './avatar-art.ts';
 export * from './campus-games.ts';
 export * from './actions.ts';
 export * from './nudge.ts';
+export * from './board-games.ts';

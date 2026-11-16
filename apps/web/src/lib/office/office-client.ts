@@ -8,6 +8,7 @@
 import { io, type Socket } from 'socket.io-client';
 import { buildGrid, DEFAULT_NUDGE_RULES, findPath, inRect, mapSeats, MOVE_SPEED, nudgeReach, walkable } from '@hrvo/shared';
 import type {
+  BoardAck, BoardGameKind, BoardInviteClosed, BoardInviteMessage, BoardSnapshot,
   ActionAck, NudgeAck, NudgeAnswerAck, NudgeClosedMessage, NudgeOutcome, NudgeRequestMessage, NudgeRules, PairAck, PairAction, PairClosedMessage, PairRequestMessage, Seat, SitAck, SoloAction,
   CollisionGrid, JoinAck, MoveAck, OfficeMap, OfficeSnapshot, Point, PositionsMessage, ProximityMessage, RosterEntry, TeleportAck, TeleportDto, VoStatus,
 } from '@hrvo/shared';
@@ -65,6 +66,10 @@ export class OfficeClient {
   nudgesIn: Array<NudgeRequestMessage & { until: number }> = [];
   nudgeOut: { id: string; to: string; toName: string; until: number } | null = null;
   nudgeResult: NudgeResult | null = null;
+  /** FR-VO-017 (ADR 062): board-game invitations to me, the one I sent, and the game I am playing (kept on screen after it ends until closed). */
+  boardInvitesIn: Array<BoardInviteMessage & { until: number }> = [];
+  boardInviteOut: { id: string; to: string; toName: string; kind: BoardGameKind } | null = null;
+  board: BoardSnapshot | null = null;
   /** Called when a nudge arrives (the page rings its bell). */
   onNudge: (() => void) | null = null;
   private nudgeResultTimer: ReturnType<typeof setTimeout> | null = null;
@@ -171,6 +176,13 @@ export class OfficeClient {
       this.onNudge?.();
     });
     socket.on('office:nudge-closed', (m: NudgeClosedMessage) => this.onNudgeClosed(m));
+    socket.on('office:board-invite', (m: BoardInviteMessage) => {
+      this.boardInvitesIn = [...this.boardInvitesIn.filter((x) => x.id !== m.id), { ...m, until: Date.now() + m.expiresInMs }];
+      this.changed();
+      this.onNudge?.(); // the same soft chime as a nudge
+    });
+    socket.on('office:board-invite-closed', (m: BoardInviteClosed) => this.onBoardInviteClosed(m));
+    socket.on('office:board', (m: BoardSnapshot) => { this.board = m; this.boardInviteOut = null; this.boardInvitesIn = this.boardInvitesIn.filter((x) => x.id !== m.id); this.changed(); });
     socket.on('room:knock-handled', (k: { roomId: string; userId: string }) => { this.knocks = this.knocks.filter((x) => !(x.userId === k.userId && x.roomId === k.roomId)); this.changed(); });
     socket.on('room:answered', (a: { roomId: string; admit: boolean; by: string }) => {
       const room = this.snapshot.rooms.find((r) => r.id === a.roomId);
@@ -256,6 +268,9 @@ export class OfficeClient {
     this.nudgesIn = [];
     this.nudgeOut = null;
     this.nudgeRules = ack.nudge ?? DEFAULT_NUDGE_RULES;
+    this.boardInvitesIn = [];
+    this.boardInviteOut = null;
+    if (this.board && !this.board.state.result) this.board = null; // the server re-sends a game still running
     if (this.roomOnly) this.socket!.emit('office:mode', { roomOnly: true });
     this.changed();
   }
@@ -544,6 +559,66 @@ export class OfficeClient {
     if (this.nudgeResultTimer) clearTimeout(this.nudgeResultTimer);
     this.nudgeResult = r;
     this.nudgeResultTimer = r ? setTimeout(() => { this.nudgeResult = null; this.nudgeResultTimer = null; this.changed(); }, NUDGE_RESULT_MS) : null;
+  }
+
+  // ---------------------------------------------------------------- FR-VO-017 board games
+
+  private boardCall(event: string, body: unknown): Promise<BoardAck> {
+    if (!this.socket || !this.connected) return Promise.resolve({ ok: false, error: 'Not connected', code: 'NOT_JOINED' });
+    return this.socket.timeout(5_000).emitWithAck(event, body).catch(() => ({ ok: false, error: 'No answer from the office', code: 'NOT_JOINED' })) as Promise<BoardAck>;
+  }
+
+  private boardError(ack: BoardAck): void {
+    if (!ack.ok) { this.notice = { kind: ack.code === 'RATE_LIMITED' ? 'info' : 'error', text: `${ack.error}.` }; this.changed(); }
+  }
+
+  async inviteToBoard(to: string, tableId: number, kind: BoardGameKind): Promise<BoardAck> {
+    const ack = await this.boardCall('office:board-invite', { to, tableId, kind });
+    if (ack.ok && ack.id) { this.boardInviteOut = { id: ack.id, to, toName: this.roster.get(to)?.name ?? 'them', kind }; this.changed(); }
+    else this.boardError(ack);
+    return ack;
+  }
+
+  async answerBoardInvite(id: string, accept: boolean): Promise<void> {
+    const ack = await this.boardCall('office:board-answer', { id, accept });
+    this.boardInvitesIn = this.boardInvitesIn.filter((x) => x.id !== id);
+    this.boardError(ack);
+    this.changed();
+  }
+
+  cancelBoardInvite(): void {
+    const o = this.boardInviteOut;
+    if (o) void this.boardCall('office:board-cancel', { id: o.id });
+  }
+
+  async boardMove(from: number, to: number, promotion?: 'Q' | 'R' | 'B' | 'N'): Promise<BoardAck> {
+    const g = this.board;
+    if (!g) return { ok: false, error: 'No game' };
+    const ack = await this.boardCall('office:board-move', { id: g.id, from, to, ...(promotion ? { promotion } : {}) });
+    this.boardError(ack);
+    return ack;
+  }
+
+  resignBoard(): void {
+    const g = this.board;
+    if (g && !g.state.result) void this.boardCall('office:board-resign', { id: g.id });
+  }
+
+  /** Closes a finished game's board. */
+  closeBoard(): void {
+    if (this.board?.state.result) { this.board = null; this.changed(); }
+  }
+
+  private onBoardInviteClosed(m: BoardInviteClosed): void {
+    const mine = this.boardInviteOut?.id === m.id;
+    if (mine && m.reason !== 'accepted') {
+      const name = this.boardInviteOut!.toName;
+      const text = { declined: `${name} declined the game.`, timeout: `${name} did not answer.`, gone: `${name} has left.`, 'too-far': 'You were no longer both at the table.', busy: 'The table or a player was busy.', cancelled: 'Invitation cancelled.' }[m.reason as 'declined' | 'timeout' | 'gone' | 'too-far' | 'busy' | 'cancelled'];
+      this.notice = { kind: 'info', text };
+    }
+    if (mine) this.boardInviteOut = null;
+    this.boardInvitesIn = this.boardInvitesIn.filter((x) => x.id !== m.id);
+    this.changed();
   }
 
   private onNudgeClosed(m: NudgeClosedMessage): void {

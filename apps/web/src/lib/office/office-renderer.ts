@@ -13,7 +13,7 @@
 // shader/uniform code for eval-free versions (otherwise the canvas never starts: "0 fps").
 import 'pixi.js/unsafe-eval';
 import { Application, BitmapText, CanvasSource, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
-import { ACTION_MS, AVATAR_FRAMES, AVATAR_KEYS, AVATAR_POSES, avatarKeyOr, createAnimation, FACINGS, gameObjects, objectLayer, poseCell, sheetCell, stepAnimation, TILE_SIZE } from '@hrvo/shared';
+import { ACTION_MS, AVATAR_FRAMES, AVATAR_KEYS, AVATAR_POSES, avatarKeyOr, createAnimation, FACINGS, gameObjects, objectLayer, poseCell, prop, sheetCell, stepAnimation, TILE_SIZE } from '@hrvo/shared';
 import type { AvatarActionKind, AvatarActionState, AvatarAnimation, AvatarFrame, AvatarKey, AvatarPose, CampusGame, Facing, MapObject, OfficeMap, VoStatus } from '@hrvo/shared';
 import { createAvatarSheetCanvas } from './avatar-sheet';
 import { renderEnvironment } from './office-environment';
@@ -458,6 +458,15 @@ export class OfficeRenderer {
     return this.games.map((g) => {
       const p = this.world.toGlobal(this.P(g.object.x + g.object.width / 2, g.object.y + g.object.height / 2));
       return { game: g.game, x: Math.round(p.x), y: Math.round(p.y), id: g.object.id };
+    });
+  }
+
+  /** FR-VO-017: the point in front of each board-game table, on screen in host CSS pixels (walking there; browser tests). */
+  boardTablesOnScreen(): Array<{ id: number; x: number; y: number }> {
+    if (!this.map) return [];
+    return objectLayer(this.map, 'furniture').filter((o) => String(prop(o, 'kind', '')).toLowerCase() === 'chess-table').map((o) => {
+      const p = this.world.toGlobal(this.P(o.x + o.width / 2, o.y + o.height + 18));
+      return { id: o.id, x: Math.round(p.x), y: Math.round(p.y) };
     });
   }
 

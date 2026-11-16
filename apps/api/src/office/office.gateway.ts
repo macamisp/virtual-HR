@@ -12,9 +12,9 @@ import { AttendanceService } from '../attendance/attendance.service.ts';
 import { Permission } from '../../../../packages/shared/src/auth/types.ts';
 import type { JwtPayload } from '../../../../packages/shared/src/index.ts';
 import {
-  ActionDtoSchema, avatarKeyOr, JoinDtoSchema, ModeDtoSchema, NUDGE_MAX_WAITING, NudgeAnswerDtoSchema, NudgeCancelDtoSchema, NudgeDtoSchema, nudgeReach, nudgeRules, NUDGES_PER_MINUTE, PAIR_REQUEST_TTL_MS, PairAnswerDtoSchema, PairCancelDtoSchema, PairRequestDtoSchema, SitDtoSchema, MoveDtoSchema, RoomAnswerDtoSchema, RoomKnockDtoSchema, TeleportDtoSchema, ViewDtoSchema,
+  ActionDtoSchema, avatarKeyOr, BoardAnswerDtoSchema, BoardIdDtoSchema, BoardInviteDtoSchema, BoardMoveDtoSchema, JoinDtoSchema, playMove, ModeDtoSchema, NUDGE_MAX_WAITING, NudgeAnswerDtoSchema, NudgeCancelDtoSchema, NudgeDtoSchema, nudgeReach, nudgeRules, NUDGES_PER_MINUTE, PAIR_REQUEST_TTL_MS, PairAnswerDtoSchema, PairCancelDtoSchema, PairRequestDtoSchema, SitDtoSchema, MoveDtoSchema, RoomAnswerDtoSchema, RoomKnockDtoSchema, TeleportDtoSchema, ViewDtoSchema,
 } from '../../../../packages/shared/src/office/index.ts';
-import type { ActionAck, JoinAck, ManualStatus, MoveAck, NudgeAck, NudgeAnswerAck, NudgeRequestMessage, PairAck, PairRequestMessage, SitAck, TeleportAck } from '../../../../packages/shared/src/office/index.ts';
+import type { ActionAck, BoardAck, BoardInviteMessage, JoinAck, ManualStatus, MoveAck, NudgeAck, NudgeAnswerAck, NudgeRequestMessage, PairAck, PairRequestMessage, SitAck, TeleportAck } from '../../../../packages/shared/src/office/index.ts';
 import { OfficeRegistry } from './office-registry.ts';
 import { OfficePresenceStore } from './office-presence.ts';
 import type { Avatar, OfficeWorld, WorldEmitter } from './office-world.ts';
@@ -30,6 +30,9 @@ const ACTIONS_PER_WINDOW = 8;
 const ACTION_WINDOW_MS = 5_000;
 const PAIR_COOLDOWN_MS = 3_000;
 const NUDGE_RATE_WINDOW_MS = 60_000;
+/** FR-VO-017: one board invitation per 3 s per person; at most 20 moves per 5 s. */
+const BOARD_INVITE_COOLDOWN_MS = 3_000;
+const BOARD_MOVES_PER_WINDOW = 20;
 
 function parse<T>(schema: ZodType<T>, body: unknown): T | null {
   const r = schema.safeParse(body ?? {});
@@ -56,6 +59,8 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
   /** ADR 058: when each sender last nudged each person ("from>to"), and each sender's recent nudges. */
   private readonly nudgedAt = new Map<string, number>();
   private readonly nudgeTimes = new Map<string, number[]>();
+  private readonly lastBoardInvite = new Map<string, number>();
+  private readonly boardMoveWindow = new Map<string, { at: number; n: number }>();
   /** ADR 056: tells one person's sockets about their pair requests. */
   private readonly personalEmitter: WorldEmitter = {
     positions: () => undefined, proximity: () => undefined, roster: () => undefined,
@@ -159,6 +164,9 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     client.data.officeOrg = orgId;
     await client.join([`vo-org:${orgId}`, `vo:${userId}`]);
     if (dto.positions) { world.forgetKnown(userId); await client.join(`vo:${userId}:pos`); }
+    // FR-VO-017: a game still running after a reload (within the grace) comes back on screen.
+    const game = world.boardGameOf(userId);
+    if (game) client.emit('office:board', world.boardSnapshot(game));
     return { ok: true, self: { x: a.x, y: a.y, floorId: a.floorId, roomId: a.roomId }, roster: world.roster(), nudge: nudgeRules(process.env) };
   }
 
@@ -207,6 +215,13 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
       for (const r of [...world.requests.values()]) if (r.from === a.userId || r.to === a.userId) world.closeRequest(r, 'gone', this.personalEmitter);
       // ADR 058: and no nudge waiting on them, or for them.
       for (const n of [...world.nudges.values()]) if (n.from === a.userId || n.to === a.userId) world.closeNudge(n, 'gone', this.personalEmitter);
+      // FR-VO-017: no board invitation waiting on them; a game ends at once if they left on purpose
+      // (after a dropped connection it waits for the grace: the tick ends it when they are gone).
+      for (const i of [...world.boardInvites.values()]) if (i.from === a.userId || i.to === a.userId) world.closeBoardInvite(i, 'gone', this.personalEmitter);
+      const game = world.boardGameOf(a.userId);
+      if (game && (explicit || this.registry.leaveGraceMs === 0)) world.endBoardGame(game, { winner: game.white.id === a.userId ? 'b' : 'w', reason: 'left' }, this.personalEmitter);
+      this.lastBoardInvite.delete(a.userId);
+      this.boardMoveWindow.delete(a.userId);
       this.actionWindow.delete(a.userId);
       this.lastPair.delete(a.userId);
       if (explicit || this.registry.leaveGraceMs === 0) {
@@ -531,6 +546,112 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     const n = j.world.nudges.get(dto.id);
     if (!n || n.from !== j.a.userId) return { ok: false, error: 'That nudge is no longer open', code: 'NOT_OPEN' };
     j.world.closeNudge(n, 'cancelled', this.personalEmitter);
+    return { ok: true };
+  }
+
+  // ---------------------------------------------------------------- FR-VO-017 board games (ADR 062)
+  // Chess and checkers at a game table, between two people standing at it. Both are looked up in
+  // the caller's own organisation's world (never another organisation's); every move is checked
+  // with the shared rules; games are in memory only and end when a player resigns or leaves.
+
+  @SubscribeMessage('office:board-invite')
+  boardInvite(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): BoardAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(BoardInviteDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const { world, a } = j;
+    const now = Date.now();
+    if (now - (this.lastBoardInvite.get(a.userId) ?? 0) < BOARD_INVITE_COOLDOWN_MS) return { ok: false, error: 'You asked a moment ago', code: 'RATE_LIMITED' };
+    if (dto.to === a.userId) return { ok: false, error: 'Invite someone else', code: 'SELF' };
+    const b = world.avatars.get(dto.to);
+    if (!b || b.goneAt !== null) return { ok: false, error: 'This person is not here', code: 'NOT_FOUND' };
+    const table = world.boardTable(a.floorId, dto.tableId, dto.kind);
+    if (!table) return { ok: false, error: `That table has no ${dto.kind}`, code: 'NO_TABLE' };
+    if (!world.atTable(a, a.floorId, table)) return { ok: false, error: 'Walk up to the table first', code: 'TOO_FAR' };
+    if (!world.atTable(b, a.floorId, table)) return { ok: false, error: `${b.name} is not at the table`, code: 'TOO_FAR' };
+    if (world.tableBusy(a.floorId, dto.tableId)) return { ok: false, error: 'A game is already being played at this table', code: 'BUSY' };
+    if (world.boardGameOf(a.userId)) return { ok: false, error: 'Finish your game first', code: 'PLAYING' };
+    if (world.boardGameOf(b.userId)) return { ok: false, error: `${b.name} is already playing`, code: 'BUSY' };
+    if (world.status(b) === 'DND' || world.away(b)) return { ok: false, error: `${b.name} is not available right now`, code: 'BUSY' };
+    for (const i of world.boardInvites.values()) {
+      if (i.from === a.userId) return { ok: false, error: 'You are already waiting for an answer', code: 'PENDING' };
+      if (i.to === b.userId) return { ok: false, error: `${b.name} has an invitation waiting`, code: 'BUSY' };
+    }
+    this.lastBoardInvite.set(a.userId, now);
+    const ttl = Math.max(1_000, Number(process.env.OFFICE_BOARD_INVITE_TTL_MS ?? 0) || 30_000);
+    const inv = world.openBoardInvite(dto.kind, a.floorId, dto.tableId, a.userId, b.userId, now, ttl);
+    const msg: BoardInviteMessage = { id: inv.id, from: a.userId, fromName: a.name, kind: inv.kind, tableId: inv.tableId, expiresInMs: ttl };
+    this.server.to(`vo:${b.userId}`).emit('office:board-invite', msg);
+    return { ok: true, id: inv.id };
+  }
+
+  /** The person invited accepts or declines. A yes still needs both at the table and the table free. */
+  @SubscribeMessage('office:board-answer')
+  boardAnswer(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): BoardAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(BoardAnswerDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const { world, a } = j;
+    const inv = world.boardInvites.get(dto.id);
+    if (!inv || inv.to !== a.userId) return { ok: false, error: 'That invitation is no longer open', code: 'NOT_OPEN' };
+    const emit = this.personalEmitter;
+    if (!dto.accept) { world.closeBoardInvite(inv, 'declined', emit); return { ok: true }; }
+    const from = world.avatars.get(inv.from);
+    const table = world.boardTable(inv.floorId, inv.tableId, inv.kind);
+    if (!from || from.goneAt !== null || !table) { world.closeBoardInvite(inv, 'gone', emit); return { ok: false, error: 'They have left', code: 'GONE' }; }
+    if (!world.atTable(from, inv.floorId, table) || !world.atTable(a, inv.floorId, table)) { world.closeBoardInvite(inv, 'too-far', emit); return { ok: false, error: 'You both need to be at the table', code: 'TOO_FAR' }; }
+    if (world.tableBusy(inv.floorId, inv.tableId) || world.boardGameOf(from.userId) || world.boardGameOf(a.userId)) { world.closeBoardInvite(inv, 'busy', emit); return { ok: false, error: 'The table or a player is busy', code: 'BUSY' }; }
+    const g = world.startBoardGame(inv, from, a, emit);
+    return { ok: true, id: g.id };
+  }
+
+  @SubscribeMessage('office:board-cancel')
+  boardCancel(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): BoardAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(BoardIdDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const inv = j.world.boardInvites.get(dto.id);
+    if (!inv || inv.from !== j.a.userId) return { ok: false, error: 'That invitation is no longer open', code: 'NOT_OPEN' };
+    j.world.closeBoardInvite(inv, 'cancelled', this.personalEmitter);
+    return { ok: true };
+  }
+
+  /** A move by the player whose turn it is, checked with the shared rules; both see the new board. */
+  @SubscribeMessage('office:board-move')
+  boardMove(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): BoardAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(BoardMoveDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const { world, a } = j;
+    const now = Date.now();
+    const w = this.boardMoveWindow.get(a.userId);
+    if (!w || now - w.at >= ACTION_WINDOW_MS) this.boardMoveWindow.set(a.userId, { at: now, n: 1 });
+    else if (++w.n > BOARD_MOVES_PER_WINDOW) return { ok: false, error: 'Slow down a little', code: 'RATE_LIMITED' };
+    const g = world.boardGames.get(dto.id);
+    if (!g || (g.white.id !== a.userId && g.black.id !== a.userId)) return { ok: false, error: 'That game is not yours', code: 'NOT_FOUND' };
+    const side = g.white.id === a.userId ? 'w' : 'b';
+    if (g.state.turn !== side) return { ok: false, error: 'It is not your turn', code: 'NOT_YOUR_TURN' };
+    const next = playMove(g.state, { from: dto.from, to: dto.to, ...(dto.promotion ? { promotion: dto.promotion } : {}) });
+    if (!next) return { ok: false, error: 'That move is not allowed', code: 'ILLEGAL' };
+    g.state = next;
+    if (next.result) world.endBoardGame(g, next.result, this.personalEmitter);
+    else world.sendBoard(g, this.personalEmitter);
+    return { ok: true };
+  }
+
+  @SubscribeMessage('office:board-resign')
+  boardResign(@ConnectedSocket() client: Socket, @MessageBody() body: unknown): BoardAck {
+    const j = this.joined(client);
+    if (!j) return { ok: false, error: 'Join the office first', code: 'NOT_JOINED' };
+    const dto = parse(BoardIdDtoSchema, body);
+    if (!dto) return { ok: false, error: 'Bad request', code: 'BAD_REQUEST' };
+    const g = j.world.boardGames.get(dto.id);
+    if (!g || (g.white.id !== j.a.userId && g.black.id !== j.a.userId)) return { ok: false, error: 'That game is not yours', code: 'NOT_FOUND' };
+    j.world.endBoardGame(g, { winner: g.white.id === j.a.userId ? 'b' : 'w', reason: 'resigned' }, this.personalEmitter);
     return { ok: true };
   }
 

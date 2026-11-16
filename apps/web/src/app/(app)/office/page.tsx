@@ -17,6 +17,7 @@ import { OfficeToolbar } from '@/components/media/office-toolbar';
 import { AvatarActions } from '@/components/office/avatar-actions';
 import { AvatarSettings } from '@/components/office/avatar-settings';
 import { GameDialog, GamePrompt } from '@/components/office/campus-games';
+import { BoardDialog, BoardInvites, BoardPrompt } from '@/components/office/board-game';
 import { AvatarActionMenu } from '@/components/office/avatar-action-menu';
 import type { ActionContext } from '@/components/office/avatar-action-menu';
 import { useFestiveMode } from '@/lib/office/festive-mode';
@@ -181,6 +182,7 @@ function MapView({ client, festive, picture, projection }: { client: OfficeClien
         const f = renderer.current.festiveInfo();
         host.current?.setAttribute('data-festive', `${f.on ? 'on' : 'off'}:${f.pieces}:${f.bulbs}`);
         host.current?.setAttribute('data-games', JSON.stringify(renderer.current.gamesOnScreen()));
+        host.current?.setAttribute('data-board-tables', JSON.stringify(renderer.current.boardTablesOnScreen()));
       }
     }, 500);
     return () => { cancelled = true; clearInterval(t); r?.destroy(); renderer.current = null; };
@@ -237,6 +239,10 @@ function MapView({ client, festive, picture, projection }: { client: OfficeClien
       {near && !playing ? <GamePrompt game={near} onPlay={() => setPlaying(near)} /> : null}
       <AvatarActionMenu client={client} ctx={actx} />
       {playing ? <GameDialog game={playing} picture={picture} onClose={close} /> : null}
+      {/* FR-VO-017: chess and checkers with a colleague at a game table. */}
+      <BoardPrompt client={client} />
+      <BoardInvites client={client} />
+      <BoardDialog client={client} />
     </div>
   );
 }
