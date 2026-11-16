@@ -22,7 +22,7 @@ import { AppModule } from '../src/app.module.ts';
 import { configureApp } from '../src/common/configure-app.ts';
 import { OfficeBoardStore } from '../src/office/office-boards.ts';
 import { OfficeRegistry } from '../src/office/office-registry.ts';
-import { newBoard, squareOf } from '../../../packages/shared/src/office/board-games.ts';
+import { legalMoves, newBoard, squareOf } from '../../../packages/shared/src/office/board-games.ts';
 import type { BoardAck, BoardInviteMessage, BoardSnapshot } from '../../../packages/shared/src/office/board-games.ts';
 import type { JoinAck, MoveAck, TeleportAck } from '../../../packages/shared/src/office/index.ts';
 import { resetOrgs } from './support/reset-orgs.ts';
@@ -110,10 +110,10 @@ describe('Board games survive an API restart (ADR 064)', { concurrency: false },
   }
 
   /** `white` invites `black` at the table; both accept and see the new board. */
-  async function play(white: Office, black: Office, who: Who): Promise<BoardSnapshot> {
+  async function play(white: Office, black: Office, who: Who, kind: 'chess' | 'checkers' = 'chess'): Promise<BoardSnapshot> {
     await toTable(white, 2990);
     await toTable(black, 3010);
-    const sent = await white.invite(who);
+    const sent = await white.invite(who, kind);
     assert.ok(sent.ok, JSON.stringify(sent));
     await wait(150);
     assert.ok((await black.answer(black.inbox.invites.at(-1)!.id, true)).ok);
@@ -219,6 +219,37 @@ describe('Board games survive an API restart (ADR 064)', { concurrency: false },
     assert.ok(await A.call('office:leave'));
     await wait(400);
     assert.deepEqual(B.last()!.state.result, { winner: 'b', reason: 'left' });
+    await flush();
+    assert.equal((await rows()).length, 0);
+    for (const s of sockets) s.disconnect();
+    sockets = [];
+    await wait(300);
+  });
+
+  it('checkers restores the same board and turn for both players after restart and accepts the next legal move', async () => {
+    await wait(3100);
+    let A = await office('a');
+    let B = await office('b');
+    const g = await play(A, B, 'b', 'checkers');
+    assert.ok((await A.move(g.id, legalMoves(g.state)[0]!)).ok);
+    await wait(150);
+    const before = B.last()!.state;
+    await restart();
+    A = await office('a');
+    B = await office('b');
+    for (const player of [A, B]) {
+      assert.ok(player.join.ok && player.join.board?.id === g.id);
+      assert.deepEqual(player.join.board.state, before);
+      assert.equal(player.join.board.kind, 'checkers');
+    }
+    const move = legalMoves(before)[0]!;
+    assert.equal(((await A.move(g.id, move)) as { code?: string }).code, 'NOT_YOUR_TURN');
+    assert.ok((await B.move(g.id, move)).ok);
+    await wait(150);
+    await flush();
+    assert.deepEqual((await rows())[0]!.state, A.last()!.state);
+    assert.equal(A.last()!.state.plies, 2);
+    assert.ok((await B.resign(g.id)).ok);
     await flush();
     assert.equal((await rows()).length, 0);
     for (const s of sockets) s.disconnect();

@@ -78,11 +78,17 @@ test.describe.serial('Office map style (ADR 061)', () => {
     await p.mouse.click(box.x + box.width / 2 + 120, box.y + box.height / 2);
     await expect.poll(async () => { const [x, y] = await self(p); return Math.abs(x - before[0] - 80) < 24 && Math.abs(y - before[1] + 80) < 24; }, { timeout: 10_000 }).toBe(true);
 
-    // W walks up the screen: both map coordinates fall.
+    // S walks down the screen: both map coordinates increase. From this click target, W
+    // points into the café table at (72, 26) tiles and correctly cannot move. Observe movement
+    // along the clear aisle instead of timing a held key (frame scheduling varies under load).
     await canvasOf(p).focus();
     const [x0, y0] = await self(p);
-    await p.keyboard.down('KeyW'); await p.waitForTimeout(350); await p.keyboard.up('KeyW');
-    await expect.poll(async () => { const [x, y] = await self(p); return x < x0 - 10 && y < y0 - 10; }).toBe(true);
+    await p.keyboard.down('KeyS');
+    try {
+      await expect.poll(async () => { const [x, y] = await self(p); return x > x0 + 10 && y > y0 + 10; }).toBe(true);
+    } finally {
+      await p.keyboard.up('KeyS');
+    }
 
     // A cabinet opens its game.
     await goTo(p, 'Arcade');

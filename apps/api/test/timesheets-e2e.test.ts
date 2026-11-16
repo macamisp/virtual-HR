@@ -216,13 +216,20 @@ describe('Timesheets API (FR-TS-001..006, 009, 011)', { concurrency: false }, ()
       await openSession('sub', 'dev-auto');
       const started = await ok(await api('sub', `/tasks/${t.a!.id}/timer/start`, { method: 'POST' }), 200, TimerStateSchema);
       // Simulate an hour of work, then heartbeats stopping five minutes ago.
-      await adminPool.query(`UPDATE time_entries SET started_at = now() - interval '60 minutes' WHERE id = $1`, [started.running!.id]);
-      await adminPool.query(`UPDATE attendance_sessions SET last_heartbeat_at = now() - interval '5 minutes' WHERE user_id = $1 AND device_id = 'dev-auto'`, [U.sub.id]);
+      const start = await adminPool.query<{ started_at: Date }>(`UPDATE time_entries SET started_at = now() - interval '60 minutes' WHERE id = $1 RETURNING started_at`, [started.running!.id]);
+      const end = await adminPool.query<{ last_heartbeat_at: Date }>(`UPDATE attendance_sessions SET last_heartbeat_at = now() - interval '5 minutes' WHERE user_id = $1 AND device_id = 'dev-auto' RETURNING last_heartbeat_at`, [U.sub.id]);
       await app.get(ScheduledWorkService).attendanceReconcile(new Date());
       const e = await adminPool.query(`SELECT ended_at, minutes, auto_stopped FROM time_entries WHERE id = $1`, [started.running!.id]);
       assert.ok(e.rows[0].ended_at, 'the timer stopped');
       assert.equal(e.rows[0].auto_stopped, true);
-      assert.ok(e.rows[0].minutes >= 54 && e.rows[0].minutes <= 56, `about 55 minutes, got ${e.rows[0].minutes}`);
+      // This hour can cross organisation-local midnight. The original row then contains only
+      // the first day; sum every auto-stopped piece of this exact interval (FR-TS-003).
+      const pieces = await adminPool.query<{ minutes: number }>(`SELECT minutes FROM time_entries
+        WHERE user_id = $1 AND task_id = $2 AND auto_stopped = true
+          AND started_at >= $3 AND ended_at <= $4`,
+        [U.sub.id, t.a!.id, start.rows[0]!.started_at, end.rows[0]!.last_heartbeat_at]);
+      const minutes = pieces.rows.reduce((sum, piece) => sum + piece.minutes, 0);
+      assert.ok(minutes >= 54 && minutes <= 56, `about 55 minutes across all day pieces, got ${minutes}`);
       const state = await ok(await api('sub', '/timer'), 200, TimerStateSchema);
       assert.equal(state.running, null);
     });

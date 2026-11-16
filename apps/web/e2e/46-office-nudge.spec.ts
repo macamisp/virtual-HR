@@ -54,7 +54,14 @@ async function goNextTo(p: Page, name: string): Promise<void> {
 async function setStatus(p: Page, value: 'AUTO' | 'DND'): Promise<void> {
   const form = p.getByRole('form', { name: 'My status' });
   await form.getByLabel('Status').selectOption(value);
+  const started = performance.now();
+  const response = p.waitForResponse((r) => r.request().method() === 'PUT' && new URL(r.url()).pathname === '/office/me/status');
   await form.getByRole('button', { name: 'Set' }).click();
+  const saved = await response;
+  console.log(JSON.stringify({ route: '/office/me/status', httpStatus: saved.status(), durationMs: Math.round(performance.now() - started) }));
+  expect(saved.status(), 'status mutation must complete successfully before testing its effect').toBe(200);
+  expect((await saved.json() as { status: string }).status).toBe(value);
+  await expect(form.getByRole('button', { name: 'Set' })).toBeEnabled();
 }
 
 /** Both screens show how the nudge ended, then the cards are cleared for the next step. */
