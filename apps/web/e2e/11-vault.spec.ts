@@ -80,6 +80,7 @@ test.describe.serial('Confidential vault: re-auth, document password, share link
     await expect(page.getByTestId('share-link-list')).toContainText('Revoked');
     await guest.goto(new URL(url).pathname);
     await expect(guest.getByTestId('link-invalid')).toBeVisible();
+    await guest.context().close();
   });
 
   test('a colleague with View access gets the watermarked view only; the owner can trash and restore', async ({ page, browser }) => {

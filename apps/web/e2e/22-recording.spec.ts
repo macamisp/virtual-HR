@@ -44,45 +44,52 @@ test.describe.serial('Meeting recording with consent (FR-MEET-007)', () => {
     test.setTimeout(180_000);
     const host = await personIn(browser, USERS.worker.email);
     const lead = await personIn(browser, USERS.lead.email);
-    await host.goto('/meetings');
-    await host.getByRole('button', { name: 'Instant call' }).click();
-    await host.getByRole('searchbox', { name: 'Call' }).fill('Leo');
-    await host.getByRole('button', { name: new RegExp(USERS.lead.name) }).click();
-    await host.getByRole('button', { name: 'Start call' }).click();
-    await expect(host).toHaveURL(/\/meetings\/[0-9a-f-]{36}$/);
-    const url = host.url();
-    await host.getByRole('button', { name: 'Join meeting' }).click();
-    await join(host);
-    await lead.goto(url);
-    await lead.getByRole('button', { name: 'Join meeting' }).click();
-    await join(lead);
-    await expect(host.getByTestId('tile-remote')).toHaveAttribute('data-identity', USERS.lead.id);
+    // Both leave the call and close their browsers at the end: left open, the call keeps running
+    // (camera, LiveKit, token refreshes) under every later spec in the same browser.
+    try {
+      await host.goto('/meetings');
+      await host.getByRole('button', { name: 'Instant call' }).click();
+      await host.getByRole('searchbox', { name: 'Call' }).fill('Leo');
+      await host.getByRole('button', { name: new RegExp(USERS.lead.name) }).click();
+      await host.getByRole('button', { name: 'Start call' }).click();
+      await expect(host).toHaveURL(/\/meetings\/[0-9a-f-]{36}$/);
+      const url = host.url();
+      await host.getByRole('button', { name: 'Join meeting' }).click();
+      await join(host);
+      await lead.goto(url);
+      await lead.getByRole('button', { name: 'Join meeting' }).click();
+      await join(lead);
+      await expect(host.getByTestId('tile-remote')).toHaveAttribute('data-identity', USERS.lead.id);
 
-    await host.getByRole('button', { name: 'Record', exact: true }).click();
-    await expect(host.getByTestId('recording-banner')).toContainText('Nothing is recorded until everyone agrees');
-    const ask = lead.getByTestId('recording-consent');
-    await expect(ask).toContainText('May this meeting be recorded?');
-    await ask.getByRole('button', { name: 'I agree' }).click();
-    await expect(lead.getByTestId('recording-banner')).toContainText('Recording. Everyone in this call agreed', { timeout: 20_000 });
-    await expect(host.getByTestId('recording-banner')).toContainText('Recording. Everyone in this call agreed', { timeout: 20_000 });
+      await host.getByRole('button', { name: 'Record', exact: true }).click();
+      await expect(host.getByTestId('recording-banner')).toContainText('Nothing is recorded until everyone agrees');
+      const ask = lead.getByTestId('recording-consent');
+      await expect(ask).toContainText('May this meeting be recorded?');
+      await ask.getByRole('button', { name: 'I agree' }).click();
+      await expect(lead.getByTestId('recording-banner')).toContainText('Recording. Everyone in this call agreed', { timeout: 20_000 });
+      await expect(host.getByTestId('recording-banner')).toContainText('Recording. Everyone in this call agreed', { timeout: 20_000 });
 
-    // Let Egress record a few seconds of the call.
-    await host.waitForTimeout(8_000);
-    await host.getByRole('button', { name: 'Stop recording' }).click();
-    const card = host.getByTestId('recordings-card');
-    await expect(card).toContainText('Ready', { timeout: 90_000 });
-    await expect(host.getByTestId('recording-banner')).toHaveCount(0);
-    await card.getByRole('button', { name: 'Watch' }).click();
-    const player = host.getByTestId('recording-player');
-    await expect(player).toBeVisible();
-    await expect.poll(() => player.evaluate((v: HTMLVideoElement) => v.duration), { timeout: 20_000 }).toBeGreaterThan(3);
+      // Let Egress record a few seconds of the call.
+      await host.waitForTimeout(8_000);
+      await host.getByRole('button', { name: 'Stop recording' }).click();
+      const card = host.getByTestId('recordings-card');
+      await expect(card).toContainText('Ready', { timeout: 90_000 });
+      await expect(host.getByTestId('recording-banner')).toHaveCount(0);
+      await card.getByRole('button', { name: 'Watch' }).click();
+      const player = host.getByTestId('recording-player');
+      await expect(player).toBeVisible();
+      await expect.poll(() => player.evaluate((v: HTMLVideoElement) => v.duration), { timeout: 20_000 }).toBeGreaterThan(3);
 
-    // The other recorded person may watch too.
-    await lead.reload();
-    await expect(lead.getByTestId('recordings-card').getByRole('button', { name: 'Watch' })).toBeVisible();
-    const row = (await adminPool().query(`SELECT status, sha256, staging_key FROM meeting_recordings WHERE org_id = $1 ORDER BY created_at DESC LIMIT 1`, [ORG_ID])).rows[0];
-    expect(row.status).toBe('READY');
-    expect(row.sha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(row.staging_key).toBeNull();
+      // The other recorded person may watch too.
+      await lead.reload();
+      await expect(lead.getByTestId('recordings-card').getByRole('button', { name: 'Watch' })).toBeVisible();
+      const row = (await adminPool().query(`SELECT status, sha256, staging_key FROM meeting_recordings WHERE org_id = $1 ORDER BY created_at DESC LIMIT 1`, [ORG_ID])).rows[0];
+      expect(row.status).toBe('READY');
+      expect(row.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(row.staging_key).toBeNull();
+    } finally {
+      await lead.context().close();
+      await host.context().close();
+    }
   });
 });

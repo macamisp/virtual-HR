@@ -42,6 +42,12 @@ const openPcs = (p: Page) => p.evaluate(() => (window as unknown as { __pcs: RTC
 const note = (type: string, description: string) => { test.info().annotations.push({ type, description }); console.log(`[qa] ${type}: ${description}`); };
 
 test.describe.serial('Office call toolbar (ADR 048 §3b)', () => {
+  // These tests time media and page loads in the shared browser. A context an earlier spec left
+  // open (it once held a live call for half an hour) slows everything here; fail with that cause.
+  test.beforeEach(({ browser }) => {
+    expect(browser.contexts(), 'browser contexts left open by an earlier spec').toHaveLength(0);
+  });
+
   test('desktop: every control works on its own and matches what the colleague sees and hears', async ({ browser }) => {
     test.setTimeout(360_000);
     const a = await open(browser, USERS.worker.email);
