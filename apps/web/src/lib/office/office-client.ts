@@ -6,8 +6,9 @@
  * proximity. Framework-free; React subscribes through `subscribe` / `getVersion`.
  */
 import { io, type Socket } from 'socket.io-client';
-import { buildGrid, findPath, inRect, MOVE_SPEED, walkable } from '@hrvo/shared';
+import { buildGrid, findPath, inRect, mapSeats, MOVE_SPEED, walkable } from '@hrvo/shared';
 import type {
+  ActionAck, PairAck, PairAction, PairClosedMessage, PairRequestMessage, Seat, SitAck, SoloAction,
   CollisionGrid, JoinAck, MoveAck, OfficeMap, OfficeSnapshot, Point, PositionsMessage, ProximityMessage, RosterEntry, TeleportAck, TeleportDto, VoStatus,
 } from '@hrvo/shared';
 import { API_URL } from '../env';
@@ -51,6 +52,12 @@ export class OfficeClient {
   roster = new Map<string, RosterEntry>();
   proximity: ProximityMessage = { groupId: null, members: [] };
   knocks: Knock[] = [];
+  /** ADR 056: hug / high-five requests waiting for my answer, and the one I am waiting on. */
+  incoming: Array<PairRequestMessage & { until: number }> = [];
+  outgoing: { id: string; kind: PairAction; to: string; toName: string; until: number } | null = null;
+  /** ADR 056: my own jump / wave / dance, shown at once (the roster confirms it a tick later). */
+  selfAction: { kind: SoloAction; at: number } | null = null;
+  private seatCache = new Map<string, Seat[]>();
   notice: Notice = null;
   connected = false;
   roomOnly = false;
@@ -107,6 +114,10 @@ export class OfficeClient {
       // A move whose acknowledgement will never come must not block every later move (ADR 048 §8).
       this.inFlight = false;
       this.path = [];
+      // ADR 056: the server drops our requests with the connection; so do we.
+      this.incoming = [];
+      this.outgoing = null;
+      this.selfAction = null;
       this.changed();
       // Kicked by the server (expired token): Socket.IO does not reconnect from this on its own.
       if (reason === 'io server disconnect') void this.reconnectWithFreshToken();
@@ -134,6 +145,11 @@ export class OfficeClient {
     });
     socket.on('office:proximity', (m: ProximityMessage) => { this.proximity = m; this.changed(); });
     socket.on('room:knock', (k: Knock) => { this.knocks = [...this.knocks.filter((x) => !(x.userId === k.userId && x.roomId === k.roomId)), k]; this.changed(); });
+    socket.on('office:pair-request', (m: PairRequestMessage) => {
+      this.incoming = [...this.incoming.filter((x) => x.from !== m.from), { ...m, until: Date.now() + m.expiresInMs }];
+      this.changed();
+    });
+    socket.on('office:pair-closed', (m: PairClosedMessage) => this.onPairClosed(m));
     socket.on('room:knock-handled', (k: { roomId: string; userId: string }) => { this.knocks = this.knocks.filter((x) => !(x.userId === k.userId && x.roomId === k.roomId)); this.changed(); });
     socket.on('room:answered', (a: { roomId: string; admit: boolean; by: string }) => {
       const room = this.snapshot.rooms.find((r) => r.id === a.roomId);
@@ -212,6 +228,8 @@ export class OfficeClient {
     this.lastSent = { x: ack.self.x, y: ack.self.y };
     this.roster = new Map(ack.roster.map((r) => [r.id, r]));
     this.avatars.clear();
+    this.incoming = [];
+    this.outgoing = null;
     if (this.roomOnly) this.socket!.emit('office:mode', { roomOnly: true });
     this.changed();
   }
@@ -351,6 +369,97 @@ export class OfficeClient {
   answer(k: Knock, admit: boolean): void {
     this.socket?.emit('room:answer', { roomId: k.roomId, userId: k.userId, admit });
     this.knocks = this.knocks.filter((x) => x !== k);
+    this.changed();
+  }
+
+  // ---------------------------------------------------------------- avatar actions (ADR 056)
+
+  /** The chairs of the floor I am on (from the map, like the server's). */
+  seats(): Seat[] {
+    const floorId = this.self?.floorId;
+    if (!floorId) return [];
+    let s = this.seatCache.get(floorId);
+    if (!s) {
+      const f = this.snapshot.floors.find((x) => x.id === floorId);
+      const g = this.grids.get(floorId);
+      s = f && g ? mapSeats(f.map as OfficeMap, g) : [];
+      this.seatCache.set(floorId, s);
+    }
+    return s;
+  }
+
+  /** Whether someone sits on that chair, as the roster says. */
+  seatTaken(seatId: string): boolean {
+    for (const r of this.roster.values()) if (r.floorId === this.self?.floorId && r.action?.kind === 'sit' && r.action.seat === seatId) return true;
+    return false;
+  }
+
+  mySeat(): string | null {
+    const a = this.roster.get(this.snapshot.me.id)?.action;
+    return a?.kind === 'sit' ? a.seat ?? null : null;
+  }
+
+  async act(kind: SoloAction | 'stop'): Promise<ActionAck> {
+    if (!this.socket || !this.connected) return { ok: false, error: 'Not connected', code: 'NOT_JOINED' };
+    if (kind === 'stop') this.selfAction = null;
+    else this.selfAction = { kind, at: performance.now() };
+    const ack = await this.socket.timeout(5_000).emitWithAck('office:action', { kind }).catch(() => ({ ok: false, error: 'No answer' })) as ActionAck;
+    if (!ack.ok) { this.selfAction = null; this.notice = { kind: 'error', text: ack.error }; this.changed(); }
+    return ack;
+  }
+
+  async sit(seatId: string): Promise<SitAck> {
+    if (!this.socket || !this.self || !this.connected) return { ok: false, error: 'Not connected', code: 'NOT_JOINED' };
+    this.path = [];
+    const ack = await this.socket.timeout(5_000).emitWithAck('office:sit', { seatId }).catch(() => ({ ok: false, error: 'No answer' })) as SitAck;
+    if (ack.ok && this.self) {
+      // The server puts us on the chair; nothing to resend.
+      Object.assign(this.self, { x: ack.x, y: ack.y, roomId: ack.roomId });
+      this.lastSent = { x: ack.x, y: ack.y };
+    } else if (!ack.ok) this.notice = { kind: 'error', text: ack.error };
+    this.changed();
+    return ack;
+  }
+
+  async stand(): Promise<void> {
+    await this.socket?.timeout(5_000).emitWithAck('office:stand', {}).catch(() => undefined);
+  }
+
+  async askPair(kind: PairAction, to: string): Promise<PairAck> {
+    if (!this.socket || !this.connected) return { ok: false, error: 'Not connected', code: 'NOT_JOINED' };
+    const ack = await this.socket.timeout(5_000).emitWithAck('office:pair', { kind, to }).catch(() => ({ ok: false, error: 'No answer' })) as PairAck;
+    if (ack.ok) this.outgoing = { id: ack.id, kind, to, toName: this.roster.get(to)?.name ?? 'them', until: Date.now() + ack.expiresInMs };
+    else this.notice = { kind: 'error', text: ack.error };
+    this.changed();
+    return ack;
+  }
+
+  answerPair(id: string, accept: boolean): void {
+    this.incoming = this.incoming.filter((x) => x.id !== id);
+    this.socket?.emit('office:pair-answer', { id, accept }, (ack: ActionAck) => { if (!ack.ok) { this.notice = { kind: 'error', text: ack.error }; this.changed(); } });
+    this.changed();
+  }
+
+  cancelPair(): void {
+    const o = this.outgoing;
+    if (!o) return;
+    this.outgoing = null;
+    this.socket?.emit('office:pair-cancel', { id: o.id });
+    this.changed();
+  }
+
+  private onPairClosed(m: PairClosedMessage): void {
+    this.incoming = this.incoming.filter((x) => x.id !== m.id);
+    if (this.outgoing?.id === m.id) {
+      const who = this.outgoing.toName;
+      const what = m.kind === 'hug' ? 'hug' : 'high five';
+      this.outgoing = null;
+      const text: Record<PairClosedMessage['reason'], string | null> = {
+        accepted: null, declined: `${who} said no to the ${what} this time.`, cancelled: null, timeout: `${who} did not answer your ${what}.`, gone: `${who} has left.`, 'too-far': `You were no longer next to ${who}.`,
+      };
+      const t = text[m.reason];
+      if (t) this.notice = { kind: 'info', text: t };
+    }
     this.changed();
   }
 

@@ -6,11 +6,12 @@
  * All positions here are server-validated (collision map, speed, room access). Client clocks are
  * only echoed for latency measurement.
  */
+import { randomUUID } from 'node:crypto';
 import {
-  buildGrid, centre, displayStatus, inRect, InterestGrid, isClosedRoom, nearestWalkable, proximityGroups, spawnPoint, TILE_SIZE, validateMove,
+  ACTION_MS, buildGrid, centre, mapSeats, PAIR_REACH, PAIR_REQUEST_TTL_MS, SEAT_REACH, segmentClear, displayStatus, inRect, InterestGrid, isClosedRoom, nearestWalkable, proximityGroups, spawnPoint, TILE_SIZE, validateMove,
 } from '../../../../packages/shared/src/office/index.ts';
 import type {
-  AccessMode, CollisionGrid, ManualStatus, OfficeDefinition, Point, PositionEntry, PositionsMessage, ProximityMessage, Rect, RosterEntry, RoomType, VoStatus,
+  AccessMode, AvatarActionKind, AvatarActionState, AvatarKey, PairAction, PairClosedMessage, Seat, CollisionGrid, ManualStatus, OfficeDefinition, Point, PositionEntry, PositionsMessage, ProximityMessage, Rect, RosterEntry, RoomType, VoStatus,
 } from '../../../../packages/shared/src/office/index.ts';
 
 export interface RoomInfo {
@@ -56,7 +57,14 @@ export interface Avatar {
   goneAt: number | null;
   /** The login session family that dropped: only it gets its place back (a reload); a new sign-in starts fresh. */
   goneSid: string | null;
+  /** ADR 053: the saved pixel-art character (roster only, not the position stream). */
+  avatarKey: AvatarKey;
+  /** ADR 056: what the person is doing; `until` is server ms (null: until they stand or walk). */
+  action?: (AvatarActionState & { until: number | null }) | null;
 }
+
+/** ADR 056: a hug or high-five request waiting for the other person's answer. */
+export interface PairRequest { id: string; kind: PairAction; from: string; to: string; expiresAt: number }
 
 export type Denial = 'KNOCK' | 'INVITE' | 'PASSWORD' | 'FULL';
 
@@ -66,6 +74,8 @@ export interface WorldEmitter {
   proximity(userId: string, msg: ProximityMessage): void;
   /** Everyone in the office: someone joined, left, changed room or status. */
   roster(orgId: string, entry: RosterEntry | { id: string; gone: true }): void;
+  /** ADR 056: one person's sockets (pair requests and their outcome). */
+  personal?(userId: string, event: string, payload: unknown): void;
 }
 
 const seat = (d: DeskInfo): Point => ({ x: d.bounds.x + d.bounds.width / 2, y: d.bounds.y + d.bounds.height - TILE_SIZE / 2 });
@@ -84,6 +94,9 @@ export class OfficeWorld {
   readonly groupByUser = new Map<string, { id: string; members: string[] }>();
   rosterChanged = false;
   readonly changedRoster = new Set<string>();
+  /** ADR 056: the chairs of each floor, from the map; and the open hug / high-five requests. */
+  readonly seats = new Map<string, Map<string, Seat>>();
+  readonly requests = new Map<string, PairRequest>();
 
   constructor(
     readonly orgId: string,
@@ -97,6 +110,7 @@ export class OfficeWorld {
     for (const f of definition.floors) {
       this.grids.set(f.id, buildGrid(f.map));
       this.spawns.set(f.id, spawnPoint(f.map));
+      this.seats.set(f.id, new Map(mapSeats(f.map, this.grids.get(f.id)!).map((x) => [x.id, x])));
     }
   }
 
@@ -135,7 +149,79 @@ export class OfficeWorld {
   }
 
   rosterEntry(a: Avatar): RosterEntry {
-    return { id: a.userId, name: a.name, status: this.status(a), statusMessage: a.message, floorId: a.floorId, roomId: a.roomId, away: this.away(a) };
+    const act = a.action ? { kind: a.action.kind, since: a.action.since, ...(a.action.with ? { with: a.action.with } : {}), ...(a.action.seat ? { seat: a.action.seat, facing: a.action.facing } : {}) } : null;
+    return { id: a.userId, name: a.name, status: this.status(a), statusMessage: a.message, floorId: a.floorId, roomId: a.roomId, away: this.away(a), avatar: a.avatarKey, action: act };
+  }
+
+  // ---------------------------------------------------------------- ADR 056 actions
+
+  /** Everyone sees an action change with the next roster update; positions are not resent. */
+  private rosterOnly(a: Avatar): void {
+    this.rosterChanged = true;
+    this.changedRoster.add(a.userId);
+  }
+
+  setAction(a: Avatar, kind: AvatarActionKind | null, now: number, extra: Partial<AvatarActionState> = {}): void {
+    a.action = kind ? { kind, ...extra, since: now, until: kind === 'sit' ? null : now + ACTION_MS[kind] } : null;
+    this.rosterOnly(a);
+  }
+
+  /** Who sits on a chair (null when free). */
+  seatOccupant(floorId: string, seatId: string): Avatar | null {
+    for (const a of this.avatars.values()) if (a.floorId === floorId && a.action?.kind === 'sit' && a.action.seat === seatId) return a;
+    return null;
+  }
+
+  /**
+   * Sit on a chair: it must exist on this floor, be free, be within reach in a straight walkable
+   * line (never through a wall), and be in a room the person may enter. The avatar is placed on
+   * the seat point, which mapSeats only produces where the collision map allows standing.
+   */
+  sit(a: Avatar, seatId: string, now: number): { ok: true } | { ok: false; code: 'NO_SEAT' | 'TAKEN' | 'TOO_FAR' | 'BLOCKED' | 'ROOM' } {
+    const seat = this.seats.get(a.floorId)?.get(seatId);
+    if (!seat) return { ok: false, code: 'NO_SEAT' };
+    const other = this.seatOccupant(a.floorId, seatId);
+    if (other && other.userId !== a.userId) return { ok: false, code: 'TAKEN' };
+    if (Math.hypot(seat.x - a.x, seat.y - a.y) > SEAT_REACH) return { ok: false, code: 'TOO_FAR' };
+    const g = this.grids.get(a.floorId);
+    if (!g || !segmentClear(g, { x: a.x, y: a.y }, seat)) return { ok: false, code: 'BLOCKED' };
+    const room = this.roomAt(a.floorId, seat);
+    if (room && room.id !== a.roomId && this.mayEnter(a.userId, room, a.isAdmin)) return { ok: false, code: 'ROOM' };
+    this.place(a, a.floorId, seat, now);
+    this.setAction(a, 'sit', now, { seat: seat.id, facing: seat.facing });
+    return { ok: true };
+  }
+
+  /** Close enough for a hug or a high five: same floor, same room (or both in the open), nearby. */
+  pairReach(a: Avatar, b: Avatar): boolean {
+    return a.floorId === b.floorId && a.roomId === b.roomId && Math.hypot(a.x - b.x, a.y - b.y) <= PAIR_REACH;
+  }
+
+  openRequest(kind: PairAction, from: string, to: string, now: number, ttlMs = PAIR_REQUEST_TTL_MS): PairRequest {
+    const r: PairRequest = { id: randomUUID(), kind, from, to, expiresAt: now + ttlMs };
+    this.requests.set(r.id, r);
+    return r;
+  }
+
+  /** Ends a request and tells both people why. */
+  closeRequest(r: PairRequest, reason: PairClosedMessage['reason'], emit?: WorldEmitter): void {
+    if (!this.requests.delete(r.id)) return;
+    const msg: PairClosedMessage = { id: r.id, kind: r.kind, from: r.from, to: r.to, accepted: reason === 'accepted', reason };
+    emit?.personal?.(r.from, 'office:pair-closed', msg);
+    emit?.personal?.(r.to, 'office:pair-closed', msg);
+  }
+
+  /**
+   * ADR 053: someone saved another character. Everyone in the office gets the new roster entry on
+   * the next tick; the version (and so the position stream) is left alone, since nothing moved.
+   */
+  setAvatar(userId: string, key: AvatarKey): boolean {
+    const a = this.avatars.get(userId);
+    if (!a || a.avatarKey === key) return false;
+    a.avatarKey = key;
+    this.rosterChanged = true;
+    this.changedRoster.add(userId);
+    return true;
   }
 
   /** Observers whose position stream was off get a full neighbourhood again when it comes back. */
@@ -178,7 +264,10 @@ export class OfficeWorld {
       const denial = this.mayEnter(a.userId, room, a.isAdmin);
       if (denial) return { ok: false, reason: `ROOM_${denial}` };
     }
+    const moved = Math.round(to.x) !== a.x || Math.round(to.y) !== a.y;
     this.place(a, a.floorId, to, now, dir, ct);
+    // ADR 056: walking stands you up and ends a dance (a short wave or jump plays on).
+    if (moved && (a.action?.kind === 'sit' || a.action?.kind === 'dance')) this.setAction(a, null, now);
     return { ok: true };
   }
 
@@ -228,6 +317,12 @@ export class OfficeWorld {
 
   /** The 10 Hz tick: per-observer deltas of the neighbourhood, proximity changes, roster changes. */
   tick(emit: WorldEmitter, now: number, leaveGraceMs = 0): { messages: number; entries: number } {
+    // ADR 056: actions run out; requests lapse, or end when one of the two has left.
+    for (const a of this.avatars.values()) if (a.action && a.action.until !== null && now >= a.action.until) this.setAction(a, null, now);
+    for (const r of [...this.requests.values()]) {
+      if (!this.avatars.has(r.from) || !this.avatars.has(r.to)) this.closeRequest(r, 'gone', emit);
+      else if (now >= r.expiresAt) this.closeRequest(r, 'timeout', emit);
+    }
     // ADR 048: a dropped connection (reload) keeps its place for the grace, then is gone for everyone.
     for (const a of this.avatars.values()) {
       if (a.goneAt !== null && now - a.goneAt >= leaveGraceMs) { this.remove(a.userId); emit.roster(this.orgId, { id: a.userId, gone: true }); }

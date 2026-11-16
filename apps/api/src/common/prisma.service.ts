@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
-import { databaseUrl, poolConfig } from './db-config.ts';
+import { databaseUrl, poolConfig, poolMax } from './db-config.ts';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
@@ -10,7 +10,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   constructor() {
     // DATABASE_URL locally; on AWS built from PG* with verified TLS (db-config.ts, ADR 020).
     super({ datasources: { db: { url: databaseUrl() } } });
-    this.pool = new pg.Pool(PrismaService.connectionConfig());
+    // Session-mode pooler budget (ADR 052): PG_POOL_MAX caps this pool too; unset keeps the pg default.
+    const max = poolMax();
+    this.pool = new pg.Pool({ ...PrismaService.connectionConfig(), ...(max ? { max } : {}) });
   }
 
   private static connectionConfig(): pg.ClientConfig {

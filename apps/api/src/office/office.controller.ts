@@ -6,8 +6,8 @@ import { RequirePermissions } from '../common/decorators/permissions.decorator.t
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.ts';
 import { Permission } from '../../../../packages/shared/src/index.ts';
 import type { AuthenticatedUser } from '../../../../packages/shared/src/index.ts';
-import { BroadcastDtoSchema, DeskAssignDtoSchema, OfficeMapDtoSchema, OfficePreferencesDtoSchema, PeopleQuerySchema, RoomInvitesDtoSchema, RoomUpdateDtoSchema, StatusDtoSchema } from '../../../../packages/shared/src/office/index.ts';
-import type { BroadcastDto, DeskAssignDto, OfficeDefinition, OfficePreferencesDto, PeopleQuery, RoomInvitesDto, RoomUpdateDto, StatusDto } from '../../../../packages/shared/src/office/index.ts';
+import { AvatarDtoSchema, BroadcastDtoSchema, DeskAssignDtoSchema, OfficeMapDtoSchema, OfficePreferencesDtoSchema, PeopleQuerySchema, RoomInvitesDtoSchema, RoomUpdateDtoSchema, StatusDtoSchema } from '../../../../packages/shared/src/office/index.ts';
+import type { AvatarDto, BroadcastDto, DeskAssignDto, OfficeDefinition, OfficePreferencesDto, PeopleQuery, RoomInvitesDto, RoomUpdateDto, StatusDto } from '../../../../packages/shared/src/office/index.ts';
 import { OfficeService } from './office.service.ts';
 
 const id = new ParseUUIDPipe({ version: '4' });
@@ -38,6 +38,12 @@ export class OfficeController {
   @Put('me/preferences')
   preferences(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(OfficePreferencesDtoSchema)) dto: OfficePreferencesDto) {
     return this.office.setPreferences(user, dto);
+  }
+
+  /** ADR 053: my pixel-art character (one of the allowlisted presets). */
+  @Put('me/avatar')
+  avatar(@CurrentUser() user: AuthenticatedUser, @Body(new ZodValidationPipe(AvatarDtoSchema)) dto: AvatarDto) {
+    return this.office.setAvatar(user, dto);
   }
 
   @Post('desks/:id/claim')
