@@ -21,7 +21,7 @@ import type { Cell } from '../common/export-format.ts';
 import { Permission, userCan } from '../../../../packages/shared/src/auth/types.ts';
 import { ANALYTICS_MAX_DAYS, ANALYTICS_STATUS_LABEL } from '../../../../packages/shared/src/reports/attendance-analytics.ts';
 import type {
-  AnalyticsGroup, AnalyticsRow, AnalyticsStatus, AnalyticsSummary, AttendanceAnalytics, AttendanceAnalyticsQuery, PersonAnalytics, PersonAnalyticsQuery,
+  AnalyticsGroup, AnalyticsRow, AnalyticsStatus, AnalyticsSummary, AttendanceAnalytics, AttendanceAnalyticsQuery, PersonAnalytics, PersonAnalyticsQuery, PersonWork,
 } from '../../../../packages/shared/src/reports/attendance-analytics.ts';
 import type { AuthenticatedUser, ReportUserRef } from '../../../../packages/shared/src/index.ts';
 import { ensureRange, exportTable, orgToday, reportScope, scopeSql } from './report-scope.ts';
@@ -54,9 +54,12 @@ interface DayFacts {
   late: number;
   early: number;
   status: AnalyticsStatus | null;
+  /** FR-REP-010: seconds recorded on tasks (timer and manual) and tasks completed that day. */
+  task: number;
+  done: number;
 }
 
-const emptyDay = (userId: string, date: string): DayFacts => ({ userId, date, hasAttendance: false, firstIn: null, lastOut: null, work: 0, active: 0, brk: 0, meeting: 0, office: 0, late: 0, early: 0, status: null });
+const emptyDay = (userId: string, date: string): DayFacts => ({ userId, date, hasAttendance: false, firstIn: null, lastOut: null, work: 0, active: 0, brk: 0, meeting: 0, office: 0, late: 0, early: 0, status: null, task: 0, done: 0 });
 
 /** Groups one person's days into a day, week or month row. Exported for the unit tests. */
 export function groupDays(person: ReportUserRef, days: DayFacts[], groupBy: AnalyticsGroup | 'total', label?: string): AnalyticsRow[] {
@@ -67,7 +70,7 @@ export function groupDays(person: ReportUserRef, days: DayFacts[], groupBy: Anal
     let r = out.get(k);
     if (!r) {
       r = { user: person, period: k, daysWorked: 0, firstIn: null, lastOut: null, workSeconds: 0, activeSeconds: 0, breakSeconds: 0, meetingSeconds: 0, officeSeconds: 0,
-        lateMinutes: 0, earlyLeaveMinutes: 0, status: null, statusCounts: {}, lastOutMs: -Infinity, firstInMs: Infinity };
+        lateMinutes: 0, earlyLeaveMinutes: 0, taskSeconds: 0, tasksDone: 0, status: null, statusCounts: {}, lastOutMs: -Infinity, firstInMs: Infinity };
       out.set(k, r);
     }
     if (d.hasAttendance) r.daysWorked += 1;
@@ -80,6 +83,8 @@ export function groupDays(person: ReportUserRef, days: DayFacts[], groupBy: Anal
     r.officeSeconds += d.office;
     r.lateMinutes += d.late;
     r.earlyLeaveMinutes += d.early;
+    r.taskSeconds += d.task;
+    r.tasksDone += d.done;
     if (d.status) r.statusCounts[d.status] = (r.statusCounts[d.status] ?? 0) + 1;
     if (groupBy === 'day') r.status = d.status;
   }
@@ -101,6 +106,8 @@ export function summarise(people: number, days: DayFacts[]): AnalyticsSummary {
     meetingSeconds: meeting,
     meetingSharePct: work > 0 ? Math.round((meeting * 100) / work) : 0,
     officeSeconds: days.reduce((s, d) => s + d.office, 0),
+    taskSeconds: days.reduce((s, d) => s + d.task, 0),
+    tasksDone: days.reduce((s, d) => s + d.done, 0),
     statusCounts,
   };
 }
@@ -150,14 +157,14 @@ export class AttendanceAnalyticsService {
     const t = (s: string | null) => (s ? formatInTimeZone(new Date(s), r.timezone, 'yyyy-MM-dd HH:mm') : '');
     const h = (s: number) => Math.round((s / 3600) * 100) / 100;
     const header = ['Person', 'Team', { day: 'Day', week: 'Week of', month: 'Month' }[q.groupBy], 'Days worked', 'First check-in', 'Last check-out',
-      'Verified work (h)', 'Active (h)', 'Break (h)', 'Confirmed meetings (h)', 'Office connected (h)', 'Late (min)', 'Early leave (min)', 'Status'];
+      'Verified work (h)', 'Active (h)', 'Break (h)', 'Confirmed meetings (h)', 'Office connected (h)', 'Recorded task time (h)', 'Tasks completed', 'Late (min)', 'Early leave (min)', 'Status'];
     const status = (x: AnalyticsRow) => (x.status ? ANALYTICS_STATUS_LABEL[x.status] : Object.entries(x.statusCounts).map(([k, n]) => `${ANALYTICS_STATUS_LABEL[k as AnalyticsStatus] ?? k} ${n}`).join(', '));
     const rows: Cell[][] = full.map((x) => [x.user.displayName ?? x.user.email, x.user.teamName ?? '', x.period, x.daysWorked, t(x.firstIn), t(x.lastOut),
-      h(x.workSeconds), h(x.activeSeconds), h(x.breakSeconds), h(x.meetingSeconds), h(x.officeSeconds), x.lateMinutes, x.earlyLeaveMinutes, status(x)]);
+      h(x.workSeconds), h(x.activeSeconds), h(x.breakSeconds), h(x.meetingSeconds), h(x.officeSeconds), h(x.taskSeconds), x.tasksDone, x.lateMinutes, x.earlyLeaveMinutes, status(x)]);
     return await this.prisma.runWithTenantContext(user.orgId, (db) => exportTable(db, user, {
       report: `attendance-analytics-by-${q.groupBy}`,
       title: 'Attendance analytics',
-      subtitle: `${q.from} to ${q.to} · ${r.timezone} · ${r.scope === 'all' ? 'whole organisation' : 'my team'} · office connected time is not work time`,
+      subtitle: `${q.from} to ${q.to} · ${r.timezone} · ${r.scope === 'all' ? 'whole organisation' : 'my team'} · office connected time and recorded task time are not verified work time`,
       header, rows, format: q.format, filters: { groupBy: q.groupBy, from: q.from, to: q.to, teamId: q.teamId ?? null, userId: q.userId ?? null },
     }));
   }
@@ -203,6 +210,7 @@ export class AttendanceAnalyticsService {
            WHERE user_id = $1 AND requested_in < $3 AND requested_out > $2 ORDER BY requested_in DESC LIMIT ${DETAIL_LIMIT}`,
           [userId, new Date(range.start), new Date(range.end)])).rows
           .map((c) => ({ id: c.id, requestedIn: c.requested_in.toISOString(), requestedOut: c.requested_out.toISOString(), status: c.status, createdAt: c.created_at.toISOString(), reviewedAt: iso(c.reviewed_at) })),
+        work: await this.work(db, user, target, q, range, now),
       };
     });
   }
@@ -291,7 +299,68 @@ export class AttendanceAnalyticsService {
       byUser.set(r.user_id, list);
     }
     for (const [uid, list] of byUser) for (const [date, seconds] of secondsByLocalDay(list, from, to, timezone)) get(uid, date).office = seconds;
+    // FR-REP-010: recorded task time (a running timer counts up to now) and tasks completed, per local day.
+    const entries = await db.query<{ user_id: string; work_date: string; seconds: string }>(
+      `SELECT user_id, work_date::text AS work_date,
+              sum(CASE WHEN ended_at IS NULL AND started_at IS NOT NULL THEN GREATEST(0, floor(extract(epoch FROM ($4::timestamptz - started_at))))
+                       ELSE COALESCE(minutes, 0) * 60 END)::text AS seconds
+       FROM time_entries WHERE user_id = ANY($1::uuid[]) AND work_date BETWEEN $2 AND $3 GROUP BY user_id, work_date`, [uids, from, to, now]);
+    for (const e of entries.rows) get(e.user_id, e.work_date).task = Number(e.seconds);
+    const done = await db.query<{ assignee_id: string; day: string; n: string }>(
+      `SELECT assignee_id, (completed_at AT TIME ZONE $4)::date::text AS day, count(*)::text AS n FROM tasks
+       WHERE assignee_id = ANY($1::uuid[]) AND deleted_at IS NULL AND status = 'DONE' AND completed_at >= $2 AND completed_at < $3
+       GROUP BY assignee_id, day`, [uids, new Date(range.start), new Date(range.end), timezone]);
+    for (const t of done.rows) get(t.assignee_id, t.day).done = Number(t.n);
     return [...facts.values()];
+  }
+
+  /**
+   * FR-REP-010: one person's work items. Task titles only for the person, someone who may read all
+   * tasks, or a team lead (tasks.read.team) for their own team or direct report.
+   */
+  private async work(db: Db, user: AuthenticatedUser, target: { id: string; team_id: string | null; manager_id: string | null }, q: PersonAnalyticsQuery, range: Interval, now: Date): Promise<PersonWork> {
+    const self = target.id === user.id;
+    const titles = self || userCan(user, Permission.TASKS_READ_ALL)
+      || (userCan(user, Permission.TASKS_READ_TEAM) && (target.manager_id === user.id || (!!user.teamId && target.team_id === user.teamId)));
+    const today = await orgToday(db, user.orgId, now);
+    const time = (await db.query<{ timer: string; manual: string; n: string }>(
+      `SELECT COALESCE(sum(CASE WHEN source = 'TIMER' THEN CASE WHEN ended_at IS NULL AND started_at IS NOT NULL THEN GREATEST(0, floor(extract(epoch FROM ($4::timestamptz - started_at)))) ELSE COALESCE(minutes, 0) * 60 END END), 0)::text AS timer,
+              COALESCE(sum(CASE WHEN source <> 'TIMER' THEN COALESCE(minutes, 0) * 60 END), 0)::text AS manual, count(*)::text AS n
+       FROM time_entries WHERE user_id = $1 AND work_date BETWEEN $2 AND $3`, [target.id, q.from, q.to, now])).rows[0]!;
+    const counts = (await db.query<{ open: string; completed: string; overdue: string; due: string }>(
+      `SELECT count(*) FILTER (WHERE status <> 'DONE')::text AS open,
+              count(*) FILTER (WHERE status = 'DONE' AND completed_at >= $2 AND completed_at < $3)::text AS completed,
+              count(*) FILTER (WHERE status <> 'DONE' AND due_date < $4::date)::text AS overdue,
+              count(*) FILTER (WHERE due_date BETWEEN $5::date AND $6::date)::text AS due
+       FROM tasks WHERE assignee_id = $1 AND deleted_at IS NULL`, [target.id, new Date(range.start), new Date(range.end), today, q.from, q.to])).rows[0]!;
+    const list = await db.query<{ id: string; title: string; status: string; priority: string | null; due_date: string | null; completed_at: Date | null; recorded: string }>(
+      `SELECT t.id, t.title, t.status, t.priority, t.due_date::text AS due_date, t.completed_at,
+              COALESCE((SELECT sum(COALESCE(e.minutes, 0) * 60) FROM time_entries e WHERE e.task_id = t.id AND e.user_id = $1 AND e.work_date BETWEEN $4 AND $5), 0)::text AS recorded
+       FROM tasks t WHERE t.assignee_id = $1 AND t.deleted_at IS NULL
+         AND (t.status <> 'DONE' OR (t.completed_at >= $2 AND t.completed_at < $3) OR (t.created_at >= $2 AND t.created_at < $3))
+       ORDER BY (t.status <> 'DONE' AND t.due_date < $6::date) DESC, t.due_date NULLS LAST, t.created_at DESC LIMIT 200`,
+      [target.id, new Date(range.start), new Date(range.end), q.from, q.to, today]);
+    const sheets = await db.query<{ id: string; period_start: string; period_end: string; status: string; submitted_at: Date | null; approved_at: Date | null; logged_minutes: number | null; attendance_minutes: number | null }>(
+      `SELECT id, period_start::text AS period_start, period_end::text AS period_end, status, submitted_at, approved_at, logged_minutes, attendance_minutes
+       FROM timesheets WHERE user_id = $1 AND period_start <= $3::date AND period_end >= $2::date ORDER BY period_start DESC LIMIT 60`, [target.id, q.from, q.to]);
+    const activity = await db.query<{ type: string; n: string }>(
+      `SELECT type, count(*)::text AS n FROM task_activity WHERE actor_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY type`,
+      [target.id, new Date(range.start), new Date(range.end)]);
+    const byType: Record<string, number> = {};
+    for (const a of activity.rows) byType[a.type] = Number(a.n);
+    return {
+      taskTime: { timerSeconds: Number(time.timer), manualSeconds: Number(time.manual), entries: Number(time.n) },
+      tasks: { open: Number(counts.open), completed: Number(counts.completed), overdue: Number(counts.overdue), dueInRange: Number(counts.due) },
+      taskList: list.rows.map((t) => ({
+        id: t.id, title: titles ? t.title : null, status: t.status, priority: t.priority, dueDate: t.due_date, completedAt: iso(t.completed_at),
+        overdue: t.status !== 'DONE' && !!t.due_date && t.due_date < today, recordedSeconds: Number(t.recorded),
+      })),
+      timesheets: sheets.rows.map((s) => ({
+        id: s.id, periodStart: s.period_start, periodEnd: s.period_end, status: s.status, submittedAt: iso(s.submitted_at), approvedAt: iso(s.approved_at),
+        loggedMinutes: s.logged_minutes ?? 0, attendanceMinutes: s.attendance_minutes ?? 0,
+      })),
+      activity: { total: Object.values(byType).reduce((s, n) => s + n, 0), byType },
+    };
   }
 
   private async segments(db: Db, userId: string, q: PersonAnalyticsQuery, now: Date): Promise<PersonAnalytics['segments']> {
@@ -356,6 +425,7 @@ function sortRows(rows: AnalyticsRow[], sort: AttendanceAnalyticsQuery['sort'], 
     work: (a, b) => sign * (a.workSeconds - b.workSeconds) || name(a).localeCompare(name(b)),
     office: (a, b) => sign * (a.officeSeconds - b.officeSeconds) || name(a).localeCompare(name(b)),
     meeting: (a, b) => sign * (a.meetingSeconds - b.meetingSeconds) || name(a).localeCompare(name(b)),
+    tasks: (a, b) => sign * (a.taskSeconds - b.taskSeconds) || name(a).localeCompare(name(b)),
   };
   rows.sort(by[sort]);
 }

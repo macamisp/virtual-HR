@@ -116,6 +116,22 @@ describe('HR attendance analytics (ADR 059)', { concurrency: false }, () => {
       ($1, $2, $4, 'PA_1', '2026-10-05T05:00:00Z', '2026-10-05T05:40:00Z'), ($1, $2, $4, 'PA_2', '2026-10-05T05:30:00Z', '2026-10-05T06:00:00Z'),
       ($1, $3, $4, 'PA_3', '2026-10-06T04:00:00Z', NULL)`, [ORG, M1, M2, U.emp1.id]);
     await q(`INSERT INTO attendance_corrections (org_id, user_id, requested_in, requested_out, reason, status) VALUES ($1, $2, '2026-10-05T02:00:00Z', '2026-10-05T12:00:00Z', 'Forgot to sign in', 'APPROVED')`, [ORG, U.emp1.id]);
+    // FR-REP-010: work items. A task done on Tuesday with 90 min on its timer (Monday), 30 min of manual time
+    // (Tuesday), an overdue open task, a future one; the week's timesheet submitted; two activity entries.
+    const TK = { done: u('c1'), late: u('c2'), later: u('c3') };
+    await q(`INSERT INTO tasks (id, org_id, title, status, priority, assignee_id, reporter_id, due_date, completed_at, created_at) VALUES
+      ($1, $4, 'Ship the report', 'DONE', 'HIGH', $5, $6, '2026-10-09', '2026-10-06T05:00:00Z', '2026-10-01T03:00:00Z'),
+      ($2, $4, 'Fix the invoice export', 'IN_PROGRESS', 'URGENT', $5, $6, '2026-10-01', NULL, '2026-09-20T03:00:00Z'),
+      ($3, $4, 'Plan the next quarter', 'TODO', 'MEDIUM', $5, $6, '2099-12-31', NULL, '2026-10-02T03:00:00Z')`, [TK.done, TK.late, TK.later, ORG, U.emp1.id, U.mgr.id]);
+    const TS = u('d1');
+    await q(`INSERT INTO timesheets (id, org_id, user_id, period_start, period_end, status, submitted_at, logged_minutes, attendance_minutes) VALUES ($1, $2, $3, '2026-10-05', '2026-10-11', 'DRAFT', NULL, 120, 2460)`, [TS, ORG, U.emp1.id]);
+    await q(`INSERT INTO time_entries (org_id, user_id, timesheet_id, task_id, work_date, started_at, ended_at, minutes, source, manual_reason) VALUES
+      ($1, $2, $3, $4, '2026-10-05', '2026-10-05T04:00:00Z', '2026-10-05T05:30:00Z', 90, 'TIMER', NULL),
+      ($1, $2, $3, $5, '2026-10-06', '2026-10-06T06:00:00Z', '2026-10-06T06:30:00Z', 30, 'MANUAL', 'Pairing session')`, [ORG, U.emp1.id, TS, TK.done, TK.late]);
+    // Submitted after its entries, as in the app (a submitted timesheet locks them).
+    await q(`UPDATE timesheets SET status = 'SUBMITTED', submitted_at = '2026-10-10T10:00:00Z' WHERE id = $1`, [TS]);
+    await q(`INSERT INTO task_activity (org_id, task_id, actor_id, type, created_at) VALUES
+      ($1, $2, $3, 'status_changed', '2026-10-06T05:00:00Z'), ($1, $2, $3, 'commented', '2026-10-06T05:10:00Z')`, [ORG, TK.done, U.emp1.id]);
 
     app = await NestFactory.create(AppModule, { logger: false });
     configureApp(app);
@@ -144,7 +160,7 @@ describe('HR attendance analytics (ADR 059)', { concurrency: false }, () => {
     assert.deepEqual(
       { ...row('emp1', '2026-10-05'), user: undefined },
       { user: undefined, period: '2026-10-05', daysWorked: 1, firstIn: '2026-10-05T03:30:00.000Z', lastOut: '2026-10-05T11:30:00.000Z', workSeconds: 25200, activeSeconds: 23000,
-        breakSeconds: 1800, meetingSeconds: 3600, officeSeconds: 5 * H, lateMinutes: 15, earlyLeaveMinutes: 0, status: 'LATE', statusCounts: { LATE: 1 } },
+        breakSeconds: 1800, meetingSeconds: 3600, officeSeconds: 5 * H, lateMinutes: 15, earlyLeaveMinutes: 0, taskSeconds: 5400, tasksDone: 0, status: 'LATE', statusCounts: { LATE: 1 } },
       'work excludes the adjusted session; office: 4 h over two tabs plus 1 h before midnight');
     assert.equal(row('emp1', '2026-10-05')!.user.teamName, 'Operations');
     assert.deepEqual([row('emp1', '2026-10-06')!.workSeconds, row('emp1', '2026-10-06')!.officeSeconds, row('emp1', '2026-10-06')!.status], [14400, 1.5 * H, 'NOT_SUMMARISED']);
@@ -153,7 +169,7 @@ describe('HR attendance analytics (ADR 059)', { concurrency: false }, () => {
     assert.equal(row('emp2', '2026-10-05')!.status, 'PRESENT');
     assert.equal(r.rows.length, 5);
     assert.ok(!r.rows.some((x) => x.user.id === U.oemp.id), 'never another organisation');
-    assert.deepEqual(r.summary, { people: 6, peoplePresent: 2, daysWorked: 4, workSeconds: 72000, averageWorkSeconds: 18000, meetingSeconds: 3600, meetingSharePct: 5, officeSeconds: 7.5 * H,
+    assert.deepEqual(r.summary, { people: 6, peoplePresent: 2, daysWorked: 4, workSeconds: 72000, averageWorkSeconds: 18000, meetingSeconds: 3600, meetingSharePct: 5, officeSeconds: 7.5 * H, taskSeconds: 2 * H, tasksDone: 1,
       statusCounts: { LATE: 1, NOT_SUMMARISED: 1, IN_PROGRESS: 1, LEAVE: 1, PRESENT: 1 } });
     assert.deepEqual(r.teams.map((t) => t.name), ['Design', 'Operations']);
     assert.equal(r.people.length, 6);
@@ -235,7 +251,7 @@ describe('HR attendance analytics (ADR 059)', { concurrency: false }, () => {
     assert.match(csv.headers.get('content-disposition') ?? '', /attendance-analytics-by-day-\d{4}-\d{2}-\d{2}\.csv/);
     const text = await csv.text();
     assert.match(text, /Verified work \(h\).*Confirmed meetings \(h\).*Office connected \(h\)/);
-    assert.match(text, /EMP1,Operations,2026-10-05,1,2026-10-05 09:00,2026-10-05 17:00,7,6\.39,0\.5,1,5,15,0,Late/);
+    assert.match(text, /EMP1,Operations,2026-10-05,1,2026-10-05 09:00,2026-10-05 17:00,7,6\.39,0\.5,1,5,1\.5,0,15,0,Late/);
     for (const [fmt, type] of [['xlsx', /spreadsheetml/], ['pdf', /application\/pdf/]] as const) {
       const f = await get('hr', `/reports/attendance-analytics?${RANGE}&format=${fmt}`);
       assert.equal(f.status, 200, fmt);
@@ -246,6 +262,32 @@ describe('HR attendance analytics (ADR 059)', { concurrency: false }, () => {
     assert.deepEqual(audit.rows.map((a) => [a.after.report, a.after.format, a.after.rowCount, a.after.filters.from]),
       [['attendance-analytics-by-day', 'csv', 5, '2026-10-05'], ['attendance-analytics-by-day', 'xlsx', 5, '2026-10-05'], ['attendance-analytics-by-day', 'pdf', 5, '2026-10-05']]);
     assert.equal((await get('emp1', `/reports/attendance-analytics?${RANGE}&format=csv`)).status, 403, 'never an employee');
+  });
+
+  it('work items (FR-REP-010): recorded task time apart from work, tasks, timesheet status, activity; titles only where tasks may be read', async () => {
+    const week = await report('hr', `${RANGE}&groupBy=week&userId=${U.emp1.id}`);
+    const row = week.rows[0]!;
+    assert.deepEqual({ task: row.taskSeconds, done: row.tasksDone }, { task: 2 * H, done: 1 });
+    assert.equal(row.workSeconds, 25200 + 14400 + 3600, 'recorded task time is never added to verified work');
+    assert.ok(week.summary.taskSeconds >= 2 * H && week.summary.tasksDone >= 1);
+    const hr = await person('hr', `/reports/attendance-analytics/people/${U.emp1.id}?${RANGE}`);
+    assert.deepEqual(hr.work.taskTime, { timerSeconds: 90 * 60, manualSeconds: 30 * 60, entries: 2 });
+    assert.deepEqual(hr.work.tasks, { open: 2, completed: 1, overdue: 1, dueInRange: 1 });
+    assert.deepEqual(hr.work.taskList.map((t) => [t.title, t.status, t.overdue, t.recordedSeconds]),
+      [['Fix the invoice export', 'IN_PROGRESS', true, 1800], ['Ship the report', 'DONE', false, 5400], ['Plan the next quarter', 'TODO', false, 0]]);
+    assert.deepEqual(hr.work.timesheets.map((t) => [t.periodStart, t.status, t.loggedMinutes, !!t.submittedAt]), [['2026-10-05', 'SUBMITTED', 120, true]]);
+    assert.deepEqual(hr.work.activity, { total: 2, byType: { status_changed: 1, commented: 1 } });
+    // The manager (tasks.read.team) sees titles of their direct report; the auditor (no task permission) sees counts, not titles.
+    assert.ok((await person('mgr', `/reports/attendance-analytics/people/${U.emp1.id}?${RANGE}`)).work.taskList.every((t) => t.title !== null));
+    const aud = await person('auditor', `/reports/attendance-analytics/people/${U.emp1.id}?${RANGE}`);
+    assert.equal(aud.work.tasks.overdue, 1);
+    assert.ok(aud.work.taskList.every((t) => t.title === null), 'no titles without a task permission');
+    // The person sees their own; another organisation's HR does not see them at all.
+    assert.equal((await person('emp1', `/attendance/me/analytics?${RANGE}`)).work.tasks.completed, 1);
+    assert.equal((await get('ohr', `/reports/attendance-analytics/people/${U.emp1.id}?${RANGE}`)).status, 404);
+    // Exports carry the task columns.
+    const csv = await (await get('hr', `/reports/attendance-analytics?${RANGE}&groupBy=week&userId=${U.emp1.id}&format=csv`)).text();
+    assert.match(csv, /Recorded task time \(h\),Tasks completed/);
   });
 
   it('validation: dates in order, at most 366 days, nothing unknown', async () => {

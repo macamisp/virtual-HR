@@ -151,6 +151,10 @@ test.describe.serial('HR attendance analytics (ADR 059)', () => {
     await expect(p.locator('ol[data-testid="person-office"] li')).toHaveCount(3);
     await expect(p.getByTestId('person-corrections')).toContainText('Pending');
     await expect(p.getByTestId('person-weeks')).toContainText('Week of');
+    // FR-REP-010: the work items section, a fourth measure apart from work time (numbers: API test).
+    await expect(p.getByTestId('person-work')).toContainText('never added to it');
+    await expect(p.getByTestId('work-task-time')).toContainText('Recorded task time');
+    await expect(p.getByTestId('analytics-definitions')).toContainText('Recorded task time');
     await shot(p, 'analytics-02-hr-person-detail');
     expect(a.errors).toEqual([]);
     await a.close();

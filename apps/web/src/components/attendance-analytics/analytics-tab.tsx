@@ -21,7 +21,7 @@ import type { Preset } from './shared';
 type SortKey = AnalyticsFilters['sort'];
 const COLUMNS: Array<{ label: string; sort?: SortKey; numeric?: boolean }> = [
   { label: 'Employee', sort: 'name' }, { label: 'Team' }, { label: 'Date', sort: 'date' }, { label: 'First check-in' }, { label: 'Last check-out' },
-  { label: 'Work attendance', sort: 'work', numeric: true }, { label: 'Office connected', sort: 'office', numeric: true }, { label: 'Meeting time', sort: 'meeting', numeric: true }, { label: 'Status' },
+  { label: 'Work attendance', sort: 'work', numeric: true }, { label: 'Office connected', sort: 'office', numeric: true }, { label: 'Meeting time', sort: 'meeting', numeric: true }, { label: 'Task time', sort: 'tasks', numeric: true }, { label: 'Tasks done', numeric: true }, { label: 'Status' },
 ];
 
 /**
@@ -72,10 +72,11 @@ export function AttendanceAnalyticsTab() {
       {r.isError ? <ErrorState error={r.error} onRetry={() => void r.refetch()} /> : null}
       {data ? (
         <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" data-testid="analytics-summary">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5" data-testid="analytics-summary">
             <Stat label="People present" value={`${data.summary.peoplePresent} of ${data.summary.people}`} hint={`${data.summary.daysWorked} days worked`} testId="stat-present" />
             <Stat label="Average work attendance" value={dur(data.summary.averageWorkSeconds)} hint="per day worked" testId="stat-average" />
             <Stat label="Meeting time" value={dur(data.summary.meetingSeconds)} hint={`${data.summary.meetingSharePct}% of work attendance`} testId="stat-meetings" />
+            <Stat label="Recorded task time" value={dur(data.summary.taskSeconds)} hint={`${data.summary.tasksDone} task${data.summary.tasksDone === 1 ? '' : 's'} completed · not work time`} testId="stat-tasks" />
             <Stat label="Attendance status" value={`${data.summary.statusCounts.LATE ?? 0} late · ${data.summary.statusCounts.ABSENT ?? 0} absent`}
               hint={`${data.summary.statusCounts.LEAVE ?? 0} on leave · ${data.summary.statusCounts.IN_PROGRESS ?? 0} in progress`} testId="stat-status" />
           </div>
@@ -106,6 +107,8 @@ export function AttendanceAnalyticsTab() {
                     <TableCell className="text-right tabular-nums">{dur(x.workSeconds)}</TableCell>
                     <TableCell className="text-right tabular-nums">{dur(x.officeSeconds)}</TableCell>
                     <TableCell className="text-right tabular-nums">{dur(x.meetingSeconds)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{dur(x.taskSeconds)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{x.tasksDone || '—'}</TableCell>
                     <TableCell><StatusCell row={x} /></TableCell>
                   </TableRow>
                 ))}</TableBody>

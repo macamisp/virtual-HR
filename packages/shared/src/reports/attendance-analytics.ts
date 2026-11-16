@@ -20,7 +20,7 @@ const isoDate = z.string().datetime({ offset: true });
 export const ANALYTICS_MAX_DAYS = 366;
 export const ANALYTICS_GROUPS = ['day', 'week', 'month'] as const;
 export type AnalyticsGroup = (typeof ANALYTICS_GROUPS)[number];
-export const ANALYTICS_SORTS = ['date', 'name', 'work', 'office', 'meeting'] as const;
+export const ANALYTICS_SORTS = ['date', 'name', 'work', 'office', 'meeting', 'tasks'] as const;
 export const ANALYTICS_FORMATS = ['json', 'csv', 'xlsx', 'pdf'] as const;
 
 const range = { from: workDate, to: workDate };
@@ -70,6 +70,12 @@ export const AnalyticsRowSchema = z.object({
   officeSeconds: z.number().int(),
   lateMinutes: z.number().int(),
   earlyLeaveMinutes: z.number().int(),
+  /**
+   * FR-REP-010: time recorded on tasks (task timer and manual entries), a fourth measure kept apart
+   * from verified work, office connected time and meetings, and tasks completed in the period.
+   */
+  taskSeconds: z.number().int(),
+  tasksDone: z.number().int(),
   /** For a day: its status. For a week or month: null (see statusCounts). */
   status: z.enum(ANALYTICS_STATUSES).nullable(),
   statusCounts: z.record(z.string(), z.number().int()),
@@ -87,9 +93,46 @@ export const AnalyticsSummarySchema = z.object({
   /** Confirmed meeting time as a whole percentage of verified work time. */
   meetingSharePct: z.number().int(),
   officeSeconds: z.number().int(),
+  /** FR-REP-010: recorded task time and tasks completed, everyone in the report together. */
+  taskSeconds: z.number().int(),
+  tasksDone: z.number().int(),
   statusCounts: z.record(z.string(), z.number().int()),
 });
 export type AnalyticsSummary = z.infer<typeof AnalyticsSummarySchema>;
+
+/**
+ * FR-REP-010: one person's work items in the range: recorded task time by source, task counts and
+ * the tasks themselves, timesheets with their submission status, and task activity. Task titles are
+ * shown to the person, to anyone who may read all tasks, and to a team lead for their team;
+ * otherwise null.
+ */
+export const PersonWorkSchema = z.object({
+  taskTime: z.object({ timerSeconds: z.number().int(), manualSeconds: z.number().int(), entries: z.number().int() }),
+  tasks: z.object({ open: z.number().int(), completed: z.number().int(), overdue: z.number().int(), dueInRange: z.number().int() }),
+  taskList: z.array(z.object({
+    id: z.string(),
+    title: z.string().nullable(),
+    status: z.string(),
+    priority: z.string().nullable(),
+    dueDate: workDate.nullable(),
+    completedAt: isoDate.nullable(),
+    overdue: z.boolean(),
+    /** Time recorded on this task within the range. */
+    recordedSeconds: z.number().int(),
+  })),
+  timesheets: z.array(z.object({
+    id: z.string(),
+    periodStart: workDate,
+    periodEnd: workDate,
+    status: z.string(),
+    submittedAt: isoDate.nullable(),
+    approvedAt: isoDate.nullable(),
+    loggedMinutes: z.number().int(),
+    attendanceMinutes: z.number().int(),
+  })),
+  activity: z.object({ total: z.number().int(), byType: z.record(z.string(), z.number().int()) }),
+});
+export type PersonWork = z.infer<typeof PersonWorkSchema>;
 
 const common = {
   from: workDate,
@@ -141,5 +184,6 @@ export const PersonAnalyticsSchema = z.object({
     open: z.boolean(),
   })),
   corrections: z.array(z.object({ id: z.string(), requestedIn: isoDate, requestedOut: isoDate, status: z.string(), createdAt: isoDate, reviewedAt: isoDate.nullable() })),
+  work: PersonWorkSchema,
 });
 export type PersonAnalytics = z.infer<typeof PersonAnalyticsSchema>;

@@ -78,7 +78,7 @@ describe('Attendance analytics: grouping and validation', () => {
   const person = { id: 'u1', displayName: 'Ana', email: 'ana@x.test', teamName: 'Ops' };
   const day = (date: string, over: Partial<Parameters<typeof groupDays>[1][number]> = {}) => ({
     userId: 'u1', date, hasAttendance: true, firstIn: new Date(`${date}T03:30:00Z`), lastOut: new Date(`${date}T12:00:00Z`),
-    work: 8 * H, active: 7 * H, brk: 1800, meeting: H, office: 9 * H, late: 0, early: 0, status: 'PRESENT' as const, ...over,
+    work: 8 * H, active: 7 * H, brk: 1800, meeting: H, office: 9 * H, late: 0, early: 0, status: 'PRESENT' as const, task: 1800, done: 1, ...over,
   });
   const days = [
     day('2026-11-09'), day('2026-11-10', { late: 15, status: 'LATE' }), day('2026-11-11', { lastOut: null, status: 'IN_PROGRESS' }),
@@ -96,14 +96,16 @@ describe('Attendance analytics: grouping and validation', () => {
     const week = w.find((r) => r.period === '2026-11-09')!;
     assert.deepEqual({ daysWorked: week.daysWorked, work: week.workSeconds, meeting: week.meetingSeconds, office: week.officeSeconds, late: week.lateMinutes, status: week.status },
       { daysWorked: 3, work: 24 * H, meeting: 3 * H, office: 27 * H, late: 15, status: null });
+    // FR-REP-010: recorded task time and completed tasks are a fourth measure, never added to work.
+    assert.deepEqual({ task: week.taskSeconds, done: week.tasksDone, work: week.workSeconds }, { task: 3 * 1800, done: 3, work: 24 * H });
     assert.deepEqual(week.statusCounts, { PRESENT: 1, LATE: 1, IN_PROGRESS: 1 });
     assert.equal(week.firstIn, '2026-11-09T03:30:00.000Z');
     assert.equal(week.lastOut, '2026-11-10T12:00:00.000Z', 'the latest check-out recorded');
     const m = groupDays(person, days, 'month');
     assert.deepEqual(m.map((r) => [r.period, r.daysWorked, r.workSeconds, r.officeSeconds]), [['2026-11', 3, 24 * H, 27 * H], ['2026-12', 0, 0, 2 * H]]);
     const s = summarise(2, days);
-    assert.deepEqual({ ...s }, { people: 2, peoplePresent: 1, daysWorked: 3, workSeconds: 24 * H, averageWorkSeconds: 8 * H, meetingSeconds: 3 * H, meetingSharePct: 13, officeSeconds: 29 * H, statusCounts: { PRESENT: 1, LATE: 1, IN_PROGRESS: 1, LEAVE: 1 } });
-    assert.deepEqual(summarise(0, []), { people: 0, peoplePresent: 0, daysWorked: 0, workSeconds: 0, averageWorkSeconds: 0, meetingSeconds: 0, meetingSharePct: 0, officeSeconds: 0, statusCounts: {} });
+    assert.deepEqual({ ...s }, { people: 2, peoplePresent: 1, daysWorked: 3, workSeconds: 24 * H, averageWorkSeconds: 8 * H, meetingSeconds: 3 * H, meetingSharePct: 13, officeSeconds: 29 * H, taskSeconds: 5 * 1800, tasksDone: 5, statusCounts: { PRESENT: 1, LATE: 1, IN_PROGRESS: 1, LEAVE: 1 } });
+    assert.deepEqual(summarise(0, []), { people: 0, peoplePresent: 0, daysWorked: 0, workSeconds: 0, averageWorkSeconds: 0, meetingSeconds: 0, meetingSharePct: 0, officeSeconds: 0, taskSeconds: 0, tasksDone: 0, statusCounts: {} });
   });
 
   it('queries are strict: dates, groups, sorts, page sizes and nothing else', () => {

@@ -16,10 +16,11 @@ export function AnalyticsDefinitions({ retentionDays }: { retentionDays?: number
   return (
     <details className="rounded-md border bg-muted/30 p-3 text-sm" data-testid="analytics-definitions" open>
       <summary className="flex cursor-pointer items-center gap-2 font-medium"><Info aria-hidden="true" className="h-4 w-4" /> What these numbers mean</summary>
-      <dl className="mt-2 grid gap-2 sm:grid-cols-3">
+      <dl className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <div><dt className="font-medium">Work attendance</dt><dd className="text-muted-foreground">Verified attendance from the attendance engine: the time that counts as work.</dd></div>
         <div><dt className="font-medium">Office connected time</dt><dd className="text-muted-foreground">Time connected to the virtual office. It is not proof of work and is never added to work time. Where people were or what they did there is not recorded.</dd></div>
         <div><dt className="font-medium">Meeting time</dt><dd className="text-muted-foreground">Participation the server confirmed (a real call with someone else). It is part of work attendance.</dd></div>
+        <div><dt className="font-medium">Recorded task time</dt><dd className="text-muted-foreground">Time people recorded on tasks (timer or manual entries). A separate measure, never added to work attendance.</dd></div>
       </dl>
       {retentionDays !== undefined ? <p className="mt-2 text-xs text-muted-foreground">Office connection times are kept for {retentionDays} days. All times are server-recorded.</p> : null}
     </details>

@@ -61,7 +61,7 @@ export function PersonAnalyticsView({ data }: { data: PersonAnalytics }) {
         <CardContent className="overflow-x-auto p-0">
           {data.days.length === 0 ? <p className="p-4 text-sm text-muted-foreground">No days in this period.</p> : (
             <Table data-testid="person-days">
-              <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>First check-in</TableHead><TableHead>Last check-out</TableHead><TableHead className="text-right">Work attendance</TableHead><TableHead className="text-right">Active</TableHead><TableHead className="text-right">Break</TableHead><TableHead className="text-right">Meeting time</TableHead><TableHead className="text-right">Office connected</TableHead><TableHead>Status</TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>First check-in</TableHead><TableHead>Last check-out</TableHead><TableHead className="text-right">Work attendance</TableHead><TableHead className="text-right">Active</TableHead><TableHead className="text-right">Break</TableHead><TableHead className="text-right">Meeting time</TableHead><TableHead className="text-right">Office connected</TableHead><TableHead className="text-right">Task time</TableHead><TableHead>Status</TableHead></TableRow></TableHeader>
               <TableBody>{data.days.map((d) => (
                 <TableRow key={d.period}>
                   <TableCell className="whitespace-nowrap">{periodLabel(d.period, 'day')}</TableCell>
@@ -72,6 +72,7 @@ export function PersonAnalyticsView({ data }: { data: PersonAnalytics }) {
                   <TableCell className="text-right tabular-nums">{dur(d.breakSeconds)}</TableCell>
                   <TableCell className="text-right tabular-nums">{dur(d.meetingSeconds)}</TableCell>
                   <TableCell className="text-right tabular-nums">{dur(d.officeSeconds)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{dur(d.taskSeconds)}</TableCell>
                   <TableCell><StatusCell row={d} />{d.lateMinutes ? <span className="ml-1 text-xs text-muted-foreground">{d.lateMinutes} min late</span> : null}</TableCell>
                 </TableRow>
               ))}</TableBody>
@@ -79,6 +80,8 @@ export function PersonAnalyticsView({ data }: { data: PersonAnalytics }) {
           )}
         </CardContent>
       </Card>
+
+      <WorkSection work={data.work} />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
@@ -149,6 +152,78 @@ export function PersonAnalyticsView({ data }: { data: PersonAnalytics }) {
         </Card>
       </div>
     </div>
+  );
+}
+
+const TASK_STATUS: Record<string, string> = { TODO: 'To do', IN_PROGRESS: 'In progress', IN_REVIEW: 'In review', BLOCKED: 'Blocked', DONE: 'Done' };
+const SHEET_STATUS: Record<string, { label: string; variant: 'success' | 'warning' | 'destructive' | 'secondary' | 'default' | 'outline' }> = {
+  DRAFT: { label: 'Not submitted', variant: 'outline' }, SUBMITTED: { label: 'Submitted', variant: 'default' }, APPROVED: { label: 'Approved', variant: 'success' },
+  REJECTED: { label: 'Rejected', variant: 'destructive' }, LOCKED: { label: 'Locked', variant: 'secondary' }, PAID: { label: 'Paid', variant: 'success' },
+};
+const ACTIVITY_LABEL: Record<string, string> = { status_changed: 'status changes', commented: 'comments', created: 'created', assigned: 'assignments', accepted: 'accepted', declined: 'declined' };
+
+/**
+ * FR-REP-010: the person's work items in the range, a fourth measure kept apart from verified work,
+ * office connected time and meetings: time recorded on tasks, tasks, timesheets and task activity.
+ */
+function WorkSection({ work }: { work: PersonAnalytics['work'] }) {
+  return (
+    <Card data-testid="person-work">
+      <CardHeader>
+        <CardTitle>Work and tasks</CardTitle>
+        <CardDescription>Time recorded on tasks (timer and manual entries) is a separate measure: it is not verified work attendance and is never added to it.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <Stat label="Recorded task time" value={dur(work.taskTime.timerSeconds + work.taskTime.manualSeconds)} hint={`timer ${dur(work.taskTime.timerSeconds)} · manual ${dur(work.taskTime.manualSeconds)}`} testId="work-task-time" />
+          <Stat label="Tasks completed" value={String(work.tasks.completed)} hint="in this period" testId="work-completed" />
+          <Stat label="Open tasks" value={String(work.tasks.open)} hint={`${work.tasks.dueInRange} due in this period`} testId="work-open" />
+          <Stat label="Overdue" value={String(work.tasks.overdue)} hint="open, past their due date" testId="work-overdue" />
+        </div>
+        <div className="overflow-x-auto">
+          {work.taskList.length === 0 ? <p className="text-sm text-muted-foreground">No open tasks and none completed in this period.</p> : (
+            <Table data-testid="work-tasks">
+              <TableHeader><TableRow><TableHead>Task</TableHead><TableHead>Status</TableHead><TableHead>Priority</TableHead><TableHead>Due</TableHead><TableHead>Completed</TableHead><TableHead className="text-right">Recorded</TableHead></TableRow></TableHeader>
+              <TableBody>{work.taskList.map((t) => (
+                <TableRow key={t.id}>
+                  <TableCell>{t.title ?? <span className="text-muted-foreground">Hidden (no task permission)</span>}</TableCell>
+                  <TableCell>{t.overdue ? <Badge variant="destructive">Overdue</Badge> : <Badge variant={t.status === 'DONE' ? 'success' : 'outline'}>{TASK_STATUS[t.status] ?? t.status}</Badge>}</TableCell>
+                  <TableCell className="text-xs">{t.priority ?? '—'}</TableCell>
+                  <TableCell className="whitespace-nowrap">{t.dueDate ? periodLabel(t.dueDate, 'day') : '—'}</TableCell>
+                  <TableCell className="whitespace-nowrap">{t.completedAt ? periodLabel(t.completedAt.slice(0, 10), 'day') : '—'}</TableCell>
+                  <TableCell className="text-right tabular-nums">{dur(t.recordedSeconds)}</TableCell>
+                </TableRow>
+              ))}</TableBody>
+            </Table>
+          )}
+        </div>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div>
+            <h3 className="mb-2 text-sm font-medium">Timesheets</h3>
+            {work.timesheets.length === 0 ? <p className="text-sm text-muted-foreground">No timesheet for this period.</p> : (
+              <ul className="space-y-1 text-sm" data-testid="work-timesheets">
+                {work.timesheets.map((s) => {
+                  const st = SHEET_STATUS[s.status] ?? { label: s.status, variant: 'outline' as const };
+                  return (
+                    <li key={s.id} className="flex flex-wrap items-center gap-2">
+                      <span className="whitespace-nowrap">{periodLabel(s.periodStart, 'day')} – {periodLabel(s.periodEnd, 'day')}</span>
+                      <Badge variant={st.variant}>{st.label}</Badge>
+                      <span className="text-xs text-muted-foreground">logged {dur(s.loggedMinutes * 60)}{s.submittedAt ? ` · submitted ${periodLabel(s.submittedAt.slice(0, 10), 'day')}` : ''}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+          <div>
+            <h3 className="mb-2 text-sm font-medium">Task activity</h3>
+            {work.activity.total === 0 ? <p className="text-sm text-muted-foreground">No task activity in this period.</p> : (
+              <p className="text-sm" data-testid="work-activity">{work.activity.total} updates: {Object.entries(work.activity.byType).map(([k, n]) => `${n} ${ACTIVITY_LABEL[k] ?? k.replace(/_/g, ' ')}`).join(', ')}</p>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
