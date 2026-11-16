@@ -1,7 +1,9 @@
 import pg from 'pg';
+import { z } from 'zod';
 
 export const PASSWORD = 'ComplexPassword123!';
-export const ORG_ID = '66660000-0000-4000-8000-000000000001';
+// Distinct test tenants also isolate LiveKit room names and storage keys across worktrees.
+export const ORG_ID = z.string().uuid().parse(process.env.HRVO_E2E_ORG_ID ?? '66660000-0000-4000-8000-000000000001');
 export const ORG_SLUG = 'web-e2e';
 export const TEAM_ID = '66660000-0000-4000-8000-000000000101';
 

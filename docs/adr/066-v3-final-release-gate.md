@@ -35,6 +35,16 @@ verifies the precise midnight boundary independently.
 
 ## Consequences
 
+### Concurrent local worktrees
+
+Another worktree began using the default browser-test ports after the repeated V3 checks finished.
+The gate refused to replace its servers. `HRVO_E2E_WEB_PORT`, `HRVO_E2E_API_PORT` and
+`HRVO_E2E_GOOGLE_PORT` now allow distinct local ports, retaining the original defaults. Configured
+URLs also reach the Electron agent, direct attendance-review requests, landing tests and mail-link
+checks. `HRVO_E2E_ORG_ID` optionally gives the browser fixtures a distinct validated tenant UUID,
+isolating deterministic LiveKit room names and object-storage keys as well. Defaults are unchanged.
+The final complete gate uses its own ports and tenant; no other worktree or server is stopped.
+
 The additional tests cover contention, rollback and both board-game kinds without changing
 attendance or introducing packages, tables, routes, production diagnostics or operational scripts.
 Final counts, measured limits, external-configuration gaps and the release decision are recorded

@@ -10,7 +10,7 @@ import { passNoticeGate, signIn } from './helpers';
  * resolves it with a note; the person sees it in plain words and explains. And the presence
  * challenge (FR-ATT-023): "Are you still working?" appears and the answer resumes tracking.
  */
-const API = 'http://localhost:3101';
+const API = process.env.E2E_API_URL ?? 'http://localhost:3101';
 
 test.describe.serial('Attendance review and presence challenge', () => {
   let flagId = '';

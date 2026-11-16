@@ -5,13 +5,23 @@ import { defineConfig, devices } from '@playwright/test';
  * collide with `npm run dev`: API 3101, web 3100. Database comes from the PG* / DATABASE_URL
  * env (same as the API test suite); global-setup re-seeds a dedicated org on every run.
  */
-const API_PORT = 3101;
-const WEB_PORT = 3100;
+function port(name: string, fallback: number): number {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isInteger(value) || value < 1024 || value > 65535) throw new Error(`${name} must be an integer from 1024 to 65535`);
+  return value;
+}
+// Separate worktrees can run their local suites without taking over another worktree's servers.
+const API_PORT = port('HRVO_E2E_API_PORT', 3101);
+const WEB_PORT = port('HRVO_E2E_WEB_PORT', 3100);
 // A local OpenID Connect provider standing in for Google (apps/api/test/support/fake-google.ts).
-const FAKE_GOOGLE_PORT = 3102;
+const FAKE_GOOGLE_PORT = port('HRVO_E2E_GOOGLE_PORT', 3102);
+if (new Set([API_PORT, WEB_PORT, FAKE_GOOGLE_PORT]).size !== 3) throw new Error('E2E service ports must be distinct');
 const apiUrl = `http://localhost:${API_PORT}`;
 const webUrl = `http://localhost:${WEB_PORT}`;
 const fakeGoogleUrl = `http://localhost:${FAKE_GOOGLE_PORT}`;
+// Shared with mail-link checks, the Electron agent and direct API/socket browser tests.
+process.env.E2E_API_URL = apiUrl;
+process.env.E2E_WEB_URL = webUrl;
 
 export default defineConfig({
   testDir: './e2e',

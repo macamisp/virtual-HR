@@ -5,8 +5,8 @@ import { expect, test, type Page } from '@playwright/test';
  * virtual-hr.site: browsers resolve *.localhost to this computer) and at /welcome on the app host.
  * The application's own routing must not change.
  */
-const WEB_PORT = 3100;
-const API_PORT = 3101;
+const WEB_PORT = Number(new URL(process.env.E2E_WEB_URL ?? 'http://localhost:3100').port);
+const API_PORT = Number(new URL(process.env.E2E_API_URL ?? 'http://localhost:3101').port);
 const SITE = `http://site.localhost:${WEB_PORT}`;
 const APP = `http://localhost:${WEB_PORT}`;
 

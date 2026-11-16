@@ -15,6 +15,7 @@ import { passNoticeGate, signIn } from './helpers';
  */
 const AGENT_DIR = resolve(process.cwd(), '../agent');
 const ELECTRON = resolve(process.cwd(), '../../node_modules/electron/dist/electron');
+const API = process.env.E2E_API_URL ?? 'http://localhost:3101';
 
 interface Hooks {
   state(): { screen: string; status: { link: string; buffered: number; message: string | null } };
@@ -58,7 +59,7 @@ test.describe.serial('Desktop agent', () => {
     const code = (await page.getByTestId('pairing-code').locator('p').first().innerText()).trim();
     expect(code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
 
-    const env = { ...process.env, HRVO_AGENT_TEST: '1', HRVO_AGENT_DATA_DIR: dataDir, HRVO_API_URL: 'http://localhost:3101' } as Record<string, string>;
+    const env = { ...process.env, HRVO_AGENT_TEST: '1', HRVO_AGENT_DATA_DIR: dataDir, HRVO_API_URL: API } as Record<string, string>;
     delete env.ELECTRON_RUN_AS_NODE;
     // CI runners (Ubuntu 24.04) restrict the user namespaces Chromium's sandbox needs.
     app = await electron.launch({ executablePath: ELECTRON, args: [...(process.env.CI ? ['--no-sandbox'] : []), AGENT_DIR], cwd: AGENT_DIR, env });
@@ -70,7 +71,7 @@ test.describe.serial('Desktop agent', () => {
     await hook(app, 'setLocked', false);
 
     // Server, then the explicit consent screen: nothing happens until the user agrees.
-    await expect(agentWin.getByLabel('Server address')).toHaveValue('http://localhost:3101');
+    await expect(agentWin.getByLabel('Server address')).toHaveValue(API);
     await agentWin.getByRole('button', { name: 'Continue' }).click();
     const notice = agentWin.getByTestId('consent-notice');
     await expect(notice).toContainText('never reads');
