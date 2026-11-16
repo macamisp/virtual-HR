@@ -89,3 +89,19 @@ and high five involve another person, so they need that person's explicit consen
     limits, consent, decline, cancel, timeout, Do not disturb, disconnect, and attendance untouched;
   - `apps/web/e2e/45-office-actions.spec.ts`: two people in browsers, sitting, reduced motion, a
     dropped connection, and the phone layout.
+
+## Addendum (2026-11-16): emotes (FR-VO-018)
+
+Five emotes join the solo actions: laugh, love, thumbs up, idea and coffee break (`EMOTES` in
+`packages/shared/src/office/actions.ts`, 2.5 s each). They travel exactly like a wave:
+
+- validated by the same `office:action` schema;
+- limited by the same per-person window;
+- carried in the roster, so another organisation never sees them.
+
+The renderer shows them as a pixel speech bubble with an icon above the head, keeping the walking
+frame (no new sprite poses). The bubble rises a little, except with reduced motion. The action menu
+lists them in an "Emotes" row of labelled buttons.
+
+Tests: `office-actions-e2e`, where each emote reaches a colleague, ends by itself and reaches no
+other organisation; Playwright 45, where a bubble is seen by both people and then goes.

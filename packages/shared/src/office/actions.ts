@@ -11,7 +11,12 @@ import { buildGrid, walkable } from './collision.ts';
 import type { CollisionGrid } from './collision.ts';
 import type { Facing } from './avatars.ts';
 
-export const SOLO_ACTIONS = ['jump', 'wave', 'dance'] as const;
+/** FR-VO-018: emotes, shown as a small speech bubble above the head for a moment. */
+export const EMOTES = ['laugh', 'love', 'thumbsup', 'idea', 'coffee'] as const;
+export type Emote = (typeof EMOTES)[number];
+export const EMOTE_LABEL: Record<Emote, string> = { laugh: 'Laugh', love: 'Love it', thumbsup: 'Thumbs up', idea: 'Idea', coffee: 'Coffee break' };
+export const EMOTE_MS = 2500;
+export const SOLO_ACTIONS = ['jump', 'wave', 'dance', ...EMOTES] as const;
 export type SoloAction = (typeof SOLO_ACTIONS)[number];
 export const PAIR_ACTIONS = ['hug', 'highfive'] as const;
 export type PairAction = (typeof PAIR_ACTIONS)[number];
@@ -20,7 +25,10 @@ export type AvatarActionKind = 'sit' | SoloAction | PairAction;
 export const PAIR_LABEL: Record<PairAction, string> = { hug: 'hug', highfive: 'high five' };
 
 /** How long each action shows (ms). Sitting lasts until the person stands or walks. */
-export const ACTION_MS: Record<Exclude<AvatarActionKind, 'sit'>, number> = { jump: 600, wave: 1800, dance: 30_000, hug: 2200, highfive: 1300 };
+export const ACTION_MS: Record<Exclude<AvatarActionKind, 'sit'>, number> = {
+  jump: 600, wave: 1800, dance: 30_000, hug: 2200, highfive: 1300,
+  laugh: EMOTE_MS, love: EMOTE_MS, thumbsup: EMOTE_MS, idea: EMOTE_MS, coffee: EMOTE_MS,
+};
 /** How close a chair must be to sit on it (px from the avatar to the seat point). */
 export const SEAT_REACH = 48;
 /** How close the other person must be for a hug or a high five (px), in the same room. */

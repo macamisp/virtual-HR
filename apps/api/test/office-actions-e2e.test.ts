@@ -136,6 +136,20 @@ describe('Avatar actions over the office socket (ADR 056)', { concurrency: false
     for (const body of [{ kind: 'fly' }, { kind: 'wave', x: 1 }, {}, 'wave']) assert.equal((await A.call<ActionAck>('office:action', body)).ok, false, JSON.stringify(body));
   });
 
+  it('emotes (FR-VO-018): each reaches colleagues through the roster, ends by itself, not another organisation', async () => {
+    await wait(5_100); // a fresh action window
+    const o0 = O.inbox.presence.length;
+    for (const kind of ['laugh', 'love', 'thumbsup', 'idea']) {
+      assert.deepEqual(await A.act(kind), { ok: true }, kind);
+      await wait(200);
+      assert.equal(seen(B, U.a.id)?.action?.kind, kind, `a colleague sees ${kind}`);
+    }
+    assert.deepEqual(await A.act('coffee'), { ok: true });
+    await wait(2_900);
+    assert.equal(seen(B, U.a.id)?.action ?? null, null, 'an emote ends by itself after 2.5 s');
+    assert.ok(!O.inbox.presence.slice(o0).some((p) => p.id === U.a.id), 'another organisation sees nothing');
+  });
+
   it('actions are rate limited per person', async () => {
     let refused = 0;
     for (let i = 0; i < 12; i += 1) if (!(await C.act('wave')).ok) refused += 1;

@@ -1,11 +1,14 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Armchair, ArrowUpFromLine, ChevronLeft, Hand, HandHeart, Music, PartyPopper, Smile, Square } from 'lucide-react';
-import type { PairAction, Seat } from '@hrvo/shared';
+import { Armchair, ArrowUpFromLine, ChevronLeft, Coffee, Hand, HandHeart, Heart, Laugh, Lightbulb, Music, PartyPopper, Smile, Square, ThumbsUp } from 'lucide-react';
+import { EMOTE_LABEL, EMOTES } from '@hrvo/shared';
+import type { Emote, PairAction, Seat } from '@hrvo/shared';
 import { Button } from '@/components/ui/button';
 import type { OfficeClient } from '@/lib/office/office-client';
 import { cn } from '@/lib/utils';
+
+const EMOTE_ICON: Record<Emote, typeof Laugh> = { laugh: Laugh, love: Heart, thumbsup: ThumbsUp, idea: Lightbulb, coffee: Coffee };
 
 /** ADR 056: what the menu offers right now (worked out by the map a few times a second). */
 export interface ActionContext {
@@ -91,6 +94,16 @@ export function AvatarActionMenu({ client, ctx }: { client: OfficeClient; ctx: A
                 : <button type="button" role="menuitem" className={item} onClick={() => run(() => void client.act('dance'))}><Music aria-hidden="true" className="h-4 w-4" /> Dance</button>}
               <button type="button" role="menuitem" aria-haspopup="menu" className={item} disabled={!!client.outgoing} onClick={() => setPick('hug')}><HandHeart aria-hidden="true" className="h-4 w-4" /> Friendly hug…</button>
               <button type="button" role="menuitem" aria-haspopup="menu" className={item} disabled={!!client.outgoing} onClick={() => setPick('highfive')}><Hand aria-hidden="true" className="h-4 w-4" /> High five…</button>
+              {/* FR-VO-018: emotes, a bubble above the head for a moment. */}
+              <div className="mt-1 border-t pt-1" role="none">
+                <p className="px-2 pb-1 text-xs text-muted-foreground" role="none">Emotes</p>
+                <div className="flex flex-wrap gap-1 px-1" role="none" data-testid="emote-row">
+                  {EMOTES.map((e) => {
+                    const Icon = EMOTE_ICON[e];
+                    return <button key={e} type="button" role="menuitem" aria-label={EMOTE_LABEL[e]} title={EMOTE_LABEL[e]} className="rounded p-2 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => run(() => void client.act(e))}><Icon aria-hidden="true" className="h-4 w-4" /></button>;
+                  })}
+                </div>
+              </div>
             </>
           )}
         </div>

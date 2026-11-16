@@ -14,7 +14,7 @@
 import 'pixi.js/unsafe-eval';
 import { Application, BitmapText, CanvasSource, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
 import { ACTION_MS, AVATAR_FRAMES, AVATAR_KEYS, AVATAR_POSES, avatarKeyOr, createAnimation, FACINGS, gameObjects, objectLayer, poseCell, prop, sheetCell, stepAnimation, TILE_SIZE } from '@hrvo/shared';
-import type { AvatarActionKind, AvatarActionState, AvatarAnimation, AvatarFrame, AvatarKey, AvatarPose, CampusGame, Facing, MapObject, OfficeMap, VoStatus } from '@hrvo/shared';
+import type { AvatarActionKind, AvatarActionState, AvatarAnimation, Emote, AvatarFrame, AvatarKey, AvatarPose, CampusGame, Facing, MapObject, OfficeMap, VoStatus } from '@hrvo/shared';
 import { createAvatarSheetCanvas } from './avatar-sheet';
 import { renderEnvironment } from './office-environment';
 import { renderIsoEnvironment } from './office-iso';
@@ -106,7 +106,8 @@ interface AvatarView {
 interface ShownAction { kind: AvatarActionKind; with?: string; facing?: Facing; sig: string; at?: number }
 
 /** ADR 056: the pose, lift (px up), sway (px sideways) and effect of an action `t` ms in. */
-function actionLook(kind: AvatarActionKind, t: number, facing: Facing, partnerRight: boolean, reduced: boolean): { pose: AvatarPose | null; lift: number; sway: number; fx: 'heart' | 'spark' | 'note' | null } {
+type Fx = 'heart' | 'spark' | 'note' | Emote;
+function actionLook(kind: AvatarActionKind, t: number, facing: Facing, partnerRight: boolean, reduced: boolean): { pose: AvatarPose | null; lift: number; sway: number; fx: Fx | null } {
   const alt = (period: number) => (reduced ? 0 : Math.floor(t / period) % 2);
   switch (kind) {
     case 'sit': return { pose: `sit-${facing}` as AvatarPose, lift: 0, sway: 0, fx: null };
@@ -119,12 +120,15 @@ function actionLook(kind: AvatarActionKind, t: number, facing: Facing, partnerRi
     case 'wave': return t < ACTION_MS.wave ? { pose: alt(230) ? 'wave-b' : 'wave-a', lift: 0, sway: 0, fx: null } : { pose: null, lift: 0, sway: 0, fx: null };
     case 'dance': return t < ACTION_MS.dance ? { pose: alt(260) ? 'dance-b' : 'dance-a', lift: reduced ? 0 : alt(130), sway: reduced ? 0 : (alt(260) ? 1 : -1), fx: 'note' } : { pose: null, lift: 0, sway: 0, fx: null };
     case 'hug': return t < ACTION_MS.hug ? { pose: partnerRight ? 'hug-right' : 'hug-left', lift: 0, sway: 0, fx: 'heart' } : { pose: null, lift: 0, sway: 0, fx: null };
+    // FR-VO-018: an emote keeps the walk frame and shows its bubble.
+    case 'laugh': case 'love': case 'thumbsup': case 'idea': case 'coffee':
+      return t < ACTION_MS[kind] ? { pose: null, lift: 0, sway: 0, fx: kind } : { pose: null, lift: 0, sway: 0, fx: null };
     case 'highfive': return t < ACTION_MS.highfive ? { pose: partnerRight ? 'highfive-right' : 'highfive-left', lift: 0, sway: 0, fx: t > 250 ? 'spark' : null } : { pose: null, lift: 0, sway: 0, fx: null };
   }
 }
 
 /** What one avatar looks like right now (for the browser tests; no personal data beyond the id). */
-export interface AvatarDebug { id: string; self: boolean; key: AvatarKey; facing: Facing; frame: AvatarFrame; walking: boolean; status: VoStatus | null; away: boolean; pose: AvatarPose | null; lift: number; lastPose: AvatarPose | null; maxLift: number }
+export interface AvatarDebug { id: string; self: boolean; key: AvatarKey; facing: Facing; frame: AvatarFrame; walking: boolean; status: VoStatus | null; away: boolean; pose: AvatarPose | null; lift: number; lastPose: AvatarPose | null; maxLift: number; fx: string }
 
 export class OfficeRenderer {
   app = new Application();
@@ -234,7 +238,7 @@ export class OfficeRenderer {
 
   /** ADR 053: the state of every avatar on the map (browser tests). */
   avatarStates(): AvatarDebug[] {
-    return [...this.sprites].map(([id, s]) => ({ id, self: s.self, key: s.key, facing: s.anim.facing, frame: s.anim.frame, walking: s.anim.walking, status: s.status, away: !!s.away, pose: s.pose, lift: s.lift, lastPose: s.lastPose, maxLift: s.maxLift }));
+    return [...this.sprites].map(([id, s]) => ({ id, self: s.self, key: s.key, facing: s.anim.facing, frame: s.anim.frame, walking: s.anim.walking, status: s.status, away: !!s.away, pose: s.pose, lift: s.lift, lastPose: s.lastPose, maxLift: s.maxLift, fx: s.fxSig }));
   }
 
   private onWheel = (e: WheelEvent) => {
@@ -564,7 +568,7 @@ export class OfficeRenderer {
     s.lift = look?.pose ? look.lift : 0;
     if (s.pose) { s.lastPose = s.pose; s.maxLift = Math.max(s.maxLift, s.lift); }
     s.body.position.set(look?.pose ? look.sway : 0, FEET_Y - s.lift);
-    this.drawFx(s, look?.pose ? look.fx : null, now - s.actAt);
+    this.drawFx(s, look?.fx ?? null, now - s.actAt);
     const shown = s.pose ? `${key}/pose/${s.pose}` : `${key}/${s.anim.facing}/${s.anim.frame}`;
     if (shown === s.shown) return;
     s.key = key;
@@ -572,8 +576,8 @@ export class OfficeRenderer {
     s.body.texture = s.pose ? this.textures!.pose(key, s.pose) : this.textures!.get(key, s.anim.facing, s.anim.frame);
   }
 
-  /** A small heart, sparkle or note above the head; redrawn only when it changes, then just moved. */
-  private drawFx(s: AvatarView, kind: 'heart' | 'spark' | 'note' | null, t: number): void {
+  /** A small heart, sparkle, note or emote bubble above the head; redrawn only when it changes, then just moved. */
+  private drawFx(s: AvatarView, kind: Fx | null, t: number): void {
     if (s.fxSig !== (kind ?? '')) {
       s.fxSig = kind ?? '';
       if (!s.fx && kind) { s.fx = new Graphics(); s.root.addChildAt(s.fx, s.root.getChildIndex(s.body) + 1); }
@@ -590,11 +594,42 @@ export class OfficeRenderer {
       } else if (kind === 'note') {
         g.rect(1, -8, 2, 9).rect(3, -8, 4, 2).fill(0x2e3d5a);
         g.rect(-2, -1, 4, 3).fill(0x2e3d5a);
+      } else if (kind) {
+        // FR-VO-018: a pixel speech bubble (white, dark outline, a tail) with the emote's icon.
+        g.rect(-10, -10, 20, 17).fill(0x2a2230);
+        g.rect(-9, -9, 18, 15).fill(0xffffff);
+        g.rect(-2, 7, 4, 2).fill(0x2a2230);
+        g.rect(-1, 6, 2, 2).fill(0xffffff);
+        g.rect(-1, 9, 2, 1).fill(0x2a2230);
+        if (kind === 'laugh') {
+          g.rect(-6, -6, 12, 10).fill(0xfacc15);
+          g.rect(-4, -4, 2, 2).rect(2, -4, 2, 2).fill(0x2a2230);
+          g.rect(-4, 0, 8, 2).fill(0x7c2d12);
+          g.rect(-3, 2, 6, 1).fill(0x7c2d12);
+        } else if (kind === 'love') {
+          g.rect(-6, -6, 5, 4).rect(1, -6, 5, 4).rect(-6, -2, 12, 3).rect(-4, 1, 8, 2).rect(-2, 3, 4, 2).fill(0xe0595c);
+          g.rect(-5, -5, 2, 1).fill(0xffffff);
+        } else if (kind === 'thumbsup') {
+          g.rect(-6, -2, 3, 7).fill(0x2563eb);
+          g.rect(-3, -2, 8, 7).fill(0xf2c79a);
+          g.rect(-2, -7, 3, 5).fill(0xf2c79a);
+          g.rect(-3, -2, 8, 1).rect(5, -1, 1, 5).fill(0xb7703c);
+        } else if (kind === 'idea') {
+          g.rect(-4, -7, 8, 8).fill(0xfacc15);
+          g.rect(-2, -5, 2, 2).fill(0xfff7c2);
+          g.rect(-3, 1, 6, 2).fill(0x9aa3af);
+          g.rect(-2, 3, 4, 1).fill(0x4b5563);
+        } else if (kind === 'coffee') {
+          g.rect(-5, -2, 9, 7).fill(0xc47a5a);
+          g.rect(-5, -2, 9, 2).fill(0x5b3a29);
+          g.rect(4, 0, 2, 3).fill(0xc47a5a);
+          g.rect(-3, -7, 1, 3).rect(0, -8, 1, 3).fill(0x9aa3af);
+        }
       }
     }
     if (!kind || !s.fx) return;
     const rise = this.reducedMotion ? 0 : Math.min(8, t / 120);
-    s.fx.position.set(kind === 'note' && !this.reducedMotion ? Math.round(Math.sin(t / 200) * 4) : 0, -26 - Math.round(rise));
+    s.fx.position.set(kind === 'note' && !this.reducedMotion ? Math.round(Math.sin(t / 200) * 4) : 0, (kind === 'heart' || kind === 'spark' || kind === 'note' ? -26 : -34) - Math.round(rise));
   }
 
   /** The action to show for an avatar: the roster's, or (for me) the one I just started. */

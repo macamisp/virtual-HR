@@ -11,7 +11,7 @@ import { passNoticeGate, signIn } from './helpers';
  * motion, a dropped connection, and the phone layout. Remote effects are checked on the other
  * person's screen. AVATAR_SHOTS_DIR=<dir> also writes screenshots.
  */
-interface SpriteState { id: string; self: boolean; key: string; pose: string | null; lastPose: string | null; maxLift: number; walking: boolean }
+interface SpriteState { id: string; self: boolean; key: string; pose: string | null; lastPose: string | null; maxLift: number; walking: boolean; fx: string }
 const canvasOf = (p: Page) => p.getByTestId('office-canvas');
 async function sprites(p: Page): Promise<SpriteState[]> {
   const v = await canvasOf(p).getAttribute('data-avatar-sprites');
@@ -179,6 +179,25 @@ test.describe.serial('Office avatar actions (ADR 056)', () => {
     await w.page.waitForTimeout(700);
     expect((await mine(w.page))!.maxLift, 'no vertical motion').toBe(0);
     await w.ctx.close();
+  });
+
+  test('emotes (FR-VO-018): a bubble above the head for a moment, seen by a colleague', async ({ browser }) => {
+    test.setTimeout(90_000);
+    const w = await office(browser, USERS.worker.email);
+    const l = await office(browser, USERS.lead.email);
+    await goNextTo(l.page, USERS.worker.name);
+    const wId = (await mine(w.page))!.id;
+    for (const [label, fx] of [['Laugh', 'laugh'], ['Thumbs up', 'thumbsup'], ['Coffee break', 'coffee']] as const) {
+      await openMenu(w.page);
+      await w.page.getByTestId('emote-row').getByRole('menuitem', { name: label }).click();
+      await expect.poll(async () => (await mine(w.page))?.fx).toBe(fx);
+      await expect.poll(async () => (await of(l.page, wId))?.fx, { timeout: 5000 }).toBe(fx);
+      await shot(w.page, `emote-${fx}`);
+      await expect.poll(async () => (await mine(w.page))?.fx, { timeout: 5000 }).toBe('');
+    }
+    expect(w.errors).toEqual([]);
+    await w.ctx.close();
+    await l.ctx.close();
   });
 
   test('a dropped connection ends the action for everyone at once', async ({ browser }) => {
