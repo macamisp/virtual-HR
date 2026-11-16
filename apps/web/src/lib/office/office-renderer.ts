@@ -561,12 +561,22 @@ export class OfficeRenderer {
       if (a) this.linkLayer.moveTo(self.x, self.y).lineTo(a.rx, a.ry);
     }
     if (c.proximity.members.length) this.linkLayer.stroke({ width: 2, color: 0x7c3aed, alpha: 0.35 });
-    // Camera follows the user.
+    // Camera follows the user (who stays in the middle, as the overlays expect). ADR 060: when the
+    // whole map fits on an axis (zoomed out), it is centred on that axis instead of drifting with
+    // the user and leaving an empty band.
     this.world.scale.set(this.zoom);
     this.updateSampling();
+    const axis = (view: number, size: number, at: number): number => {
+      const span = size * this.zoom;
+      return span <= view ? (view - span) / 2 : view / 2 - at * this.zoom;
+    };
+    const mapW = this.map ? this.map.width * TILE_SIZE : 0;
+    const mapH = this.map ? this.map.height * TILE_SIZE : 0;
+    const camX = mapW ? axis(this.app.screen.width, mapW, self.x) : this.app.screen.width / 2 - self.x * this.zoom;
+    const camY = mapH ? axis(this.app.screen.height, mapH, self.y) : this.app.screen.height / 2 - self.y * this.zoom;
     // Snapped to whole device pixels, so the pixel art does not shimmer while the camera follows.
     const res = this.app.renderer.resolution;
-    this.world.position.set(Math.round((this.app.screen.width / 2 - self.x * this.zoom) * res) / res, Math.round((this.app.screen.height / 2 - self.y * this.zoom) * res) / res);
+    this.world.position.set(Math.round(camX * res) / res, Math.round(camY * res) / res);
     // ADR 055: fairy lights twinkle by swapping two prebuilt shapes (none with reduced motion).
     if (this.bulbs && !this.reducedMotion) {
       this.twinkleMs += dtMs;

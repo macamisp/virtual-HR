@@ -33,6 +33,12 @@ export const VIOLET = { light: 0xa78be0, base: 0x7c5cc4, mid: 0x6a4cb0, dark: 0x
 export const NEON = { pink: 0xff5fa2, cyan: 0x4de8e0, purple: 0xb277ff, yellow: 0xffd84a, lime: 0x9be35a, orange: 0xff9a3d, white: 0xfff6fb };
 /** The unlit black of screens, sign boards and cabinet outlines. */
 export const NIGHT = 0x0d0e20;
+// ADR 060: the rest of the office. Teal studio carpet and panelling, slate meeting rooms,
+// marble reception, brick lounge, cream subway tile and encaustic floor in the café.
+export const TEAL = { light: 0xbcd8ce, base: 0xa9cbbf, mid: 0xa0c3b7, line: 0x94b9ac, dark: 0x7aa394, deep: 0x5b8577, ink: 0x3f6658 };
+export const SLATE = { light: 0x9eabc4, base: 0x8191ad, mid: 0x73829f, dark: 0x5c6a86, deep: 0x46516a };
+export const MARBLE = { light: 0xfbf8f1, base: 0xf2ede3, grey: 0xe4e1da, vein: 0xc9c2b2, dark: 0xb5ad9b };
+export const BRICK = { light: 0xcf8064, base: 0xb9654a, mid: 0xa8583e, dark: 0x8e4732, mortar: 0xd9c7b0 };
 
 // ---------------------------------------------------------------- helpers
 

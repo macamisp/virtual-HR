@@ -18,6 +18,11 @@
  * posters, rugs and cabinet glow are paint on the floor chunks; its cabinets stay props. Nothing
  * there is an object, so nothing collides and nothing is interactive that was not before.
  *
+ * ADR 060: the rest of the office is dressed to the same level: teal carpet and panelling in the
+ * open office with a rug under each workstation, marble and a compass medallion in reception,
+ * slate meeting rooms, brick lounge, encaustic café floor with subway-tile walls, striped lawn,
+ * border bands along every indoor wall, and room-specific wall art. Still paint only.
+ *
  * ADR 055: tall things (trees, arcade cabinets, potted plants) are not painted into the floor
  * chunks but into one atlas of "props" that the renderer sorts with the avatars by their base, so
  * a person walking behind a tree is hidden by its canopy and one walking in front is not.
@@ -25,7 +30,7 @@
 import { mapSeats, objectLayer, prop, TILE_SIZE, tileLayer } from '@hrvo/shared';
 import type { MapObject, OfficeMap, Seat } from '@hrvo/shared';
 import {
-  BLUE, buildAtlas, CREAM, GLASS, GOLD, GOLD_LIGHT, GRASS, hash, INDIGO, INK, LEAF, LIGHT, MAPLE, NAVY, NEON, NIGHT, OAK, overlaps, Painter, pick, SAGE, STONE, TERRA,
+  BLUE, BRICK, buildAtlas, CREAM, GLASS, GOLD, GOLD_LIGHT, GRASS, hash, INDIGO, INK, LEAF, LIGHT, MAPLE, MARBLE, NAVY, NEON, NIGHT, OAK, overlaps, Painter, pick, SAGE, SLATE, STONE, TEAL, TERRA,
   VIOLET, WALNUT, WATER,
 } from './pixel-kit';
 import type { AtlasPiece, AtlasSprite, Rect } from './pixel-kit';
@@ -148,20 +153,23 @@ function floorTile(p: Painter, s: Scene, tx: number, ty: number): void {
     }
   };
   switch (v) {
-    case FLOOR.CARPET: // sage carpet tiles with a short weave
-      p.r(alt ? SAGE.base : SAGE.mid, x, y, T, T);
-      speckle(12, SAGE.light, 0xb4c3ae, 1);
-      p.r(0xb1c1ab, x + T - 1, y, 1, T, 0.6);
-      p.r(0xb1c1ab, x, y + T - 1, T, 1, 0.6);
+    case FLOOR.CARPET: { // ADR 060: modular teal carpet tiles laid quarter-turn, a fine ribbed weave
+      p.r(pick([TEAL.base, TEAL.base, TEAL.mid], hash(tx, ty, 1)), x, y, T, T);
+      const across = (tx + ty) % 2 === 0;
+      for (let i = 2; i < T - 1; i += 4) { if (across) p.r(TEAL.line, x + 1, y + i, T - 2, 1, 0.75); else p.r(TEAL.line, x + i, y + 1, 1, T - 2, 0.75); }
+      speckle(6, TEAL.light, TEAL.dark, 1);
+      p.r(TEAL.light, x, y, T - 1, 1, 0.8); p.r(TEAL.light, x, y, 1, T - 1, 0.8);
+      p.r(TEAL.dark, x + T - 1, y, 1, T, 0.7); p.r(TEAL.dark, x, y + T - 1, T, 1, 0.7);
       break;
+    }
     case FLOOR.WOOD: // oak boards
       woodPlanks(p, x, y, [OAK.light, OAK.base, OAK.base, OAK.mid], OAK.dark, 2);
       break;
-    case FLOOR.MEETING: // cool carpet tiles with a small woven motif
-      p.r(alt ? BLUE.base : BLUE.mid, x, y, T, T);
+    case FLOOR.MEETING: // cool carpet tiles with a small woven motif (ADR 060: a shade deeper, slate motif)
+      p.r(alt ? 0xc6d1df : 0xbdc9d9, x, y, T, T);
       speckle(8, BLUE.light, BLUE.line, 3);
-      p.r(BLUE.line, x + 15, y + 13, 2, 6, 0.7); p.r(BLUE.line, x + 13, y + 15, 6, 2, 0.7);
-      p.r(BLUE.light, x + 15, y + 15, 2, 2);
+      for (let k = -3; k <= 3; k += 1) p.r(SLATE.light, x + 16 - (3 - Math.abs(k)), y + 16 + k, (3 - Math.abs(k)) * 2 + 1, 1);
+      p.r(SLATE.dark, x + 16, y + 16, 1, 1);
       p.r(BLUE.line, x + T - 1, y, 1, T); p.r(BLUE.line, x, y + T - 1, T, 1);
       p.r(BLUE.light, x, y, T - 1, 1, 0.7);
       break;
@@ -179,15 +187,31 @@ function floorTile(p: Painter, s: Scene, tx: number, ty: number): void {
         p.r(0xffffff, bx, by, 15, 1, 0.18);
       }
       break;
-    case FLOOR.RECEPTION: // ivory stone with sage inlays where four tiles meet
-      p.r(pick([CREAM.base, CREAM.base, 0xf0e6d2, 0xf6eede], hash(tx, ty, 5)), x, y, T, T);
-      p.r(CREAM.light, x, y, T - 1, 1); p.r(CREAM.light, x, y, 1, T - 1);
-      p.r(CREAM.dark, x + T - 1, y, 1, T); p.r(CREAM.dark, x, y + T - 1, T, 1);
-      { const h = hash(tx, ty, 6); p.r(CREAM.mid, x + 4 + (h % 20), y + 5 + ((h >>> 6) % 20), 5, 1); p.r(CREAM.mid, x + 6 + ((h >>> 12) % 18), y + 9 + ((h >>> 3) % 16), 3, 1); }
-      for (const [cx, cy] of [[0, 0], [T - 2, 0], [0, T - 2], [T - 2, T - 2]] as const) p.r(SAGE.dark, x + cx, y + cy, 2, 2);
+    case FLOOR.RECEPTION: { // ADR 060: polished marble slabs (2 x 2 tiles), veined, gold studs at the corners
+      const sx = tx >> 1;
+      const sy = ty >> 1;
+      const ox = (tx & 1) * T;
+      const oy = (ty & 1) * T;
+      p.r((sx + sy) % 2 === 0 ? MARBLE.base : MARBLE.grey, x, y, T, T);
+      for (let vein = 0; vein < 2; vein += 1) {
+        const h = hash(sx, sy, 6 + vein);
+        const start = h % 56;
+        const slope = vein ? -0.45 : 0.6;
+        for (let k = 0; k < 64; k += 1) {
+          const vy = Math.round(start + (k - 32) * slope + Math.sin((k + (h >>> 8)) / 5) * 2);
+          const lx = k - ox;
+          const ly = vy - oy;
+          if (lx >= 0 && lx < T && ly >= 0 && ly < T) p.r(vein ? MARBLE.vein : MARBLE.dark, x + lx, y + ly, 1, 1, vein ? 0.55 : 0.4);
+        }
+      }
+      p.r(MARBLE.light, x, y, T, 1, (ty & 1) ? 0 : 0.9); p.r(MARBLE.light, x, y, 1, T, (tx & 1) ? 0 : 0.9);
+      if (tx & 1) p.r(MARBLE.vein, x + T - 1, y, 1, T);
+      if (ty & 1) p.r(MARBLE.vein, x, y + T - 1, T, 1);
+      if (!(tx & 1) && !(ty & 1)) { p.r(GOLD, x, y, 2, 2); p.r(GOLD_LIGHT, x, y, 1, 1); }
       break;
-    case FLOOR.GRASS: { // lawn with tufts and the odd flower
-      p.r(pick([GRASS.base, GRASS.base, GRASS.mid, GRASS.light], hash(tx, ty, 61)), x, y, T, T);
+    }
+    case FLOOR.GRASS: { // lawn with tufts and the odd flower (ADR 060: mown in two-tile stripes)
+      p.r(Math.floor(tx / 2) % 2 ? pick([GRASS.base, GRASS.base, GRASS.light], hash(tx, ty, 61)) : pick([GRASS.mid, GRASS.mid, GRASS.base], hash(tx, ty, 61)), x, y, T, T);
       for (let i = 0; i < 7; i += 1) {
         const h = hash(tx * 13 + i, ty * 7 + i, 62);
         const gx = x + 2 + (h % 27);
@@ -207,13 +231,24 @@ function floorTile(p: Painter, s: Scene, tx: number, ty: number): void {
       });
       break;
     }
-    case FLOOR.CAFE: { // terracotta and cream tiles, a cream diamond every other tile
-      for (let j = 0; j < 2; j += 1) for (let i = 0; i < 2; i += 1) {
-        const cream = (tx * 2 + i + ty * 2 + j) % 4 === 0;
-        p.r(cream ? CREAM.base : pick([TERRA.light, 0xd99475, 0xd48d6e], hash(tx * 2 + i, ty * 2 + j, 65)), x + i * 16, y + j * 16, 16, 16);
-        p.r(cream ? CREAM.light : 0xe6ab90, x + i * 16, y + j * 16, 15, 1);
-        p.r(cream ? CREAM.dark : TERRA.mid, x + i * 16 + 15, y + j * 16, 1, 16); p.r(cream ? CREAM.dark : TERRA.mid, x + i * 16, y + j * 16 + 15, 16, 1);
+    case FLOOR.CAFE: { // ADR 060: encaustic cement tiles: cream, terracotta quarter rings that meet as circles, a teal star
+      p.r(pick([CREAM.base, CREAM.base, 0xf1e6d0], hash(tx, ty, 65)), x, y, T, T);
+      for (const [cx, cy, dx, dy] of [[0, 0, 1, 1], [T, 0, -1, 1], [0, T, 1, -1], [T, T, -1, -1]] as const) {
+        for (let k = 0; k < 8; k += 1) { // a soft quarter disc of radius 8 with a cream ring
+          const outer = Math.round(Math.sqrt(64 - k * k));
+          const inner = k < 5 ? Math.round(Math.sqrt(25 - k * k)) : 0;
+          const ry = dy > 0 ? y + cy + k : y + cy - 1 - k;
+          const span = (from: number, to: number, c: number) => { if (to > from) p.r(c, dx > 0 ? x + cx + from : x + cx - to, ry, to - from, 1); };
+          span(0, outer, TERRA.light);
+          span(Math.max(0, inner - 1), inner, CREAM.light);
+          if (k < 3) span(0, Math.round(Math.sqrt(9 - k * k)), TERRA.base);
+        }
       }
+      if ((tx + ty) % 2 === 0) { // a small teal star on every other tile
+        for (let k = -3; k <= 3; k += 1) p.r(TEAL.dark, x + 16 - (3 - Math.abs(k)), y + 16 + k, (3 - Math.abs(k)) * 2 + 1, 1);
+        p.r(GOLD_LIGHT, x + 16, y + 16, 1, 1);
+      }
+      p.r(CREAM.dark, x + T - 1, y, 1, T, 0.8); p.r(CREAM.dark, x, y + T - 1, T, 1, 0.8);
       break;
     }
     case FLOOR.ARCADE: { // ADR 057: walnut boards, a small inlay every third tile, a dark border along the walls
@@ -233,6 +268,29 @@ function floorTile(p: Painter, s: Scene, tx: number, ty: number): void {
       p.r(alt ? 0xe6e2da : 0xe0dcd3, x, y, T, T);
       p.r(0xcfcabf, x + T - 1, y, 1, T); p.r(0xcfcabf, x, y + T - 1, T, 1);
   }
+  floorBand(p, s, tx, ty, v);
+}
+
+/** ADR 060: the border band each indoor floor has along its walls (the arcade has its own). */
+const BANDS: Partial<Record<number, { deep: number; line: number }>> = {
+  [FLOOR.CARPET]: { deep: TEAL.deep, line: TEAL.light },
+  [FLOOR.MEETING]: { deep: SLATE.base, line: BLUE.light },
+  [FLOOR.PRIVATE]: { deep: OAK.dark, line: MAPLE.light },
+  [FLOOR.RECEPTION]: { deep: NAVY.base, line: GOLD },
+  [FLOOR.WOOD]: { deep: OAK.deep, line: GOLD },
+  [FLOOR.CAFE]: { deep: TERRA.dark, line: TEAL.deep },
+};
+
+/** A dark band and a fine line a few pixels in from every wall; it stops at doorways by itself. */
+function floorBand(p: Painter, s: Scene, tx: number, ty: number, v: number): void {
+  const c = BANDS[v];
+  if (!c || s.doors.has(ty * s.w + tx)) return;
+  const x = tx * T;
+  const y = ty * T;
+  if (s.wall(tx - 1, ty)) { p.r(c.deep, x + 4, y, 3, T, 0.85); p.r(c.line, x + 9, y, 1, T, 0.7); }
+  if (s.wall(tx + 1, ty)) { p.r(c.deep, x + T - 7, y, 3, T, 0.85); p.r(c.line, x + T - 10, y, 1, T, 0.7); }
+  if (s.wall(tx, ty - 1)) { p.r(c.deep, x, y + 4, T, 3, 0.85); p.r(c.line, x, y + 9, T, 1, 0.7); }
+  if (s.wall(tx, ty + 1)) { p.r(c.deep, x, y + T - 7, T, 3, 0.85); p.r(c.line, x, y + T - 10, T, 1, 0.7); }
 }
 
 /** A doorway keeps its floor and gets an oak sill across the wall's thickness. It stays open. */
@@ -279,14 +337,13 @@ function wallTile(p: Painter, s: Scene, tx: number, ty: number): void {
   if (face) {
     // Front face: warm ivory panelling over an oak skirting board; deep indigo in the arcade (ADR 057).
     const fy = y + CAP;
-    const arcade = (s.floor[(ty + 1) * s.w + tx] ?? 0) === FLOOR.ARCADE;
-    const c = arcade ? { mid: INDIGO.mid, line: INDIGO.deep, base: INDIGO.base, dark: INDIGO.dark, skirt: INDIGO.deep, skirtTop: INDIGO.light, skirtLine: NIGHT }
-      : { mid: CREAM.mid, line: CREAM.line, base: CREAM.base, dark: CREAM.dark, skirt: OAK.deep, skirtTop: OAK.mid, skirtLine: OAK.line };
+    const below = s.floor[(ty + 1) * s.w + tx] ?? 0;
+    const arcade = below === FLOOR.ARCADE;
+    const c = faceStyle(below);
     p.r(c.mid, x, fy, T, T - CAP - 4);
+    wallSurface(p, c.pattern, c, tx, ty, x, fy);
     p.r(c.line, x, fy, T, 2); // shade under the coping
-    p.r(c.base, x, fy + 2, T, 1);
-    p.r(c.dark, x + 15, fy + 3, 1, T - CAP - 7); // panel seam
-    p.r(c.dark, x, fy + 11, T, 1, 0.55); // dado line
+    p.r(c.base, x, fy + 2, T, 1, c.pattern === 'panel' ? 1 : 0.5);
     p.r(c.skirt, x, y + T - 4, T, 4);
     p.r(c.skirtTop, x, y + T - 4, T, 1);
     p.r(c.skirtLine, x, y + T - 1, T, 1);
@@ -302,6 +359,75 @@ function wallTile(p: Painter, s: Scene, tx: number, ty: number): void {
   if (door(1, 0)) { p.r(OAK.deep, x + T - 3, y, 3, T); p.r(OAK.light, x + T - 3, y, 1, T); p.r(OAK.line, x + T - 1, y, 1, T); }
   if (door(0, -1)) { p.r(OAK.deep, x, y, T, 3); p.r(OAK.light, x, y + 2, T, 1); p.r(OAK.line, x, y, T, 1); }
   if (door(0, 1)) { p.r(OAK.deep, x, y + T - 3, T, 3); p.r(OAK.light, x, y + T - 3, T, 1); p.r(OAK.line, x, y + T - 1, T, 1); }
+}
+
+type Surface = 'panel' | 'boards' | 'brick' | 'subway' | 'stone';
+interface FaceStyle { mid: number; line: number; base: number; dark: number; skirt: number; skirtTop: number; skirtLine: number; pattern: Surface }
+
+/**
+ * ADR 060: each room's walls by the floor in front of them (ADR 057 did this for the arcade):
+ * teal panelling in the open office, slate in meeting rooms, wood boards in private rooms, navy
+ * with a gold rail in reception, brick in the lounge, cream subway tile in the café, stone in the
+ * garden. Anything else keeps the ivory panelling of ADR 054.
+ */
+function faceStyle(below: number): FaceStyle {
+  const oak = { skirt: OAK.deep, skirtTop: OAK.mid, skirtLine: OAK.line };
+  switch (below) {
+    case FLOOR.ARCADE: return { mid: INDIGO.mid, line: INDIGO.deep, base: INDIGO.base, dark: INDIGO.dark, skirt: INDIGO.deep, skirtTop: INDIGO.light, skirtLine: NIGHT, pattern: 'panel' };
+    case FLOOR.CARPET: return { mid: TEAL.dark, line: TEAL.ink, base: TEAL.line, dark: TEAL.deep, ...oak, pattern: 'panel' };
+    case FLOOR.MEETING: return { mid: SLATE.light, line: SLATE.deep, base: 0xb4c0d6, dark: SLATE.base, skirt: NAVY.mid, skirtTop: NAVY.light, skirtLine: NAVY.deep, pattern: 'panel' };
+    case FLOOR.PRIVATE: return { mid: OAK.base, line: OAK.line, base: OAK.light, dark: OAK.dark, skirt: OAK.line, skirtTop: OAK.deep, skirtLine: OAK.line, pattern: 'boards' };
+    case FLOOR.RECEPTION: return { mid: NAVY.light, line: NAVY.deep, base: 0x5c6f95, dark: NAVY.base, skirt: NAVY.deep, skirtTop: GOLD, skirtLine: NAVY.deep, pattern: 'panel' };
+    case FLOOR.WOOD: return { mid: BRICK.base, line: BRICK.dark, base: BRICK.light, dark: BRICK.dark, ...oak, pattern: 'brick' };
+    case FLOOR.CAFE: return { mid: CREAM.light, line: CREAM.line, base: CREAM.light, dark: CREAM.dark, skirt: TERRA.dark, skirtTop: TERRA.base, skirtLine: TERRA.deep, pattern: 'subway' };
+    case FLOOR.GRASS: return { mid: STONE.mid, line: STONE.line, base: STONE.light, dark: STONE.dark, skirt: STONE.line, skirtTop: STONE.dark, skirtLine: 0x7d715c, pattern: 'stone' };
+    default: return { mid: CREAM.mid, line: CREAM.line, base: CREAM.base, dark: CREAM.dark, ...oak, pattern: 'panel' };
+  }
+}
+
+/** The texture of a wall's front face (15 px between the coping and the skirting board). */
+function wallSurface(p: Painter, kind: Surface, c: FaceStyle, tx: number, ty: number, x: number, fy: number): void {
+  const fh = T - CAP - 4;
+  if (kind === 'panel') {
+    p.r(c.dark, x + 15, fy + 3, 1, fh - 3); // panel seam
+    p.r(c.dark, x, fy + 11, T, 1, 0.55); // dado line
+    p.r(c.base, x + 2, fy + 4, 11, 1, 0.5); p.r(c.base, x + 18, fy + 4, 11, 1, 0.5); // raised panel tops
+    return;
+  }
+  if (kind === 'boards') { // vertical tongue-and-groove boards
+    for (let i = 0; i < T; i += 6) { p.r(pick([OAK.base, OAK.mid, OAK.light], hash(tx * 6 + i, ty, 81)), x + i, fy, 6, fh); p.r(c.dark, x + i + 5, fy, 1, fh); }
+    p.r(OAK.deep, x, fy + 10, T, 1, 0.6);
+    return;
+  }
+  if (kind === 'brick' || kind === 'subway') {
+    const brick = kind === 'brick';
+    const bw = brick ? 12 : 10;
+    for (let row = 0; row * 4 < fh; row += 1) {
+      const off = row % 2 ? Math.floor(bw / 2) : 0;
+      for (let bx = -off; bx < T; bx += bw) {
+        const tone = brick ? pick([BRICK.base, BRICK.mid, BRICK.light, BRICK.base, BRICK.dark], hash(tx * 8 + Math.floor((bx + off) / bw), ty * 5 + row, 82)) : pick([CREAM.light, 0xfdfaf2, CREAM.base], hash(tx * 8 + bx, row, 83));
+        const left = Math.max(0, bx);
+        const right = Math.min(T, bx + bw - 1);
+        p.r(tone, x + left, fy + row * 4, right - left, 3);
+        if (!brick) p.r(0xffffff, x + left, fy + row * 4, right - left, 1, 0.5);
+      }
+      p.r(brick ? BRICK.mortar : CREAM.dark, x, fy + row * 4 + 3, T, 1, brick ? 0.75 : 0.9);
+    }
+    return;
+  }
+  // stone: irregular dressed blocks
+  for (let row = 0; row * 5 < fh; row += 1) {
+    let bx = -(hash(tx, ty + row, 84) % 8);
+    while (bx < T) {
+      const bw = 7 + (hash(tx * 9 + bx, row, 85) % 8);
+      const left = Math.max(0, bx);
+      const right = Math.min(T, bx + bw - 1);
+      p.r(pick([STONE.base, STONE.mid, STONE.light, STONE.dark], hash(tx * 9 + bx, ty * 3 + row, 86)), x + left, fy + row * 5, right - left, 4);
+      p.r(STONE.light, x + left, fy + row * 5, right - left, 1, 0.6);
+      bx += bw;
+    }
+    p.r(STONE.line, x, fy + row * 5 + 4, T, 1, 0.8);
+  }
 }
 
 /** Garden walls: ivy climbing the face from the skirting board. */
@@ -414,21 +540,100 @@ function wallDecor(p: Painter, s: Scene, tx: number, ty: number): void {
     p.r(CREAM.light, x + 4, fy + 14, 24, 1);
     return;
   }
-  // Inner wall: now and then a framed picture or a clock.
-  const h = hash(tx, ty, 21);
-  if (h % 7 !== 0 || plainFace(s, tx - 1, ty) && hash(tx - 1, ty, 21) % 7 === 0) return;
-  const kind = (h >>> 5) % 5 === 4 ? 2 : (h >>> 5) % 2;
-  if (kind === 2) { // clock
-    p.ellipse(OAK.deep, x + 16, fy + 8, 6, 6); p.ellipse(CREAM.light, x + 16, fy + 8, 4, 4);
-    p.r(NAVY.deep, x + 16, fy + 5, 1, 4); p.r(NAVY.deep, x + 16, fy + 8, 3, 1);
-    return;
-  }
-  p.r(kind ? OAK.deep : GOLD, x + 8, fy + 2, 16, 12); p.r(CREAM.light, x + 9, fy + 3, 14, 10);
-  if (kind === 0) { // hills at dusk
-    p.r(0xf2c79a, x + 10, fy + 4, 12, 4); p.r(TERRA.light, x + 17, fy + 5, 3, 2);
-    p.r(SAGE.deep, x + 10, fy + 8, 12, 4); p.r(LEAF.dark, x + 10, fy + 9, 5, 3); p.r(LEAF.base, x + 15, fy + 10, 7, 2);
-  } else { // abstract blocks
-    p.r(NAVY.base, x + 10, fy + 4, 5, 8); p.r(TERRA.base, x + 16, fy + 4, 6, 4); p.r(SAGE.dark, x + 16, fy + 9, 6, 3);
+  // ADR 060: inner walls carry something every third tile, from a set that suits the room.
+  const kind = roomArt(s, tx, ty);
+  if (kind) wallArt(p, kind, x, fy);
+}
+
+type RoomArt = 'clock' | 'hills' | 'abstract' | 'cork' | 'chart' | 'screen' | 'diploma' | 'record' | 'sconce' | 'menu' | 'mugs' | 'cup' | 'shelf' | 'photo';
+const ROOM_ART: Partial<Record<number, readonly RoomArt[]>> = {
+  [FLOOR.CARPET]: ['cork', 'clock', 'chart', 'hills', 'shelf', 'abstract'],
+  [FLOOR.MEETING]: ['screen', 'abstract', 'clock', 'hills'],
+  [FLOOR.PRIVATE]: ['diploma', 'shelf', 'clock', 'hills'],
+  [FLOOR.RECEPTION]: ['sconce', 'photo', 'sconce', 'hills'],
+  [FLOOR.WOOD]: ['record', 'sconce', 'abstract', 'shelf', 'record', 'sconce'],
+  [FLOOR.CAFE]: ['menu', 'sconce', 'mugs', 'cup', 'sconce'],
+};
+const DEFAULT_ART: readonly RoomArt[] = ['hills', 'abstract', 'clock'];
+
+/** What hangs on an inner wall-face tile, if anything: every third tile along a wall line. */
+function roomArt(s: Scene, tx: number, ty: number): RoomArt | null {
+  if ((tx + ty) % 3 !== 0) return null;
+  const set = ROOM_ART[s.floor[(ty + 1) * s.w + tx] ?? 0] ?? DEFAULT_ART;
+  return pick(set, hash(tx, ty, 21));
+}
+
+/** One piece of wall art inside a single wall-face tile (32 x 15 px from `fy`). */
+function wallArt(p: Painter, kind: RoomArt, x: number, fy: number): void {
+  const frame = (fx: number, fw: number, fh: number, edge: number, field: number) => { p.r(INK, fx + 1, fy + 2 + fh, fw - 1, 1, 0.25); p.r(edge, fx, fy + 2, fw, fh); p.r(field, fx + 1, fy + 3, fw - 2, fh - 2); };
+  switch (kind) {
+    case 'clock':
+      p.ellipse(INK, x + 17, fy + 9, 6, 6, 0.2); p.ellipse(OAK.deep, x + 16, fy + 8, 6, 6); p.ellipse(CREAM.light, x + 16, fy + 8, 4, 4);
+      p.r(NAVY.deep, x + 16, fy + 5, 1, 4); p.r(NAVY.deep, x + 16, fy + 8, 3, 1); p.r(TERRA.base, x + 16, fy + 8, 1, 1);
+      return;
+    case 'hills':
+      frame(x + 8, 16, 12, GOLD, CREAM.light);
+      p.r(0xf2c79a, x + 9, fy + 3, 14, 4); p.r(TERRA.light, x + 17, fy + 4, 3, 2);
+      p.r(SAGE.deep, x + 9, fy + 7, 14, 6); p.r(LEAF.dark, x + 9, fy + 9, 5, 4); p.r(LEAF.base, x + 15, fy + 10, 8, 3);
+      return;
+    case 'abstract':
+      frame(x + 8, 16, 12, OAK.deep, CREAM.light);
+      p.r(NAVY.base, x + 10, fy + 4, 5, 8); p.r(TERRA.base, x + 16, fy + 4, 6, 4); p.r(TEAL.dark, x + 16, fy + 9, 6, 3); p.r(GOLD, x + 12, fy + 6, 2, 2);
+      return;
+    case 'cork': // corkboard with notes and pins
+      frame(x + 4, 24, 12, OAK.deep, 0xc89b6a);
+      for (let i = 0; i < 9; i += 1) p.r(0xb4865a, x + 6 + ((i * 7) % 20), fy + 4 + ((i * 5) % 8), 1, 1);
+      p.r(GOLD_LIGHT, x + 6, fy + 4, 5, 5); p.r(0xf6a5b5, x + 13, fy + 5, 5, 5); p.r(0x9fd3f0, x + 20, fy + 4, 5, 5); p.r(GOLD_LIGHT, x + 15, fy + 9, 6, 3);
+      p.r(TERRA.dark, x + 8, fy + 4, 1, 1); p.r(NAVY.base, x + 15, fy + 5, 1, 1); p.r(LEAF.dark, x + 22, fy + 4, 1, 1);
+      p.r(NAVY.light, x + 7, fy + 6, 3, 1, 0.6); p.r(NAVY.light, x + 14, fy + 7, 3, 1, 0.6);
+      return;
+    case 'chart': // framed bar chart
+      frame(x + 7, 18, 12, NAVY.deep, 0xfbfbf8);
+      for (const [i, hgt, c] of [[0, 4, TEAL.deep], [1, 6, TEAL.dark], [2, 5, TERRA.base], [3, 8, GOLD]] as const) p.r(c, x + 9 + i * 4, fy + 12 - hgt, 3, hgt);
+      p.r(NAVY.light, x + 8, fy + 12, 16, 1);
+      return;
+    case 'screen': // a wall-mounted display with a dashboard
+      p.r(INK, x + 4, fy + 14, 25, 1, 0.25); p.r(NIGHT, x + 3, fy + 1, 26, 13); p.r(0x1f3b63, x + 4, fy + 2, 24, 11);
+      p.r(0x4f8fd0, x + 5, fy + 3, 9, 4); p.r(0x7ad1b8, x + 15, fy + 3, 12, 1); p.r(0x7ad1b8, x + 15, fy + 5, 8, 1);
+      for (const [i, hgt] of [[0, 3], [1, 5], [2, 4], [3, 6], [4, 5]] as const) p.r(i === 3 ? GOLD : 0x8fc7e8, x + 6 + i * 4, fy + 12 - hgt, 3, hgt);
+      p.r(0xffffff, x + 4, fy + 2, 6, 1, 0.25);
+      return;
+    case 'diploma':
+      frame(x + 8, 16, 12, GOLD, MARBLE.light);
+      p.r(NAVY.base, x + 11, fy + 4, 10, 1); p.r(SLATE.light, x + 10, fy + 6, 12, 1); p.r(SLATE.light, x + 10, fy + 8, 9, 1);
+      p.r(TERRA.base, x + 19, fy + 9, 3, 3); p.r(GOLD_LIGHT, x + 20, fy + 10, 1, 1);
+      return;
+    case 'record': // a framed vinyl record
+      frame(x + 8, 16, 12, NIGHT, pick([0xe0595c, TEAL.dark, GOLD, VIOLET.base], x));
+      p.ellipse(NIGHT, x + 16, fy + 8, 5, 5); p.ellipse(0x2a2b3a, x + 16, fy + 8, 3, 3); p.r(GOLD_LIGHT, x + 15, fy + 7, 2, 2);
+      return;
+    case 'sconce': // a brass wall lamp with a warm shade
+      p.r(LIGHT, x + 9, fy + 1, 14, 12, 0.08); p.r(LIGHT, x + 11, fy + 2, 10, 10, 0.1);
+      p.r(GOLD, x + 15, fy + 9, 2, 4); p.r(OAK.line, x + 13, fy + 12, 6, 1);
+      p.r(0xf6e2bd, x + 12, fy + 4, 8, 5); p.r(GOLD_LIGHT, x + 13, fy + 5, 6, 3); p.r(0xd8b77e, x + 12, fy + 8, 8, 1);
+      return;
+    case 'menu': // a chalkboard menu
+      frame(x + 5, 22, 12, OAK.deep, 0x2f4a3a);
+      p.r(CREAM.light, x + 8, fy + 4, 9, 1); p.r(CREAM.dark, x + 8, fy + 7, 12, 1); p.r(CREAM.dark, x + 8, fy + 9, 10, 1); p.r(CREAM.dark, x + 8, fy + 11, 13, 1);
+      p.r(GOLD_LIGHT, x + 21, fy + 7, 2, 1); p.r(GOLD_LIGHT, x + 21, fy + 9, 2, 1); p.r(GOLD_LIGHT, x + 22, fy + 11, 2, 1);
+      return;
+    case 'mugs': // a shelf of mugs
+      p.r(OAK.deep, x + 4, fy + 10, 24, 2); p.r(OAK.light, x + 4, fy + 10, 24, 1);
+      [TERRA.base, TEAL.dark, CREAM.light, GOLD].forEach((c, i) => { p.r(c, x + 6 + i * 6, fy + 5, 4, 5); p.r(0xffffff, x + 6 + i * 6, fy + 5, 4, 1, 0.35); p.r(c, x + 10 + i * 6, fy + 6, 1, 2); });
+      return;
+    case 'cup': // a small neon coffee cup
+      p.r(NIGHT, x + 7, fy + 2, 18, 12);
+      p.r(NEON.orange, x + 11, fy + 6, 8, 1); p.r(NEON.orange, x + 11, fy + 6, 1, 5); p.r(NEON.orange, x + 18, fy + 6, 1, 5); p.r(NEON.orange, x + 11, fy + 10, 8, 1);
+      p.r(NEON.orange, x + 19, fy + 7, 2, 1); p.r(NEON.orange, x + 20, fy + 7, 1, 3); p.r(NEON.orange, x + 19, fy + 9, 2, 1);
+      p.r(NEON.white, x + 13, fy + 3, 1, 2, 0.8); p.r(NEON.white, x + 16, fy + 3, 1, 2, 0.8); p.r(NEON.orange, x + 8, fy + 3, 16, 10, 0.08);
+      return;
+    case 'shelf': // a floating shelf with a plant and books
+      p.r(OAK.deep, x + 5, fy + 10, 22, 2); p.r(OAK.light, x + 5, fy + 10, 22, 1);
+      p.r(TERRA.base, x + 7, fy + 6, 6, 4); p.r(TERRA.light, x + 7, fy + 6, 6, 1); p.ellipse(LEAF.dark, x + 10, fy + 4, 4, 3); p.r(LEAF.light, x + 9, fy + 3, 2, 1); p.r(LEAF.base, x + 7, fy + 6, 1, 6);
+      p.r(NAVY.base, x + 16, fy + 4, 2, 6); p.r(TERRA.dark, x + 18, fy + 5, 2, 5); p.r(GOLD, x + 20, fy + 4, 2, 6); p.r(TEAL.dark, x + 22, fy + 6, 3, 4);
+      return;
+    case 'photo': // a pair of framed photographs
+      for (const [fx, c] of [[x + 5, TEAL.dark], [x + 18, TERRA.light]] as const) { frame(fx, 10, 11, NIGHT, c); p.ellipse(CREAM.light, fx + 5, fy + 6, 2, 2); p.r(CREAM.light, fx + 2, fy + 9, 6, 3); }
   }
 }
 
@@ -451,6 +656,10 @@ function lighting(p: Painter, s: Scene, view: Rect): void {
   }
   for (const d of s.desks) {
     if (overlaps(view, d, 48)) lightPool(p, Math.round(d.x + d.width / 2), Math.round(d.y + d.height / 2 + 4), 52, 30);
+  }
+  // ADR 060: a pendant lamp over every café table throws a warm pool around it.
+  for (const f of s.furniture) {
+    if (kindOf(f) === 'cafe-table' && overlaps(view, f, 48)) lightPool(p, Math.round(f.x + f.width / 2), Math.round(f.y + f.height / 2 + 4), 40, 26);
   }
   // Each cabinet throws its own colour onto the boards in front of it, in three flat steps.
   for (const f of s.furniture) {
@@ -487,6 +696,37 @@ function rug(p: Painter, x: number, y: number, w: number, h: number, edge: numbe
   for (const [cx, cy] of [[x + 8, y + 8], [x + w - 11, y + 8], [x + 8, y + h - 11], [x + w - 11, y + h - 11]] as const) p.r(edge, cx, cy, 3, 3);
 }
 
+/** Floor under the whole rectangle (furniture allowed, no wall or doorway): for rugs under furniture. */
+function floorOnly(s: Scene, r: Rect): boolean {
+  for (let ty = Math.floor(r.y / T); ty <= Math.floor((r.y + r.height - 1) / T); ty += 1) {
+    for (let tx = Math.floor(r.x / T); tx <= Math.floor((r.x + r.width - 1) / T); tx += 1) if (!s.open(tx, ty) || s.doors.has(ty * s.w + tx)) return false;
+  }
+  return true;
+}
+
+/** ADR 060: an inlaid compass rose: navy and gold rings, an eight-point star. Flat; blocks nothing. */
+function medallion(p: Painter, cx: number, cy: number, r: number): void {
+  p.ellipse(INK, cx, cy + 2, r, r, 0.08);
+  p.ellipse(NAVY.base, cx, cy, r, r); p.ellipse(GOLD, cx, cy, r - 3, r - 3); p.ellipse(MARBLE.light, cx, cy, r - 5, r - 5);
+  p.ellipse(NAVY.light, cx, cy, r - 12, r - 12); p.ellipse(MARBLE.base, cx, cy, r - 14, r - 14);
+  for (let i = 0; i < 16; i += 1) { const a = (i * Math.PI) / 8; p.r(GOLD, Math.round(cx + Math.cos(a) * (r - 8)) - 1, Math.round(cy + Math.sin(a) * (r - 8)) - 1, 2, 2); }
+  // The star: four long points (navy and gold halves) and four short ones.
+  const long = r - 16;
+  const short = Math.round(long * 0.55);
+  for (let k = 0; k <= long; k += 1) {
+    const half = Math.max(0, Math.round((long - k) * 0.28));
+    p.r(NAVY.base, cx - half, cy - k, half, 1); p.r(GOLD, cx, cy - k, half + 1, 1);
+    p.r(GOLD, cx - half, cy + k, half, 1); p.r(NAVY.base, cx, cy + k, half + 1, 1);
+    p.r(NAVY.base, cx + k, cy - half, 1, half); p.r(GOLD, cx + k, cy, 1, half + 1);
+    p.r(GOLD, cx - k, cy - half, 1, half); p.r(NAVY.base, cx - k, cy, 1, half + 1);
+  }
+  for (let k = 0; k <= short; k += 1) {
+    const half = Math.max(0, Math.round((short - k) * 0.3));
+    for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]] as const) p.r(SLATE.light, cx + sx * k - (half >> 1), cy + sy * k - (half >> 1), half + 1, half + 1, 0.9);
+  }
+  p.ellipse(GOLD, cx, cy, 3, 3); p.r(GOLD_LIGHT, cx - 1, cy - 1, 2, 2);
+}
+
 /** Free floor only: every tile under the rectangle is open floor without furniture. */
 function clear(s: Scene, r: Rect): boolean {
   for (let ty = Math.floor(r.y / T); ty <= Math.floor((r.y + r.height - 1) / T); ty += 1) {
@@ -512,14 +752,29 @@ function rugs(p: Painter, s: Scene, view: Rect): void {
         const y0 = Math.max(r.y, room.y + 26);
         r = { x: x0, y: y0, width: Math.min(r.x + r.width, room.x + room.width - 20) - x0, height: Math.min(r.y + r.height, room.y + room.height - 14) - y0 };
       }
-      if (r.width > f.width && r.height > f.height && overlaps(view, r, 2)) rug(p, r.x, r.y, r.width, r.height, TERRA.mid, 0xe6c3a8, TERRA.light);
+      if (r.width > f.width && r.height > f.height && overlaps(view, r, 2)) patternRug(p, r, { edge: SLATE.deep, field: 0xd9dfe9, line: GOLD, accent: SLATE.base });
     } else if (kind === 'sofa' && f.width >= f.height) {
       const r = { x: f.x + 8, y: f.y + f.height + 6, width: f.width - 16, height: 44 };
-      if (clear(s, r) && overlaps(view, r, 2)) rug(p, r.x, r.y, r.width, r.height, SAGE.deep, 0xdfe8da, SAGE.dark);
+      if (clear(s, r) && overlaps(view, r, 2)) patternRug(p, r, { edge: TERRA.deep, field: 0xe8cdb4, line: TEAL.deep, accent: TERRA.base });
     } else if (kind === 'counter') {
       const r = { x: f.x + 24, y: f.y + f.height + 10, width: f.width - 48, height: 22 };
       if (r.width > 40 && clear(s, r) && overlaps(view, r, 2)) rug(p, r.x, r.y, r.width, r.height, NAVY.light, 0xb9c6dc, GOLD);
     }
+  }
+  // ADR 060: a wool rug under each workstation (table and chair), so the desks read as places.
+  for (const d of s.desks) {
+    const r = { x: d.x - 10, y: d.y - 6, width: d.width + 20, height: d.height + 12 };
+    if (!overlaps(view, r, 4) || !floorOnly(s, r)) continue;
+    rug(p, r.x, r.y, r.width, r.height, TEAL.deep, 0xd9cdb2, 0xc4b594);
+  }
+  // ADR 060: a compass medallion in the middle of an open room with marble floor (reception).
+  for (const room of s.rooms) {
+    const cx = Math.round(room.x + room.width / 2);
+    const cy = Math.round(room.y + room.height / 2 + T / 2);
+    if ((s.floor[Math.floor(cy / T) * s.w + Math.floor(cx / T)] ?? 0) !== FLOOR.RECEPTION) continue;
+    const rr = 44;
+    if (!clear(s, { x: cx - rr, y: cy - rr, width: rr * 2, height: rr * 2 }) || !overlaps(view, { x: cx - rr, y: cy - rr, width: rr * 2, height: rr * 2 }, 4)) continue;
+    medallion(p, cx, cy, rr);
   }
   // An oval rug in the middle of each private room that has free floor there.
   for (const room of s.rooms) {
@@ -737,7 +992,7 @@ function chairs(p: Painter, s: Scene, view: Rect): void {
     if (!overlaps(view, { x: seat.x - 12, y: seat.y - 12, width: 24, height: 24 })) continue;
     const cx = Math.round(seat.x);
     const cy = Math.round(seat.y);
-    if (seat.kind === 'desk') chair(p, cx, cy + 1, 'bottom', SAGE.deep, 0x667d64, SAGE.dark);
+    if (seat.kind === 'desk') chair(p, cx, cy + 1, 'bottom', 0x4b5563, 0x2f3542, 0x6b7280); // ADR 060: charcoal task chairs
     else if (seat.kind === 'cafe') sideChair(p, cx, cy, seat.facing === 'right' ? 'left' : 'right');
     else chair(p, cx, cy + (seat.facing === 'down' ? 6 : -6), seat.facing === 'down' ? 'top' : 'bottom', NAVY.light, NAVY.mid, 0x6f84ab);
   }
@@ -792,6 +1047,16 @@ function deskTable(p: Painter, f: MapObject): void {
   p.r(0xffffff, mx + 2, y + 5, 4, 1, 0.7); p.r(0xffffff, mx + 2, y + 7, 6, 1, 0.45);
   p.r(0x4b5563, mx + 5, y + 12, 2, 2); p.r(0x4b5563, mx + 3, y + 14, 6, 1);
   p.r(0x9aa3af, mx + 1, y + 16, 10, 3); p.r(0xd1d5db, mx + 2, y + 17, 8, 1);
+  // ADR 060: something personal beside the monitor (left of it, clear of the desk label on the mat).
+  // The desk label (renderer: x + 6, 10 px type) ends near x + 41, the monitor starts at x + w - 15.
+  const px = mx - 6;
+  if (px < x + 42) return;
+  switch (v % 4) {
+    case 0: p.r(CREAM.light, px, y + 13, 4, 5); p.r(TERRA.base, px, y + 13, 4, 1); p.r(CREAM.light, px + 4, y + 14, 1, 2); p.r(0x5b3a29, px + 1, y + 14, 2, 1); break; // mug
+    case 1: p.r(TERRA.base, px, y + 14, 5, 4); p.r(TERRA.light, px, y + 14, 5, 1); p.ellipse(LEAF.dark, px + 2, y + 11, 3, 3); p.r(LEAF.light, px + 1, y + 9, 2, 1); break; // succulent
+    case 2: p.r(NAVY.deep, px + 2, y + 7, 1, 9); p.r(NAVY.deep, px, y + 16, 5, 2); p.r(GOLD_LIGHT, px, y + 5, 5, 3); break; // desk lamp
+    default: p.r(TEAL.ink, px, y + 12, 5, 6); p.r(CREAM.light, px + 1, y + 13, 3, 4); p.r(TERRA.base, px + 4, y + 11, 1, 7); // notebook with a pen
+  }
 }
 
 function plainTable(p: Painter, s: Scene, f: MapObject): void {

@@ -69,9 +69,12 @@ const besideDoor = (s: Scene, x: number, y: number) => (s.open(x - 1, y) && s.op
 
 // ---------------------------------------------------------------- garlands and bulbs
 
-/** A pine garland swagged along a wall face, with a red bow at each peg. Bulbs go to `bulbs`. */
+/**
+ * A pine garland swagged along a wall face, with a red bow at each peg. Bulbs go to `bulbs`.
+ * ADR 060: it hangs from the coping with a shallow swag, so the wall art below it stays visible.
+ */
 function garland(x0: number, y0: number, w: number, bulbs: Bulb[], salt: number): AtlasPiece {
-  const sag = (x: number) => Math.round(Math.sin(((x - x0) / 64) * Math.PI) ** 2 * 5);
+  const sag = (x: number) => Math.round(Math.sin(((x - x0) / 64) * Math.PI) ** 2 * 3);
   for (let x = x0 + 6; x < x0 + w - 4; x += 9) {
     const h = hash(x, salt, 91);
     bulbs.push({ x, y: y0 + 3 + sag(x) + 3, colour: pick(BULB_COLOURS, h), phase: ((x - x0) / 9) % 2 === 0 ? 0 : 1 });
@@ -116,7 +119,9 @@ function walls(s: Scene, bulbs: Bulb[]): AtlasPiece[] {
       let end = tx;
       while (end + 1 < s.w && face(s, end + 1, ty) && end + 1 - tx < MAX_RUN) end += 1;
       const len = end - tx + 1;
-      if (len >= 2) out.push(garland(tx * T, ty * T + CAP, len * T, bulbs, ty * 1000 + tx));
+      // ADR 060: hung from the coping so wall art shows, except above the arcade, where it stays low and clear of the neon signs.
+      const arcade = (s.floor[(ty + 1) * s.w + tx] ?? 0) === 8;
+      if (len >= 2) out.push(garland(tx * T, ty * T + CAP - (arcade ? 0 : 5), len * T, bulbs, ty * 1000 + tx));
       for (let x = tx; x <= end; x += 1) {
         if (besideDoor(s, x, ty) && !wreathed.has(ty * s.w + x) && !wreathed.has(ty * s.w + x - 1)) {
           wreathed.add(ty * s.w + x);
