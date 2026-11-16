@@ -164,11 +164,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       >
         Skip to main content
       </a>
-      <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur">
+      <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b bg-background/95 px-3 backdrop-blur sm:gap-3 sm:px-4">
         <Button
           variant="ghost"
           size="icon"
-          className="md:hidden"
+          className="shrink-0 md:hidden"
           aria-label="Toggle navigation"
           aria-expanded={navOpen}
           aria-controls="sidebar"
@@ -176,13 +176,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         >
           <Menu />
         </Button>
-        <span className="font-semibold">HR Virtual Office</span>
-        <div className="ml-auto flex items-center gap-3">
+        {/* On a narrow phone the name gives way to the tracking status (always shown, SRS 8.2). */}
+        <span className="hidden min-w-0 truncate font-semibold min-[440px]:inline" data-testid="app-name">HR Virtual Office</span>
+        <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3">
           <OfficePresenceBadge />
           <TrackingBadge />
           <TimerBadge />
           <NotificationBell />
-          <span className="hidden text-sm text-muted-foreground sm:inline" data-testid="current-user">
+          {/* The name from 1280 px: on a tablet the header has the tracking status and office controls first. */}
+          <span className="hidden text-sm text-muted-foreground xl:inline" data-testid="current-user">
             {user.displayName ?? user.email} · {access.data?.customRoleName ?? ROLE_LABEL[user.role as keyof typeof ROLE_LABEL] ?? user.role}
           </span>
           <Button variant="outline" size="sm" aria-label="Sign out" onClick={() => void signOut()}>

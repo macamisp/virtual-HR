@@ -28,9 +28,10 @@ export function OfficePresenceBadge() {
   if (!c.office || pathname === '/office') return null;
   return (
     <span className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="office-presence">
-      {/* Icons only on a phone, so the header does not overflow and widen the page (the dock went off screen). */}
-      <Link href="/office" className="flex items-center gap-1 underline"><Building2 className="h-3.5 w-3.5" aria-hidden="true" /><span className="sr-only sm:not-sr-only">In the office</span></Link>
-      <Button size="sm" variant="ghost" className="h-6 px-1 text-xs" aria-label="Leave the office" onClick={() => c.leaveOffice()}><LogOut aria-hidden="true" /><span className="hidden sm:inline">Leave</span></Button>
+      {/* Icons only below 768 px, so the header does not overflow and widen the page (the dock went
+          off screen; at 640-767 px the words no longer fit beside the full tracking status). */}
+      <Link href="/office" className="flex items-center gap-1 underline"><Building2 className="h-3.5 w-3.5" aria-hidden="true" /><span className="sr-only md:not-sr-only">In the office</span></Link>
+      <Button size="sm" variant="ghost" className="h-6 px-1 text-xs" aria-label="Leave the office" onClick={() => c.leaveOffice()}><LogOut aria-hidden="true" /><span className="hidden md:inline">Leave</span></Button>
     </span>
   );
 }
