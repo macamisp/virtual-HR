@@ -215,7 +215,7 @@ Sign-in, sessions, logout, 2FA (where enforced), roles and permissions; organisa
 |---|---|
 | Production deployment of this branch | not ready: §13 |
 | Map editor UI | not implemented (API only) |
-| Chess and ping-pong | furniture only, not games |
+| Ping-pong | furniture only, not a game (chess and checkers became two-player games in V3: see `docs/releases/v3-release-candidate-2026-11-16.md`) |
 | Mini-game scores, festive mode per organisation | not stored (by design so far) |
 
 ## 16. Office visual redesign (follow-up, same day)
@@ -273,6 +273,17 @@ A first version also clamped the camera to the map at normal zoom. That moved th
 - there is no exact match to a reference design, because none was provided.
 
 **Status:** PASS for the redesign being visible on the Acme Demo office. BLOCKED for the iCET workspaces' campus areas until their owner runs the map upgrade.
+
+## 17. V3 (same day)
+
+V3 is covered in its own report, `docs/releases/v3-release-candidate-2026-11-16.md`. It includes:
+- the isometric view and switch;
+- chess and checkers;
+- emotes;
+- campus v2 (pool, pond, bench seats);
+- HR work items;
+- the owner-scope security test;
+- results, defects and rollback.
 
 ## How to repeat
 
