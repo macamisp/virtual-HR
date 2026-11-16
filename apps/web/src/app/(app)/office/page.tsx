@@ -167,6 +167,11 @@ function MapView({ client, festive, picture, projection }: { client: OfficeClien
         setFps(Math.round(renderer.current.fps));
         host.current?.setAttribute('data-fps', String(Math.round(renderer.current.fps)));
         host.current?.setAttribute('data-frame-ms', renderer.current.frameMs.toFixed(2));
+        // NFR-PERF-002: time per draw, draw-list rebuilds and draws per second, static pieces drawn of all.
+        host.current?.setAttribute('data-render-ms', renderer.current.renderMs.toFixed(2));
+        host.current?.setAttribute('data-rebuilds', renderer.current.rebuildsPerSecond.toFixed(1));
+        host.current?.setAttribute('data-draws', renderer.current.drawsPerSecond.toFixed(1));
+        { const k = renderer.current.cullStats(); host.current?.setAttribute('data-culled', `${k.shown}/${k.total}`); }
         host.current?.setAttribute('data-avatars', String(client.avatars.size + 1));
         // For the browser tests: where the own avatar is and whether the office socket is live.
         host.current?.setAttribute('data-self', client.self ? `${Math.round(client.self.x)},${Math.round(client.self.y)}` : '');

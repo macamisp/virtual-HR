@@ -12,7 +12,7 @@
 // The CSP has no 'unsafe-eval' in production builds; this PixiJS module swaps its generated
 // shader/uniform code for eval-free versions (otherwise the canvas never starts: "0 fps").
 import 'pixi.js/unsafe-eval';
-import { Application, BitmapText, CanvasSource, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
+import { Application, BitmapText, CanvasSource, Container, Graphics, Rectangle, Sprite, Texture, UPDATE_PRIORITY } from 'pixi.js';
 import { ACTION_MS, AVATAR_FRAMES, AVATAR_KEYS, AVATAR_POSES, avatarKeyOr, createAnimation, FACINGS, gameObjects, objectLayer, poseCell, prop, sheetCell, stepAnimation, TILE_SIZE } from '@hrvo/shared';
 import type { AvatarActionKind, AvatarActionState, AvatarAnimation, Emote, AvatarFrame, AvatarKey, AvatarPose, CampusGame, Facing, MapObject, OfficeMap, VoStatus } from '@hrvo/shared';
 import { createAvatarSheetCanvas } from './avatar-sheet';
@@ -182,6 +182,23 @@ export class OfficeRenderer {
   private destroyed = false;
   fps = 0;
   frameMs = 0;
+  /** Time per draw (Pixi's render), draws per second (only when the scene changed), draw-list rebuilds per second. */
+  renderMs = 0;
+  drawsPerSecond = 0;
+  rebuildsPerSecond = 0;
+  private drawCount = 0;
+  private rebuildCount = 0;
+  private statWindow = 0;
+  private lastDraw = 0;
+  private drawnSize = '';
+  /**
+   * Viewport culling (static scene pieces only): their bounds in world pixels, checked when the
+   * camera has moved by a few pixels. Pieces outside the screen are not drawn and, more importantly,
+   * not re-listed when the depth order changes.
+   */
+  private cullables: Array<{ c: Container; x0: number; y0: number; x1: number; y1: number }> = [];
+  private lastCull: { x: number; y: number; zoom: number; w: number; h: number } | null = null;
+  private linkKey = '';
   /** FR-VO-008: a right-click on another person's avatar; the page opens that person's menu. */
   onAvatarMenu: ((userId: string) => void) | null = null;
 
@@ -201,6 +218,10 @@ export class OfficeRenderer {
     this.ground.addChild(this.mapLayer, this.festiveLayer);
     this.world.addChild(this.ground, this.labelLayer, this.linkLayer, this.avatarLayer, this.roomLabelLayer);
     this.avatarLayer.sortableChildren = true;
+    // Separate render groups: a depth change among the avatars and standing pieces (every step
+    // someone takes) re-lists only that layer, and the water glint only the ground.
+    this.avatarLayer.isRenderGroup = true;
+    this.ground.isRenderGroup = true;
     this.app.stage.addChild(this.world);
     this.app.stage.eventMode = 'static';
     this.app.stage.hitArea = this.app.screen;
@@ -218,6 +239,44 @@ export class OfficeRenderer {
     this.host.addEventListener('wheel', this.onWheel, { passive: false });
     this.host.addEventListener('contextmenu', this.onContext);
     this.app.ticker.add((t) => this.frame(t.deltaMS));
+    // Draw only when the scene changed (NFR-PERF-002). Pixi queues every change it will draw:
+    // structure (added, removed, shown, hidden, re-sorted), transforms and colours, and view updates
+    // (a texture swapped for the next walking frame, text, graphics). When all are empty, the next
+    // frame would be the same picture, so the last one stays on screen. The frame logic above still
+    // runs every tick (movement, animation timers); a redraw at least once a second is a safety net.
+    this.app.ticker.remove(this.app.render, this.app);
+    this.app.ticker.add((t) => this.renderIfChanged(t.deltaMS), undefined, UPDATE_PRIORITY.LOW);
+  }
+
+  private renderIfChanged(dtMs: number): void {
+    const now = performance.now();
+    const groups = [this.app.stage, this.avatarLayer, this.ground];
+    const rebuild = groups.some((c) => c.renderGroup?.structureDidChange);
+    const size = `${this.app.screen.width}x${this.app.screen.height}@${this.app.renderer.resolution}`;
+    const changed = rebuild || size !== this.drawnSize || now - this.lastDraw >= 1000 || groups.some((c) => {
+      const g = c.renderGroup;
+      if (!g) return false;
+      if (g.childrenRenderablesToUpdate.index > 0) return true;
+      for (const k in g.childrenToUpdate) if ((g.childrenToUpdate[k]?.index ?? 0) > 0) return true;
+      return false;
+    });
+    if (changed) {
+      const t0 = performance.now();
+      this.app.render();
+      this.renderMs = this.renderMs * 0.9 + (performance.now() - t0) * 0.1;
+      this.lastDraw = now;
+      this.drawnSize = size;
+      this.drawCount += 1;
+      if (rebuild) this.rebuildCount += 1;
+    }
+    this.statWindow += dtMs;
+    if (this.statWindow >= 1000) {
+      this.drawsPerSecond = (this.drawCount * 1000) / this.statWindow;
+      this.rebuildsPerSecond = (this.rebuildCount * 1000) / this.statWindow;
+      this.drawCount = 0;
+      this.rebuildCount = 0;
+      this.statWindow = 0;
+    }
   }
 
   destroy(): void {
@@ -290,6 +349,8 @@ export class OfficeRenderer {
   private drawMap(map: OfficeMap): void {
     for (const c of this.mapLayer.removeChildren()) c.destroy({ children: true });
     this.releaseEnvironment();
+    this.cullables = [];
+    this.lastCull = null;
     if (this.projection === 'iso') { this.drawIsoMap(map); return; }
     const env = renderEnvironment(map);
     for (const chunk of env.chunks) {
@@ -299,6 +360,7 @@ export class OfficeRenderer {
       const sprite = new Sprite(texture);
       sprite.position.set(chunk.x, chunk.y);
       this.mapLayer.addChild(sprite);
+      this.cullable(sprite);
     }
     // Labels on small cream plates, so they read on every floor (the isometric view: drawLabels).
     for (const c of this.labelLayer.removeChildren()) c.destroy({ children: true });
@@ -334,6 +396,7 @@ export class OfficeRenderer {
       const sprite = new Sprite(texture);
       sprite.position.set(chunk.x, chunk.y);
       this.mapLayer.addChild(sprite);
+      this.cullable(sprite);
     }
     this.isoFade = [];
     this.isoGames = [];
@@ -347,6 +410,7 @@ export class OfficeRenderer {
         sprite.position.set(a.x, a.y);
         sprite.zIndex = a.depth ?? 0;
         this.avatarLayer.addChild(sprite);
+        this.cullable(sprite);
         out.textures.push(texture);
         out.sprites.push(sprite);
         const info = env.info[i];
@@ -431,11 +495,41 @@ export class OfficeRenderer {
         sprite.position.set(at.x, at.y);
         sprite.zIndex = depthOf('iso', bx, a.depth);
         this.avatarLayer.addChild(sprite);
-      } else { sprite.position.set(a.x, a.y); sprite.zIndex = a.depth; this.avatarLayer.addChild(sprite); }
+        this.cullable(sprite);
+      } else { sprite.position.set(a.x, a.y); sprite.zIndex = a.depth; this.avatarLayer.addChild(sprite); this.cullable(sprite); }
       out.textures.push(texture);
       out.sprites.push(sprite);
     }
     return out;
+  }
+
+  /** A static piece (floor chunk, standing piece) drawn only while near the screen; bounds in world px. */
+  private cullable(sp: Sprite): void {
+    const x0 = sp.x - sp.anchor.x * sp.width;
+    const y0 = sp.y - sp.anchor.y * sp.height;
+    this.cullables.push({ c: sp, x0, y0, x1: x0 + sp.width, y1: y0 + sp.height });
+  }
+
+  /** Shows the static pieces within the screen (plus a margin) and hides the rest; only after the camera moved. */
+  private cull(): void {
+    const z = this.zoom;
+    const w = this.app.screen.width;
+    const h = this.app.screen.height;
+    const at = { x: this.world.x, y: this.world.y, zoom: z, w, h };
+    const last = this.lastCull;
+    if (last && last.zoom === z && last.w === w && last.h === h && Math.abs(last.x - at.x) < 24 && Math.abs(last.y - at.y) < 24) return;
+    this.lastCull = at;
+    const margin = 160;
+    const vx0 = -at.x / z - margin;
+    const vy0 = -at.y / z - margin;
+    const vx1 = vx0 + w / z + margin * 2;
+    const vy1 = vy0 + h / z + margin * 2;
+    for (const k of this.cullables) k.c.visible = k.x1 >= vx0 && k.x0 <= vx1 && k.y1 >= vy0 && k.y0 <= vy1;
+  }
+
+  /** For tests and the benchmark: static pieces drawn now, of all. */
+  cullStats(): { shown: number; total: number } {
+    return { shown: this.cullables.filter((k) => k.c.visible).length, total: this.cullables.length };
   }
 
   private releaseAtlas(a: SceneAtlas | null): void {
@@ -703,6 +797,9 @@ export class OfficeRenderer {
       const py = a.ry;
       a.rx += (a.x - a.rx) * k;
       a.ry += (a.y - a.ry) * k;
+      // Settle exactly: an endless approach would change the depth order (and re-list the scene) every frame.
+      if (Math.abs(a.x - a.rx) < 0.05) a.rx = a.x;
+      if (Math.abs(a.y - a.ry) < 0.05) a.ry = a.y;
       const entry = c.roster.get(a.id);
       const name = entry?.name ?? '…';
       const key = avatarKeyOr(entry?.avatar);
@@ -743,14 +840,20 @@ export class OfficeRenderer {
     }
     seen.add(meId);
     for (const [id, s] of this.sprites) if (!seen.has(id)) { s.root.destroy({ children: true }); this.sprites.delete(id); }
-    // FR-VO-005: links to the people in the same proximity group.
-    this.linkLayer.clear();
+    // FR-VO-005: links to the people in the same proximity group (redrawn only when they change).
+    const links: Array<[Pt, Pt]> = [];
     for (const m of c.proximity.members) {
       if (m === meId) continue;
       const a = c.avatars.get(m);
-      if (a) { const to = this.P(a.rx, a.ry); this.linkLayer.moveTo(me.x, me.y).lineTo(to.x, to.y); }
+      if (a) links.push([me, this.P(a.rx, a.ry)]);
     }
-    if (c.proximity.members.length) this.linkLayer.stroke({ width: 2, color: 0x7c3aed, alpha: 0.35 });
+    const linkKey = links.map(([f, t]) => `${Math.round(f.x)},${Math.round(f.y)},${Math.round(t.x)},${Math.round(t.y)}`).join(';');
+    if (linkKey !== this.linkKey) {
+      this.linkKey = linkKey;
+      this.linkLayer.clear();
+      for (const [f, t] of links) this.linkLayer.moveTo(f.x, f.y).lineTo(t.x, t.y);
+      if (links.length) this.linkLayer.stroke({ width: 2, color: 0x7c3aed, alpha: 0.35 });
+    }
     // Camera follows the user (who stays in the middle, as the overlays expect). ADR 060: when the
     // whole map fits on an axis (zoomed out), it is centred on that axis instead of drifting with
     // the user and leaving an empty band.
@@ -767,6 +870,7 @@ export class OfficeRenderer {
     // Snapped to whole device pixels, so the pixel art does not shimmer while the camera follows.
     const res = this.app.renderer.resolution;
     this.world.position.set(Math.round(camX * res) / res, Math.round(camY * res) / res);
+    this.cull();
     // FR-VO-019: the water glints by swapping two prebuilt sets of sparkles (none with reduced motion).
     if (this.water && !this.reducedMotion) {
       this.waterMs += dtMs;
