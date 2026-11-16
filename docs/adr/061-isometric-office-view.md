@@ -1,8 +1,95 @@
 # ADR 061: An isometric view of the office (in progress)
 
-Date: 2026-11-16. Status: proposed. Phase A (projection) is built locally on
-`integration/local-qa-2026-11-16`, behind a browser-local switch. Phases B–E wait for the
-product owner's reference image. Not pushed, not deployed.
+Date: 2026-11-16. Status: proposed. Phase A (projection) and phase B (isometric artwork) are built
+locally on `integration/local-qa-2026-11-16`, behind a browser-local switch; the default view is
+unchanged. Not pushed, not deployed.
+
+## Phase B (2026-11-16): isometric artwork
+
+**Reference.** The product owner's image (an isometric pixel-art arcade room) was given as
+`docs/assets/office-redesign-2026-11-16/reference-isometric-office.png`. It was found in
+`~/Downloads` and copied there. It is kept out of git: it is third-party artwork showing real
+brands and characters. We follow its style, never its logos or characters: every piece here is
+original.
+
+**What was built** (`apps/web/src/lib/office/office-iso.ts`; renderer wiring in `office-renderer.ts`):
+
+- **Scale.** 0.75: a tile is a 48 x 24 diamond, and the 32 px characters stand about two thirds of a
+  tile wide, as in the reference. At zoom 2 the pixel scale is close to the reference's.
+- **Floors.** Diamond stamps painted per material, with a wool rug under every workstation,
+  patterned rugs under meeting tables, sofas and game tables, soft light under desks and café
+  pendants, and wall shadows. The materials:
+  - honey planks in the arcade, oak in the lounge;
+  - white and pale-blue tiles in reception;
+  - a terracotta and cream checkerboard in the café;
+  - teal carpet in the office, slate in meeting rooms;
+  - parquet, lawn and flagstones.
+- **Walls.** Thin slabs (11 px in from each free tile edge, joined at corners), standing and sorted
+  with the avatars:
+  - tall (76 px) where nothing is behind them (the map's back edges);
+  - medium (52 px) between rooms, turning see-through while the user stands behind one;
+  - a low kerb at the front edges.
+  
+  Faces are dressed by the room in front:
+  - arcade: brick on one wall line and light-blue plaster with a navy stripe on the other, as in the reference;
+  - lounge: brick; café: brick and cream plaster;
+  - office and meeting rooms: plaster with a skirting stripe;
+  - private rooms: oak boards; reception: navy panelling with a gold rail;
+  - garden: hedges.
+  
+  Wall art (windows, whiteboards, clocks, original posters, neon stars, shelves) is placed on tall
+  and medium walls.
+- **Furniture,** from each furniture rectangle, outlined with lit and shaded faces:
+  - arcade cabinets with the classic angled side profile, a lit marquee, a reclined screen showing
+    their game, a control deck and a coin door;
+  - cocktail game tables with the game on the glass top, and a chess table, both with stools;
+  - a ping-pong table with a net; desks with a monitor, keyboard and a personal item;
+  - task, meeting and café chairs at every seat, their backs sorted against the person sitting;
+  - meeting tables, sofas, the reception counter, the coffee counter, bookshelves and café tables
+    with pendant lamps;
+  - the fountain, benches, flower beds, loungers, trees, plants and beanbags.
+- **Labels and festive mode.** Room names are drawn above everything; desk names sit at the front
+  of each desk. In festive mode the upright Christmas trees stay, while the top-down garlands and
+  fairy lights are not shown in this view.
+- **Clicks.** A click on a cabinet's or game table's body opens its game, even where the body rises
+  above its footprint.
+
+**Compared with the reference** (side-by-side sheets were made locally; they are not committed,
+because they contain the reference):
+
+| Matches | Differs |
+|---|---|
+| 2:1 isometric projection | The reference is drawn at about 2x our pixel scale (zoom 2 matches) |
+| Honey planks running diagonally | The reference room is packed (racing seats, fridge, toys); ours holds only the stored map's furniture (6 cabinets, 3 game tables, ping-pong, sofa, beanbags), because adding standing objects means changing map data |
+| Brick and light-blue plaster with a navy stripe on the two wall lines | The reference's back walls are taller; ours are medium where another area lies behind them (the garden behind the arcade), to keep it visible |
+| Thin, cut-away walls | No raised tiled platform with steps (the map has no height) |
+| Dark outlines, lit left and shaded right faces | Fewer small decorations on cabinets and walls |
+| Upright cabinets with marquee, reclined screen and deck | |
+| Sit-down cocktail tables with stools | |
+| Characters about two thirds of a tile wide | |
+
+**Verification.**
+
+- Web typecheck and lint: clean.
+- Default view: Playwright office specs 16, 25, 34–39 and 42–46, 37/37.
+- Isometric view, local probe:
+  - W gives map (−82, −92);
+  - a click 120 px right lands at exactly (+80, −80);
+  - a cabinet opens its game;
+  - a nudge goes through the colleague's overlay;
+  - no page errors.
+- Isometric view, the full office journey: character, movement, actions, nudge, DND, Café, Arcade,
+  Garden and Tic-Tac-Toe.
+- Screenshots: `docs/assets/isometric-2026-11-16/`:
+  - `iso-desktop-*`, `iso-zoom2-*` and `iso-phone-*`;
+  - the top-down "before" views as `top-before-*`.
+
+**Open:**
+
+- In headless Chromium (software rendering) the isometric view runs at about 10–12 fps against
+  15–30 fps for the top-down view. It draws about 700 more sorted sprites (one per wall tile).
+  This needs checking on a real GPU before `iso` becomes the default.
+- Making `iso` the default is the product owner's decision.
 Related: FR-VO-001, FR-VO-002, FR-VO-015; ADR 015 (office), ADR 053–060.
 
 ## Context

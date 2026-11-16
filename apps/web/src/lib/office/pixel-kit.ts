@@ -75,6 +75,47 @@ export class Painter {
       this.r(colour, cx - half, cy + dy, half * 2 + 1, 1, alpha);
     }
   }
+  /**
+   * ADR 061: a filled polygon, rasterised as one whole-pixel span per row (no anti-aliased edge),
+   * so isometric faces keep crisp 2:1 pixel steps.
+   */
+  poly(colour: number, pts: ReadonlyArray<{ x: number; y: number }>, alpha = 1): void {
+    if (pts.length < 3) return;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const p of pts) { top = Math.min(top, p.y); bottom = Math.max(bottom, p.y); }
+    for (let y = Math.floor(top); y < Math.ceil(bottom); y += 1) {
+      const yc = y + 0.5;
+      const xs: number[] = [];
+      for (let i = 0; i < pts.length; i += 1) {
+        const a = pts[i]!;
+        const b = pts[(i + 1) % pts.length]!;
+        if ((a.y <= yc && b.y > yc) || (b.y <= yc && a.y > yc)) xs.push(a.x + ((yc - a.y) / (b.y - a.y)) * (b.x - a.x));
+      }
+      xs.sort((m, n) => m - n);
+      for (let i = 0; i + 1 < xs.length; i += 2) { const x0 = Math.round(xs[i]!); const x1 = Math.round(xs[i + 1]!); this.r(colour, x0, y, x1 - x0, 1, alpha); }
+    }
+  }
+  /** ADR 061: a 1 px line (Bresenham), for outlines and seams. */
+  line(colour: number, x0: number, y0: number, x1: number, y1: number, alpha = 1): void {
+    let x = Math.round(x0); let y = Math.round(y0);
+    const ex = Math.round(x1); const ey = Math.round(y1);
+    const dx = Math.abs(ex - x); const dy = -Math.abs(ey - y);
+    const sx = x < ex ? 1 : -1; const sy = y < ey ? 1 : -1;
+    let err = dx + dy;
+    for (let n = 0; n < 4096; n += 1) {
+      this.r(colour, x, y, 1, 1, alpha);
+      if (x === ex && y === ey) break;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x += sx; }
+      if (e2 <= dx) { err += dx; y += sy; }
+    }
+  }
+  /** ADR 061: stamp a pre-painted canvas (an isometric floor tile). */
+  image(src: HTMLCanvasElement, x: number, y: number): void {
+    if (this.alpha !== 1) { this.ctx.globalAlpha = 1; this.alpha = 1; }
+    this.ctx.drawImage(src, Math.round(x), Math.round(y));
+  }
   /** A 1 px frame. */
   frame(colour: number, x: number, y: number, w: number, h: number): void {
     this.r(colour, x, y, w, 1); this.r(colour, x, y + h - 1, w, 1); this.r(colour, x, y, 1, h); this.r(colour, x + w - 1, y, 1, h);

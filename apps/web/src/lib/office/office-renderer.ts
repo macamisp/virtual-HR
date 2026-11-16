@@ -12,11 +12,12 @@
 // The CSP has no 'unsafe-eval' in production builds; this PixiJS module swaps its generated
 // shader/uniform code for eval-free versions (otherwise the canvas never starts: "0 fps").
 import 'pixi.js/unsafe-eval';
-import { Application, BitmapText, CanvasSource, Container, Graphics, Matrix, Rectangle, Sprite, Texture } from 'pixi.js';
+import { Application, BitmapText, CanvasSource, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
 import { ACTION_MS, AVATAR_FRAMES, AVATAR_KEYS, AVATAR_POSES, avatarKeyOr, createAnimation, FACINGS, gameObjects, objectLayer, poseCell, sheetCell, stepAnimation, TILE_SIZE } from '@hrvo/shared';
 import type { AvatarActionKind, AvatarActionState, AvatarAnimation, AvatarFrame, AvatarKey, AvatarPose, CampusGame, Facing, MapObject, OfficeMap, VoStatus } from '@hrvo/shared';
 import { createAvatarSheetCanvas } from './avatar-sheet';
 import { renderEnvironment } from './office-environment';
+import { renderIsoEnvironment } from './office-iso';
 import { renderFestive } from './office-festive';
 import type { AtlasSprite } from './pixel-kit';
 import { depthOf, officeProjection, project, unproject, viewBounds } from './projection';
@@ -135,7 +136,12 @@ export class OfficeRenderer {
    */
   private ground = new Container();
   private labelLayer = new Container();
+  /** ADR 061: room names above the standing pieces (a counter or wall must not hide them). */
+  private roomLabelLayer = new Container();
   readonly projection: Projection = officeProjection();
+  /** ADR 061: standing pieces that fade while the user is behind them, and game bodies on screen (view px). */
+  private isoFade: Sprite[] = [];
+  private isoGames: Array<{ id: number; x: number; y: number; width: number; height: number }> = [];
   private P = (x: number, y: number): Pt => project(this.projection, x, y);
   private mapLayer = new Container();
   private linkLayer = new Graphics();
@@ -180,16 +186,20 @@ export class OfficeRenderer {
     this.textures = new AvatarTextures();
     this.app.canvas.setAttribute('aria-hidden', 'true');
     this.host.appendChild(this.app.canvas);
+    // ADR 061: in the isometric view the floor chunks are painted in view space already
+    // (office-iso.ts), so the ground needs no matrix.
     this.ground.addChild(this.mapLayer, this.festiveLayer);
-    // ADR 061: map (x, y) -> (x - y, (x + y) / 2) for everything flat on the floor.
-    if (this.projection === 'iso') this.ground.setFromMatrix(new Matrix(1, 0.5, -1, 0.5, 0, 0));
-    this.world.addChild(this.ground, this.labelLayer, this.linkLayer, this.avatarLayer);
+    this.world.addChild(this.ground, this.labelLayer, this.linkLayer, this.avatarLayer, this.roomLabelLayer);
     this.avatarLayer.sortableChildren = true;
     this.app.stage.addChild(this.world);
     this.app.stage.eventMode = 'static';
     this.app.stage.hitArea = this.app.screen;
     this.app.stage.on('pointerdown', (e) => {
       const v = this.world.toLocal(e.global);
+      // ADR 061: a click on a standing game cabinet or table (its body rises above its footprint).
+      const body = this.isoGames.find((g) => v.x >= g.x && v.x <= g.x + g.width && v.y >= g.y && v.y <= g.y + g.height);
+      const bodyHit = body ? this.games.find((g) => g.object.id === body.id) : undefined;
+      if (bodyHit && this.onGameObject) { this.onGameObject(bodyHit.game, bodyHit.object); return; }
       const p = unproject(this.projection, v.x, v.y);
       const hit = this.games.find((g) => p.x >= g.object.x - 4 && p.x <= g.object.x + g.object.width + 4 && p.y >= g.object.y - 14 && p.y <= g.object.y + g.object.height + 4);
       if (hit && this.onGameObject) { this.onGameObject(hit.game, hit.object); return; }
@@ -270,6 +280,7 @@ export class OfficeRenderer {
   private drawMap(map: OfficeMap): void {
     for (const c of this.mapLayer.removeChildren()) c.destroy({ children: true });
     this.releaseEnvironment();
+    if (this.projection === 'iso') { this.drawIsoMap(map); return; }
     const env = renderEnvironment(map);
     for (const chunk of env.chunks) {
       const source = new CanvasSource({ resource: chunk.canvas, scaleMode: this.envScaleMode });
@@ -279,30 +290,87 @@ export class OfficeRenderer {
       sprite.position.set(chunk.x, chunk.y);
       this.mapLayer.addChild(sprite);
     }
-    // Labels on small cream plates, so they read on every floor. ADR 061: upright text at the
-    // projected point in the isometric view (a skewed label would not read).
+    // Labels on small cream plates, so they read on every floor (the isometric view: drawLabels).
     for (const c of this.labelLayer.removeChildren()) c.destroy({ children: true });
-    const labels = this.projection === 'iso' ? this.labelLayer : this.mapLayer;
     const plates = new Graphics();
-    labels.addChild(plates);
+    this.mapLayer.addChild(plates);
     for (const r of objectLayer(map, 'rooms')) {
       const label = new BitmapText({ text: r.name, style: { fontFamily: 'Arial', fontSize: 14, fill: 0x24324a } });
-      const at = this.projection === 'iso' ? this.P(r.x + r.width / 2, r.y + 16) : { x: r.x + 12, y: r.y + 8 };
-      const lx = this.projection === 'iso' ? at.x - Math.ceil(label.width) / 2 : at.x;
-      label.position.set(lx, at.y);
-      plates.rect(lx - 6, at.y - 3, Math.ceil(label.width) + 12, 22).fill({ color: 0xfbf6ea, alpha: 0.92 }).stroke({ width: 1, color: 0x2e3d5a, alpha: 0.55 });
-      labels.addChild(label);
+      label.position.set(r.x + 12, r.y + 8);
+      plates.rect(r.x + 6, r.y + 5, Math.ceil(label.width) + 12, 22).fill({ color: 0xfbf6ea, alpha: 0.92 }).stroke({ width: 1, color: 0x2e3d5a, alpha: 0.55 });
+      this.mapLayer.addChild(label);
     }
     for (const d of objectLayer(map, 'desks')) {
       const label = new BitmapText({ text: d.name, style: { fontFamily: 'Arial', fontSize: 10, fill: 0x1f2937 } });
-      const at = this.projection === 'iso' ? this.P(d.x + d.width / 2, d.y + 4) : { x: d.x + 6, y: d.y + 7 };
-      label.position.set(this.projection === 'iso' ? at.x - Math.ceil(label.width) / 2 : at.x, at.y);
-      labels.addChild(label);
+      label.position.set(d.x + 6, d.y + 7);
+      this.mapLayer.addChild(label);
     }
     this.props = env.props ? this.atlasSprites(env.props, this.mapLayer) : null;
     this.map = map;
     this.games = gameObjects(map);
     if (this.festiveOn) this.buildFestive();
+  }
+
+  /**
+   * ADR 061: the isometric scene. Floor chunks (painted in view space) on the ground; walls,
+   * furniture and chairs as standing pieces sorted with the avatars; labels upright on top.
+   */
+  private drawIsoMap(map: OfficeMap): void {
+    const env = renderIsoEnvironment(map);
+    for (const chunk of env.chunks) {
+      const texture = new Texture({ source: new CanvasSource({ resource: chunk.canvas, scaleMode: this.envScaleMode }) });
+      this.envTextures.push(texture);
+      const sprite = new Sprite(texture);
+      sprite.position.set(chunk.x, chunk.y);
+      this.mapLayer.addChild(sprite);
+    }
+    this.isoFade = [];
+    this.isoGames = [];
+    if (env.props) {
+      const source = new CanvasSource({ resource: env.props.canvas, scaleMode: this.envScaleMode });
+      const out: SceneAtlas = { source, textures: [], sprites: [] };
+      env.props.sprites.forEach((a, i) => {
+        const texture = new Texture({ source, frame: new Rectangle(a.sx, a.sy, a.width, a.height) });
+        const sprite = new Sprite(texture);
+        sprite.roundPixels = true;
+        sprite.position.set(a.x, a.y);
+        sprite.zIndex = a.depth ?? 0;
+        this.avatarLayer.addChild(sprite);
+        out.textures.push(texture);
+        out.sprites.push(sprite);
+        const info = env.info[i];
+        if (info?.fade) this.isoFade.push(sprite);
+        if (info?.game !== null && info?.game !== undefined) this.isoGames.push({ id: info.game, x: a.x, y: a.y, width: a.width, height: a.height });
+      });
+      this.props = out;
+    }
+    this.drawLabels(map);
+    this.map = map;
+    this.games = gameObjects(map);
+    if (this.festiveOn) this.buildFestive();
+  }
+
+  /** Room and desk labels, upright, at their projected points (isometric view). */
+  private drawLabels(map: OfficeMap): void {
+    for (const c of this.labelLayer.removeChildren()) c.destroy({ children: true });
+    for (const c of this.roomLabelLayer.removeChildren()) c.destroy({ children: true });
+    const plates = new Graphics();
+    this.roomLabelLayer.addChild(plates);
+    for (const r of objectLayer(map, 'rooms')) {
+      const label = new BitmapText({ text: r.name, style: { fontFamily: 'Arial', fontSize: 14, fill: 0x24324a } });
+      const at = this.P(r.x + r.width / 2, r.y + 20);
+      const lx = at.x - Math.ceil(label.width) / 2;
+      label.position.set(lx, at.y);
+      plates.rect(lx - 6, at.y - 3, Math.ceil(label.width) + 12, 22).fill({ color: 0xfbf6ea, alpha: 0.92 }).stroke({ width: 1, color: 0x2e3d5a, alpha: 0.55 });
+      this.roomLabelLayer.addChild(label);
+    }
+    for (const d of objectLayer(map, 'desks')) {
+      const label = new BitmapText({ text: d.name, style: { fontFamily: 'Arial', fontSize: 10, fill: 0x1f2937 } });
+      const at = this.P(d.x + d.width / 2, d.y + d.height);
+      label.position.set(at.x - Math.ceil(label.width) / 2, at.y + 2);
+      const plate = new Graphics().rect(at.x - Math.ceil(label.width) / 2 - 3, at.y + 1, Math.ceil(label.width) + 6, 14).fill({ color: 0xfbf6ea, alpha: 0.85 });
+      this.labelLayer.addChild(plate, label);
+    }
   }
 
   /**
@@ -316,7 +384,9 @@ export class OfficeRenderer {
       const texture = new Texture({ source, frame: new Rectangle(a.sx, a.sy, a.width, a.height) });
       const sprite = new Sprite(texture);
       sprite.roundPixels = true;
-      if (a.depth === null) { sprite.position.set(a.x, a.y); flat.addChild(sprite); }
+      // ADR 061: flat seasonal pieces (garlands on the top-down walls) have no place in the isometric view.
+      if (a.depth === null && this.projection === 'iso') { sprite.visible = false; flat.addChild(sprite); }
+      else if (a.depth === null) { sprite.position.set(a.x, a.y); flat.addChild(sprite); }
       else if (this.projection === 'iso') {
         // ADR 061: standing pieces stay upright, their base centre placed at the projected point.
         const bx = a.x + a.width / 2;
@@ -352,6 +422,7 @@ export class OfficeRenderer {
     if (!this.map || this.destroyed) return;
     const f = renderFestive(this.map);
     this.festive = f.atlas ? this.atlasSprites(f.atlas, this.festiveLayer) : null;
+    if (this.projection === 'iso') { this.bulbCount = 0; return; } // ADR 061: fairy lights belong to the top-down garlands
     const a = new Graphics();
     const b = new Graphics();
     for (const bulb of f.bulbs) {
@@ -397,6 +468,8 @@ export class OfficeRenderer {
     this.envTextures = [];
     this.releaseAtlas(this.props);
     this.props = null;
+    this.isoFade = [];
+    this.isoGames = [];
   }
 
   /**
@@ -584,6 +657,14 @@ export class OfficeRenderer {
     this.lastSelf = { x: self.x, y: self.y, floorId: self.floorId };
     mine.root.position.set(me.x, me.y);
     mine.root.zIndex = depthOf(this.projection, self.x, self.y) + 0.5;
+    // ADR 061: a wall in front of the user goes see-through while they stand behind it.
+    if (this.isoFade.length) {
+      const myDepth = mine.root.zIndex;
+      for (const sp of this.isoFade) {
+        const covers = sp.zIndex > myDepth && me.x >= sp.x - 6 && me.x <= sp.x + sp.width + 6 && me.y - 30 <= sp.y + sp.height && me.y >= sp.y;
+        sp.alpha = covers ? 0.35 : 1;
+      }
+    }
     seen.add(meId);
     for (const [id, s] of this.sprites) if (!seen.has(id)) { s.root.destroy({ children: true }); this.sprites.delete(id); }
     // FR-VO-005: links to the people in the same proximity group.

@@ -20,14 +20,23 @@ export function officeProjection(): Projection {
 
 export interface Pt { x: number; y: number }
 
+/**
+ * Scale of the isometric view: a 32 px map tile becomes a 48 x 24 diamond, so the 32 px characters
+ * stand about two thirds of a tile wide, as in the reference (ADR 061).
+ */
+export const ISO_K = 0.75;
+
 /** Map point to view point. */
 export function project(mode: Projection, x: number, y: number): Pt {
-  return mode === 'iso' ? { x: x - y, y: (x + y) / 2 } : { x, y };
+  return mode === 'iso' ? { x: (x - y) * ISO_K, y: ((x + y) * ISO_K) / 2 } : { x, y };
 }
 
 /** View point to map point (the exact inverse of `project`). */
 export function unproject(mode: Projection, x: number, y: number): Pt {
-  return mode === 'iso' ? { x: y + x / 2, y: y - x / 2 } : { x, y };
+  if (mode !== 'iso') return { x, y };
+  const d = x / ISO_K; // x - y
+  const s = (2 * y) / ISO_K; // x + y
+  return { x: (s + d) / 2, y: (s - d) / 2 };
 }
 
 /** Draw order of something standing at a map point: further down the screen is in front. */
@@ -37,7 +46,7 @@ export function depthOf(mode: Projection, x: number, y: number): number {
 
 /** The map's extent in view coordinates, for the camera. */
 export function viewBounds(mode: Projection, width: number, height: number): { minX: number; maxX: number; minY: number; maxY: number } {
-  return mode === 'iso' ? { minX: -height, maxX: width, minY: 0, maxY: (width + height) / 2 } : { minX: 0, maxX: width, minY: 0, maxY: height };
+  return mode === 'iso' ? { minX: -height * ISO_K, maxX: width * ISO_K, minY: -96, maxY: ((width + height) * ISO_K) / 2 } : { minX: 0, maxX: width, minY: 0, maxY: height };
 }
 
 /**
