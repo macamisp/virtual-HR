@@ -509,6 +509,7 @@ function stool(p: Painter, cx: number, cy: number, colour = 0xe5484d): void {
 /** A chair at a seat; its back is on the side away from the table (paint only, seats stay walkable). */
 function chair(p: Painter, seat: Seat): void {
   const { x, y } = seat;
+  if (seat.kind === 'bench') return; // FR-VO-019: the bench or sofa is the seat
   if (seat.kind === 'game') { stool(p, x, y); return; }
   const col = seat.kind === 'desk' ? 0x3d4452 : seat.kind === 'cafe' ? OAK.base : NAVY.light;
   const c = facesOf(col);
@@ -720,6 +721,39 @@ function beanbag(p: Painter, f: MapObject): void {
   p.ellipse(INK, c.x, c.y + 2, 15, 7, 0.2); p.ellipse(shade(col, 0.8), c.x, c.y - 4, 14, 9); p.ellipse(col, c.x - 1, c.y - 7, 12, 7); p.ellipse(shade(col, 1.2), c.x - 4, c.y - 10, 5, 3);
 }
 
+/** FR-VO-019: a swimming pool sunk into a stone deck: tiled water, lane ropes, a ladder. */
+function isoPool(p: Painter, f: MapObject): void {
+  const { x, y, width: w, height: h } = f;
+  box(p, x, y, w, h, 0, 4, facesOf(STONE.light, 0x9a8d74));
+  const ix = x + 10; const iy = y + 10; const iw = w - 20; const ih = h - 20;
+  p.poly(0x2f7fa6, topQ(ix - 2, iy - 2, ix + iw + 2, iy + ih + 2, 4));
+  p.poly(WATER.base, topQ(ix, iy, ix + iw, iy + ih, 2));
+  p.poly(WATER.mid, topQ(ix, iy, ix + iw, iy + 6, 2));
+  for (let gx = ix + 10; gx < ix + iw; gx += 10) { const a = V(gx, iy, 2); const b = V(gx, iy + ih, 2); p.line(WATER.light, a.x, a.y, b.x, b.y, 0.35); }
+  for (const k of [1, 2]) {
+    const ly = iy + (ih * k) / 3;
+    for (let lx = ix + 2; lx < ix + iw - 4; lx += 8) { const a = V(lx, ly, 3); const b = V(lx + 5, ly, 3); p.line(Math.round(lx / 8) % 2 ? 0xe5484d : 0xffffff, a.x, a.y, b.x, b.y); }
+  }
+  for (const lx of [ix + iw - 12, ix + iw - 4]) box(p, lx, iy - 3, 2, 2, 2, 18, facesOf(0xc0c6ce));
+  const r0 = V(ix + iw - 12, iy - 2, 14); const r1 = V(ix + iw - 4, iy - 2, 14); p.line(0xe5e7eb, r0.x, r0.y, r1.x, r1.y);
+}
+
+/** FR-VO-019: a garden pond: a pebble rim, water, lily pads with a flower, reeds. */
+function isoPond(p: Painter, f: MapObject): void {
+  const c = V(f.x + f.width / 2, f.y + f.height / 2);
+  const rx = Math.round(((f.width + f.height) / 2) * K * 0.72);
+  const ry = Math.round(rx / 2);
+  p.ellipse(INK, c.x, c.y + 2, rx + 2, ry + 1, 0.18);
+  p.ellipse(STONE.dark, c.x, c.y, rx, ry);
+  for (let i = 0; i < 28; i += 1) { const a = (i / 28) * Math.PI * 2; p.r(pick([STONE.light, STONE.base, STONE.mid], i), Math.round(c.x + Math.cos(a) * (rx - 3)) - 2, Math.round(c.y + Math.sin(a) * (ry - 2)) - 1, 4, 2); }
+  p.ellipse(WATER.dark, c.x, c.y + 1, rx - 6, ry - 4);
+  p.ellipse(WATER.mid, c.x - 2, c.y, rx - 10, ry - 6);
+  p.ellipse(WATER.base, c.x - 6, c.y - 1, Math.max(4, rx - 22), Math.max(2, ry - 10));
+  for (const [dx, dy] of [[-18, 3], [14, -3], [4, 5]] as const) { p.ellipse(LEAF.dark, c.x + dx, c.y + dy, 6, 3); p.ellipse(LEAF.base, c.x + dx - 1, c.y + dy - 1, 5, 2); }
+  p.r(0xf6a5b5, c.x + 12, c.y - 6, 4, 2); p.r(GOLD_LIGHT, c.x + 13, c.y - 6, 2, 1);
+  for (let i = 0; i < 6; i += 1) { const rxx = c.x + rx - 12 + i * 2; p.r(LEAF.dark, rxx, c.y - ry - 8 + (i % 3), 1, 12); p.r(0x8a5a35, rxx, c.y - ry - 9 + (i % 3), 1, 3); }
+}
+
 function cabinet(p: Painter, f: MapObject): void {
   floorShadow(p, f.x, f.y, f.width, f.height);
   box(p, f.x, f.y, f.width, f.height, 0, 28, facesOf(OAK.base));
@@ -742,6 +776,8 @@ function furnitureItem(p: Painter, s: Scene, f: MapObject): void {
     case 'plant': plant(p, f.x + f.width / 2, f.y + f.height / 2); return;
     case 'tree': tree(p, f); return;
     case 'fountain': fountain(p, f); return;
+    case 'pool': isoPool(p, f); return;
+    case 'pond': isoPond(p, f); return;
     case 'bench': bench(p, f); return;
     case 'flowers': flowers(p, f); return;
     case 'lounger': lounger(p, f); return;
@@ -760,7 +796,7 @@ function extent(x: number, y: number, w: number, h: number, up: number, margin =
   return { x: Math.floor(left), y: Math.floor(top), width: Math.ceil(right - left), height: Math.ceil(bottom - top) };
 }
 
-const RISE: Record<string, number> = { arcade: 80, tree: 140, bookshelf: 70, 'coffee-counter': 56, fountain: 60, plant: 46, counter: 48, sofa: 36, table: 50 };
+const RISE: Record<string, number> = { pool: 24, pond: 24, arcade: 80, tree: 140, bookshelf: 70, 'coffee-counter': 56, fountain: 60, plant: 46, counter: 48, sofa: 36, table: 50 };
 
 // ---------------------------------------------------------------- output
 
@@ -800,7 +836,7 @@ export function renderIsoEnvironment(map: OfficeMap): IsoEnvironment {
     const game = prop(f, 'game', '') ? f.id : null;
     pieces.push({ ...extent(f.x, f.y, f.width, f.height, rise), depth: f.x + f.width / 2 + f.y + f.height / 2, draw: (p) => furnitureItem(p, s, f), info: { fade: false, game } });
   }
-  for (const seat of s.seats) pieces.push({ ...extent(seat.x - 10, seat.y - 10, 20, 20, 34), depth: chairDepth(seat), draw: (p) => chair(p, seat), info: { fade: false, game: null } });
+  for (const seat of s.seats.filter((x) => x.kind !== 'bench')) pieces.push({ ...extent(seat.x - 10, seat.y - 10, 20, 20, 34), depth: chairDepth(seat), draw: (p) => chair(p, seat), info: { fade: false, game: null } });
   const valid = pieces.filter((q) => q.width > 0 && q.height > 0);
   return { chunks, props: buildAtlas(valid), info: valid.map((q) => q.info) };
 }

@@ -141,6 +141,12 @@ export function generateDefaultFloor(): OfficeMap {
   solid('Lounger', 92, 13, 1, 2, 'lounger'); solid('Lounger', 94, 13, 1, 2, 'lounger');
   solid('Lounger', 63, 12, 1, 2, 'lounger'); solid('Lounger', 65, 12, 1, 2, 'lounger');
 
+  // ---- Campus v2 (FR-VO-019, ADR 063): water in the garden. New objects only, after every id of
+  // campus v1 (CAMPUS_V1_LAST_ID): no tile, room, desk or earlier object changes, so the upgrade
+  // from campus v1 (and its rollback) is reversible and keeps every desk assignment.
+  solid('Swimming pool', 89, 4, 6, 4, 'pool');
+  solid('Pond', 65, 4, 5, 3, 'pond');
+
   return {
     type: 'map', orientation: 'orthogonal', infinite: false, width: W, height: H, tilewidth: TILE_SIZE, tileheight: TILE_SIZE,
     layers: [
@@ -153,6 +159,9 @@ export function generateDefaultFloor(): OfficeMap {
     ],
   };
 }
+
+/** The highest map object id of the campus v1 map (ADR 055); campus v2 objects come after it. */
+export const CAMPUS_V1_LAST_ID = 109;
 
 export function defaultOffice(): OfficeDefinition {
   return { name: 'Main office', floors: [{ id: 'ground', name: 'Ground floor', map: generateDefaultFloor() }] };

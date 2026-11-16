@@ -22,7 +22,7 @@ import { freshCode } from './support/totp.ts';
 import { resetOrgs } from './support/reset-orgs.ts';
 import { defaultOffice, OfficeDefinitionSchema } from '../../../packages/shared/src/office/index.ts';
 import type { OfficeDefinition } from '../../../packages/shared/src/office/index.ts';
-import { fingerprint, identifyStoredMap, LEGACY_MAP_FINGERPRINT, objectsNotCarried, originalOffice, run } from '../../../scripts/office-map-upgrade.ts';
+import { CAMPUS_V1_FINGERPRINT, campusV1Office, fingerprint, identifyStoredMap, LEGACY_MAP_FINGERPRINT, objectsNotCarried, originalOffice, run } from '../../../scripts/office-map-upgrade.ts';
 import type { Io } from '../../../scripts/office-map-upgrade.ts';
 
 const ORG = 'f2f30000-0000-4000-8000-000000000001';
@@ -33,7 +33,7 @@ const SECRET = 'KVKFKRCPNZQUYMLXOVYDSQKJKZDTSRL';
 const EMP = { id: 'f2f30000-0000-4000-8000-0000000000e1', email: 'emp@mapscript.test' };
 const BOTH = 'both@mapscript.test';
 /** One administrator per run: a 2FA code works once per person, so nobody has to wait for the next one. */
-const admin = (n: number) => ({ id: `f2f30000-0000-4000-8000-0000000000a${n}`, email: `admin${n}@mapscript.test`, secret: `${SECRET}${'ABCDEFGH'[n]}` });
+const admin = (n: number) => ({ id: `f2f30000-0000-4000-8000-0000000000a${n.toString(16)}`, email: `admin${n}@mapscript.test`, secret: `${SECRET}${'ABCDEFGHIJK'[n]}` });
 
 describe('Office map upgrade script (ADR 055)', { concurrency: false }, () => {
   let app: INestApplication;
@@ -71,7 +71,7 @@ describe('Office map upgrade script (ADR 055)', { concurrency: false }, () => {
     await resetOrgs(adminPool, [ORG, ORG_B]);
     await adminPool.query(`INSERT INTO organizations (id, name, slug) VALUES ($1, 'Map Script Ltd', 'mapscript-a'), ($2, 'Other Workspace', 'mapscript-b')`, [ORG, ORG_B]);
     const hash = await argon2.hash(PASSWORD, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 });
-    for (let n = 0; n < 8; n += 1) {
+    for (let n = 0; n < 11; n += 1) {
       await adminPool.query(`INSERT INTO users (id, org_id, email, display_name, role, password_hash, status, mfa_enabled, mfa_secret, email_verified_at) VALUES ($1, $2, $3, $4, 'ADMIN', $5, 'ACTIVE', true, $6, now())`, [admin(n).id, ORG, admin(n).email, `Admin ${n}`, hash, admin(n).secret]);
     }
     await adminPool.query(`INSERT INTO users (id, org_id, email, display_name, role, password_hash, status, email_verified_at) VALUES ($1, $2, $3, 'Eve Script', 'EMPLOYEE', $4, 'ACTIVE', now())`, [EMP.id, ORG, EMP.email, hash]);
@@ -105,6 +105,10 @@ describe('Office map upgrade script (ADR 055)', { concurrency: false }, () => {
     assert.equal(fingerprint(reversed), LEGACY_MAP_FINGERPRINT);
     assert.equal(identifyStoredMap(original), 'original');
     assert.equal(identifyStoredMap(OfficeDefinitionSchema.parse(defaultOffice())), 'campus');
+    // ADR 063: campus v1 (before the pool and the pond) is recognised by its recorded fingerprint and by derivation.
+    assert.equal(fingerprint(campusV1Office()), CAMPUS_V1_FINGERPRINT);
+    assert.equal(identifyStoredMap(campusV1Office()), 'campus1');
+    assert.deepEqual(objectsNotCarried(campusV1Office(), OfficeDefinitionSchema.parse(defaultOffice())), [], 'campus v2 carries every room and desk of campus v1');
     const edits: Array<(d: OfficeDefinition) => void> = [
       (d) => { d.name = 'Head office'; },
       (d) => { const l = d.floors[0]!.map.layers[2]!; if (l.type === 'objectgroup') l.objects[0]!.name = 'War room'; },
@@ -163,7 +167,7 @@ describe('Office map upgrade script (ADR 055)', { concurrency: false }, () => {
     assert.ok(named.out.includes(`Organisation:      ${ORG_B}`), named.out);
   });
 
-  it('apply: backup, typed confirmation, upgrade through the API, verified; then nothing to do; rollback restores the original', async () => {
+  it('apply: backup, typed confirmation, upgrade through the API, verified; then nothing to do; rollback goes back one version at a time', async () => {
     const was = await state();
     const r = await script(['--apply'], [...login(4), `UPGRADE ${ORG.slice(0, 8)}`]);
     assert.equal(r.code, 0, r.out);
@@ -192,12 +196,27 @@ describe('Office map upgrade script (ADR 055)', { concurrency: false }, () => {
     assert.match(again.out, /STOP: already upgraded/);
     assert.equal((await office()).version, 2);
 
+    // ADR 063: one step back is campus v1 (the pool and the pond go; the campus rooms stay).
     const back = await script(['--rollback'], [...login(6), `ROLLBACK ${ORG.slice(0, 8)}`]);
     assert.equal(back.code, 0, back.out);
     assert.ok(!back.out.includes('FAIL'), back.out);
-    const restored = await office();
-    assert.equal(restored.version, 3);
-    assert.equal(identifyStoredMap(restored.def), 'original');
+    assert.match(back.out, /Rolled back to campus v1/);
+    assert.equal((await office()).version, 3);
+    assert.equal(identifyStoredMap((await office()).def), 'campus1');
+    assert.deepEqual(await state(), was);
+    // Campus v1 upgrades to v2 the same way, keeping every desk assignment.
+    const up = await script(['--apply'], [...login(8), `UPGRADE ${ORG.slice(0, 8)}`]);
+    assert.equal(up.code, 0, up.out);
+    assert.ok(up.out.includes('campus v1 to the current campus map') && up.out.includes('ok   the 1 desk assignments are unchanged') && !up.out.includes('FAIL'), up.out);
+    assert.equal(identifyStoredMap((await office()).def), 'campus');
+    assert.deepEqual(await state(), was);
+    // And back down: v2 -> v1 -> the original.
+    for (const [n, to] of [[9, 'campus1'], [10, 'original']] as const) {
+      const r2 = await script(['--rollback'], [...login(n), `ROLLBACK ${ORG.slice(0, 8)}`]);
+      assert.equal(r2.code, 0, r2.out);
+      assert.equal(identifyStoredMap((await office()).def), to);
+    }
+    assert.equal((await office()).version, 6);
     assert.deepEqual(await state(), was);
   });
 
@@ -210,8 +229,8 @@ describe('Office map upgrade script (ADR 055)', { concurrency: false }, () => {
     try { await syncLayout(c, ORG, row.rows[0]!.id, custom); } finally { c.release(); }
     const r = await script(['--apply'], login(7));
     assert.equal(r.code, 1);
-    assert.match(r.out, /CUSTOMISED[\s\S]*STOP: the stored map is not the unmodified original: not overwriting a customised map/);
+    assert.match(r.out, /CUSTOMISED[\s\S]*STOP: the stored map is neither the unmodified original nor campus v1: not overwriting a customised map/);
     assert.equal(identifyStoredMap((await office()).def), 'customised');
-    assert.equal((await office()).version, 3);
+    assert.equal((await office()).version, 6);
   });
 });

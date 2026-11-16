@@ -165,6 +165,9 @@ export class OfficeRenderer {
   private festiveLayer = new Container();
   private festive: SceneAtlas | null = null;
   private bulbs: [Graphics, Graphics] | null = null;
+  /** FR-VO-019: sparkles on the pool and pond, two prebuilt sets swapped (none with reduced motion). */
+  private water: [Graphics, Graphics] | null = null;
+  private waterMs = 0;
   private twinkleMs = 0;
   private bulbCount = 0;
   /** ADR 056: the server start time of my own action already shown optimistically. */
@@ -313,6 +316,7 @@ export class OfficeRenderer {
       this.mapLayer.addChild(label);
     }
     this.props = env.props ? this.atlasSprites(env.props, this.mapLayer) : null;
+    this.buildWater(map);
     this.map = map;
     this.games = gameObjects(map);
     if (this.festiveOn) this.buildFestive();
@@ -351,6 +355,7 @@ export class OfficeRenderer {
       });
       this.props = out;
     }
+    this.buildWater(map);
     this.drawLabels(map);
     this.map = map;
     this.games = gameObjects(map);
@@ -378,6 +383,30 @@ export class OfficeRenderer {
       const plate = new Graphics().rect(at.x - Math.ceil(label.width) / 2 - 3, at.y + 1, Math.ceil(label.width) + 6, 14).fill({ color: 0xfbf6ea, alpha: 0.85 });
       this.labelLayer.addChild(plate, label);
     }
+  }
+
+  /** FR-VO-019: light glinting on the water of pools and ponds (map points, projected in the isometric view). */
+  private buildWater(map: OfficeMap): void {
+    this.water = null;
+    const pools = objectLayer(map, 'furniture').filter((o) => ['pool', 'pond'].includes(String(prop(o, 'kind', '')).toLowerCase()));
+    if (!pools.length) return;
+    const frames: [Graphics, Graphics] = [new Graphics(), new Graphics()];
+    let seed = 7;
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+    for (const o of pools) {
+      const inset = String(prop(o, 'kind', '')) === 'pool' ? 12 : 14;
+      for (const g of frames) for (let i = 0; i < Math.max(6, Math.round((o.width * o.height) / 900)); i += 1) {
+        const mx = o.x + inset + rnd() * (o.width - inset * 2);
+        const my = o.y + inset + rnd() * (o.height - inset * 2);
+        const p = this.P(mx, my);
+        g.rect(Math.round(p.x) - 2, Math.round(p.y) - (this.projection === 'iso' ? 2 : 0), 4, 1).fill({ color: 0xffffff, alpha: 0.75 });
+        g.rect(Math.round(p.x) - 1, Math.round(p.y) - (this.projection === 'iso' ? 3 : 1), 2, 1).fill({ color: 0xe0f7ff, alpha: 0.6 });
+      }
+    }
+    frames[1].visible = false;
+    this.mapLayer.addChild(frames[0], frames[1]);
+    this.water = frames;
+    this.waterMs = 0;
   }
 
   /**
@@ -738,6 +767,11 @@ export class OfficeRenderer {
     // Snapped to whole device pixels, so the pixel art does not shimmer while the camera follows.
     const res = this.app.renderer.resolution;
     this.world.position.set(Math.round(camX * res) / res, Math.round(camY * res) / res);
+    // FR-VO-019: the water glints by swapping two prebuilt sets of sparkles (none with reduced motion).
+    if (this.water && !this.reducedMotion) {
+      this.waterMs += dtMs;
+      if (this.waterMs >= 700) { this.waterMs = 0; this.water[0].visible = !this.water[0].visible; this.water[1].visible = !this.water[0].visible; }
+    }
     // ADR 055: fairy lights twinkle by swapping two prebuilt shapes (none with reduced motion).
     if (this.bulbs && !this.reducedMotion) {
       this.twinkleMs += dtMs;

@@ -992,6 +992,7 @@ function chairs(p: Painter, s: Scene, view: Rect): void {
     if (!overlaps(view, { x: seat.x - 12, y: seat.y - 12, width: 24, height: 24 })) continue;
     const cx = Math.round(seat.x);
     const cy = Math.round(seat.y);
+    if (seat.kind === 'bench') continue; // FR-VO-019: the bench or sofa is the seat
     if (seat.kind === 'desk') chair(p, cx, cy + 1, 'bottom', 0x4b5563, 0x2f3542, 0x6b7280); // ADR 060: charcoal task chairs
     else if (seat.kind === 'cafe') sideChair(p, cx, cy, seat.facing === 'right' ? 'left' : 'right');
     else chair(p, cx, cy + (seat.facing === 'down' ? 6 : -6), seat.facing === 'down' ? 'top' : 'bottom', NAVY.light, NAVY.mid, 0x6f84ab);
@@ -1405,9 +1406,50 @@ function tree(p: Painter, f: MapObject): void {
 }
 
 /** Kind -> painter for the campus furniture (ADR 055). */
+/** FR-VO-019: a swimming pool: stone deck, tiled water, lane ropes, steps at the shallow end, a ladder. */
+function pool(p: Painter, f: MapObject): void {
+  const { x, y, width: w, height: h } = f;
+  p.r(STONE.dark, x, y, w, h);
+  p.r(STONE.light, x + 1, y + 1, w - 2, h - 2);
+  for (let i = x + 4; i < x + w - 4; i += 12) { p.r(STONE.mid, i, y + 2, 1, 6); p.r(STONE.mid, i + 6, y + h - 8, 1, 6); }
+  const ix = x + 9; const iy = y + 9; const iw = w - 18; const ih = h - 18;
+  p.r(0x2f7fa6, ix - 1, iy - 1, iw + 2, ih + 2);
+  p.r(WATER.base, ix, iy, iw, ih);
+  p.r(WATER.mid, ix, iy, iw, 4); // shade under the coping
+  for (let gx = ix + 8; gx < ix + iw; gx += 8) p.r(WATER.light, gx, iy + 4, 1, ih - 4, 0.35);
+  for (let gy = iy + 8; gy < iy + ih; gy += 8) p.r(WATER.light, ix, gy, iw, 1, 0.35);
+  for (let k = 1; k < 3; k += 1) { // lane ropes
+    const ly = iy + Math.round((ih * k) / 3);
+    for (let lx = ix + 2; lx < ix + iw - 2; lx += 6) p.r((lx / 6) % 2 ? 0xe5484d : 0xffffff, lx, ly - 1, 4, 2);
+  }
+  for (let k = 0; k < 3; k += 1) p.r(WATER.light, ix + k * 6, iy + 2 + k * 4, 6, ih - 4 - k * 8, 0.25); // steps
+  p.r(0xc0c6ce, ix + iw - 10, iy - 6, 2, 12); p.r(0xc0c6ce, ix + iw - 4, iy - 6, 2, 12); // ladder
+  for (let k = 0; k < 3; k += 1) p.r(0xe5e7eb, ix + iw - 10, iy - 2 + k * 3, 8, 1);
+}
+
+/** FR-VO-019: a garden pond: pebble rim, water, lily pads with a flower, reeds. */
+function pond(p: Painter, f: MapObject): void {
+  const cx = Math.round(f.x + f.width / 2);
+  const cy = Math.round(f.y + f.height / 2);
+  const rx = Math.round(f.width / 2) - 2;
+  const ry = Math.round(f.height / 2) - 2;
+  p.ellipse(INK, cx + 1, cy + 2, rx, ry, 0.15);
+  p.ellipse(STONE.dark, cx, cy, rx, ry);
+  p.ellipse(STONE.mid, cx, cy, rx - 2, ry - 2);
+  for (let i = 0; i < 26; i += 1) { const a = (i / 26) * Math.PI * 2; p.r(pick([STONE.light, STONE.base, 0x9a8d74], i), Math.round(cx + Math.cos(a) * (rx - 3)) - 2, Math.round(cy + Math.sin(a) * (ry - 3)) - 1, 4, 3); }
+  p.ellipse(WATER.dark, cx, cy, rx - 7, ry - 6);
+  p.ellipse(WATER.mid, cx - 2, cy - 1, rx - 10, ry - 9);
+  p.ellipse(WATER.base, cx - 6, cy - 4, Math.max(4, rx - 22), Math.max(3, ry - 16));
+  for (const [dx, dy] of [[-28, 6], [20, -6], [6, 10]] as const) {
+    p.ellipse(LEAF.dark, cx + dx, cy + dy, 7, 5); p.ellipse(LEAF.base, cx + dx - 1, cy + dy - 1, 6, 4); p.r(WATER.mid, cx + dx + 1, cy + dy - 1, 6, 2);
+  }
+  p.r(0xf6a5b5, cx + 18, cy - 9, 4, 3); p.r(0xffffff, cx + 19, cy - 9, 2, 1); p.r(GOLD_LIGHT, cx + 19, cy - 8, 2, 1);
+  for (let i = 0; i < 6; i += 1) { const rx2 = cx + rx - 14 + i * 2; p.r(LEAF.dark, rx2, cy - ry + 4 + (i % 3), 1, 12); p.r(0x8a5a35, rx2, cy - ry + 3 + (i % 3), 1, 3); }
+}
+
 const CAMPUS: Record<string, (p: Painter, f: MapObject) => void> = {
   'coffee-counter': coffeeCounter, bookshelf, 'cafe-table': cafeTable, 'coffee-table': coffeeTable,
-  'ping-pong': pingPong, 'chess-table': chessTable, 'game-table': gameTable, beanbag, fountain, bench, flowers, lounger, tree,
+  'ping-pong': pingPong, 'chess-table': chessTable, 'game-table': gameTable, beanbag, fountain, bench, flowers, lounger, tree, pool, pond,
 };
 
 /** How far a tall prop reaches beyond its footprint (left, top, right, bottom), for its atlas box. */

@@ -76,7 +76,8 @@ export interface Seat {
   y: number;
   /** The way a person on this chair faces (towards the table). */
   facing: Facing;
-  kind: 'desk' | 'meeting' | 'cafe' | 'game';
+  /** FR-VO-019: `bench` is a place on a bench or sofa (no separate chair is drawn). */
+  kind: 'desk' | 'meeting' | 'cafe' | 'game' | 'bench';
 }
 
 const kindOf = (f: MapObject): string => String(prop(f, 'kind', 'table')).toLowerCase();
@@ -85,8 +86,8 @@ const overlaps = (a: { x: number; y: number; width: number; height: number }, b:
 
 /**
  * Every chair of a floor, derived from the map: desk chairs (at each desk's seat), chairs above
- * and below meeting tables, either side of café tables, and above and below chess and game
- * tables. Only walkable spots count, so sitting never puts anyone inside a wall or furniture.
+ * and below meeting tables, either side of café tables, above and below chess and game tables,
+ * and places along benches and sofas (FR-VO-019). Only walkable spots count, so sitting never puts anyone inside a wall or furniture.
  * The office painter draws the chairs at exactly these points.
  */
 export function mapSeats(map: OfficeMap, grid: CollisionGrid = buildGrid(map)): Seat[] {
@@ -107,6 +108,12 @@ export function mapSeats(map: OfficeMap, grid: CollisionGrid = buildGrid(map)): 
       const cy = f.y + f.height / 2;
       add({ id: `t${f.id}:0`, x: f.x - T / 2, y: cy, facing: 'right', kind: 'cafe' });
       add({ id: `t${f.id}:1`, x: f.x + f.width + T / 2, y: cy, facing: 'left', kind: 'cafe' });
+    } else if ((kind === 'bench' || kind === 'sofa') && f.width >= 2 * T && f.width >= f.height) {
+      // FR-VO-019: places along a bench or sofa, in front of it, facing away from its back.
+      let n = 0;
+      for (let cx = f.x + T / 2 + (f.width >= 4 * T ? T / 2 : 0); cx < f.x + f.width - T / 4; cx += f.width >= 4 * T ? 2 * T : T) {
+        add({ id: `t${f.id}:${n++}`, x: cx, y: f.y + f.height + T / 2, facing: 'down', kind: 'bench' });
+      }
     } else if (kind === 'chess-table' || kind === 'game-table') {
       const cx = f.x + f.width / 2;
       add({ id: `t${f.id}:0`, x: cx, y: f.y - T / 2, facing: 'down', kind: 'game' });

@@ -28,7 +28,11 @@ function avatar(w: OfficeWorld, userId: string, x: number, y: number): Avatar {
 
 describe('Avatar action rules (ADR 056)', () => {
   it('every seat is a walkable spot with a stable id; each meeting room has chairs; desks have one each', () => {
-    assert.equal(seats.length, 90);
+    assert.equal(seats.length, 110);
+    // FR-VO-019: places along benches and sofas, in front of them, facing away from the back.
+    const bench = seats.filter((s) => s.kind === 'bench');
+    assert.equal(bench.length, 20);
+    assert.ok(bench.every((s) => s.facing === 'down'));
     assert.equal(new Set(seats.map((s) => s.id)).size, seats.length);
     for (const s of seats) assert.ok(walkable(grid, s.x, s.y), `${s.id} is walkable`);
     assert.equal(seats.filter((s) => s.kind === 'desk').length, 20);
@@ -75,6 +79,17 @@ describe('Avatar action rules (ADR 056)', () => {
     // With a grant (admitted after a knock) the same chair is fine once inside.
     w.grant('d', board.id);
     assert.equal(w.mayEnter('d', board, false), null);
+  });
+
+  it('benches and sofas (FR-VO-019): a person sits on a free place in reach, one person per place', () => {
+    const w = world();
+    const bench = seats.find((s) => s.kind === 'bench')!;
+    const a = avatar(w, 'bench-a', bench.x + 10, bench.y + 8);
+    assert.deepEqual(w.sit(a, bench.id, 1000), { ok: true });
+    assert.equal(a.action?.kind, 'sit');
+    assert.equal(a.action?.facing, 'down');
+    const b = avatar(w, 'bench-b', bench.x - 10, bench.y + 8);
+    assert.deepEqual(w.sit(b, bench.id, 1000), { ok: false, code: 'TAKEN' });
   });
 
   it('pair reach: same floor and room, close together', () => {

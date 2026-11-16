@@ -12,20 +12,29 @@
  * Options: --workspace <slug> (sign in to that workspace), --org <organisation id or its first 8+
  * characters> (stop unless the session is in that organisation), --backup-dir <dir>.
  *
- * It stops unless the stored map is the unmodified original 60 x 40 map: the stored map must match
- * the recorded fingerprint of the original AND equal the original derived from the campus map. A
- * customised map is never overwritten. --dry-run changes nothing (no request other than sign-in,
- * reads and sign-out; no file). --apply saves the current map, rooms, desks and invitations to a
- * backup file, asks for a typed confirmation, sends the map, then reads the office again and
- * checks every room and desk kept its row, settings, invitations and assignment.
- * --rollback puts the original map back (the campus areas go; nothing else changes).
+ * Map versions:
+ * - original: the 60 x 40 office;
+ * - campus v1 (ADR 055): the Garden, Café and Arcade;
+ * - campus v2 (ADR 063): campus v1 plus the pool and the pond in the garden, as new objects only.
+ *
+ * Each stored map is identified by two independent checks: a recorded fingerprint, and equality to
+ * the map derived from code. A customised map (neither) is never overwritten. Every step keeps each
+ * room and desk under its object id, so desk assignments and invitations stay.
+ *
+ * - --dry-run changes nothing: no request other than sign-in, reads and sign-out; no file.
+ * - --apply moves the original or campus v1 to the current campus map (v2). It first saves the
+ *   current map, rooms, desks and invitations to a backup file and asks for a typed confirmation;
+ *   after sending the map, it reads the office again and checks every room and desk kept its row,
+ *   settings, invitations and assignment.
+ * - --rollback goes back one version, with the same backup and checks: v2 to v1 (the pool and pond
+ *   go), v1 to the original (the campus areas go).
  */
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { isDeepStrictEqual } from 'node:util';
-import { defaultOffice, objectLayer, OfficeDefinitionSchema, OfficeSnapshotSchema } from '../packages/shared/src/office/index.ts';
+import { CAMPUS_V1_LAST_ID, defaultOffice, objectLayer, OfficeDefinitionSchema, OfficeSnapshotSchema } from '../packages/shared/src/office/index.ts';
 import type { OfficeDefinition, OfficeMap, OfficeSnapshot } from '../packages/shared/src/office/index.ts';
 
 /**
@@ -34,6 +43,12 @@ import type { OfficeDefinition, OfficeMap, OfficeSnapshot } from '../packages/sh
  * so a mistake in `originalOffice` below cannot make a customised map look original.
  */
 export const LEGACY_MAP_FINGERPRINT = '6462df4159d9b7c553e9e78082c91cefe5eb36a25c595c8b9f63bd873f781920';
+/**
+ * SHA-256 of the campus v1 map (ADR 055: `defaultOffice()` before ADR 063 added the pool and the
+ * pond), recorded from that code, like the original's, so it is checked independently of
+ * `campusV1Office` below.
+ */
+export const CAMPUS_V1_FINGERPRINT = '179be98643c509b705aa13ff037f10bcc2866ac6bbbf96a121ed81202dbfb58a';
 const CAMPUS_ROOMS = ['Garden', 'Café', 'Arcade'];
 const ORG_MANAGE = 'org.manage';
 
@@ -54,6 +69,14 @@ export function originalOffice(): OfficeDefinition {
   return OfficeDefinitionSchema.parse({ ...def, floors: [{ ...def.floors[0]!, map: { ...m, width: 60, layers } as OfficeMap }] });
 }
 
+/** Campus v1: today's map without the objects campus v2 added (only objects were added, no tiles). */
+export function campusV1Office(): OfficeDefinition {
+  const def = defaultOffice();
+  const m = def.floors[0]!.map;
+  const layers = m.layers.map((l) => (l.type === 'tilelayer' ? l : { ...l, objects: l.objects.filter((o) => o.id <= CAMPUS_V1_LAST_ID) }));
+  return OfficeDefinitionSchema.parse({ ...def, floors: [{ ...def.floors[0]!, map: { ...m, layers } as OfficeMap }] });
+}
+
 const sortKeys = (v: unknown): unknown =>
   Array.isArray(v) ? v.map(sortKeys)
     : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortKeys((v as Record<string, unknown>)[k])]))
@@ -64,14 +87,28 @@ export function fingerprint(def: unknown): string {
   return createHash('sha256').update(JSON.stringify(sortKeys(OfficeDefinitionSchema.parse(def)))).digest('hex');
 }
 
-export type StoredMap = 'original' | 'campus' | 'customised' | 'uncertain';
-/** Which map is stored. `uncertain` = the two independent checks for the original disagree. */
+/** `campus1` = campus v1 (ADR 055); `campus` = the current campus map (v2, ADR 063: pool and pond). */
+export type StoredMap = 'original' | 'campus1' | 'campus' | 'customised' | 'uncertain';
+/** Which map is stored. `uncertain` = the two independent checks for the original, or for campus v1, disagree. */
 export function identifyStoredMap(stored: OfficeDefinition): StoredMap {
-  const byFingerprint = fingerprint(stored) === LEGACY_MAP_FINGERPRINT;
-  const byDerivation = isDeepStrictEqual(stored, originalOffice());
-  if (byFingerprint !== byDerivation) return 'uncertain';
-  if (byFingerprint) return 'original';
-  return fingerprint(stored) === fingerprint(defaultOffice()) ? 'campus' : 'customised';
+  const fp = fingerprint(stored);
+  const original = [fp === LEGACY_MAP_FINGERPRINT, isDeepStrictEqual(stored, originalOffice())];
+  const campus1 = [fp === CAMPUS_V1_FINGERPRINT, isDeepStrictEqual(stored, campusV1Office())];
+  if (original[0] !== original[1] || campus1[0] !== campus1[1]) return 'uncertain';
+  if (original[0]) return 'original';
+  if (campus1[0]) return 'campus1';
+  return fp === fingerprint(defaultOffice()) ? 'campus' : 'customised';
+}
+
+/**
+ * One step: --apply upgrades the original or campus v1 to the current campus map; --rollback goes
+ * back one version (campus v2 to campus v1, campus v1 to the original). Null when not eligible.
+ */
+export function stepTarget(kind: StoredMap, rollback: boolean): { target: OfficeDefinition; to: 'original' | 'campus1' | 'campus' } | null {
+  if (!rollback) return kind === 'original' || kind === 'campus1' ? { target: OfficeDefinitionSchema.parse(defaultOffice()), to: 'campus' } : null;
+  if (kind === 'campus') return { target: campusV1Office(), to: 'campus1' };
+  if (kind === 'campus1') return { target: originalOffice(), to: 'original' };
+  return null;
 }
 
 /**
@@ -99,7 +136,7 @@ const deskRow = (d: OfficeSnapshot['desks'][number]) => JSON.stringify([d.id, d.
 const assigned = (s: OfficeSnapshot) => s.desks.filter((d) => d.assignee).map((d) => `${d.id}=${d.assignee!.id}`).sort();
 const storedDefinition = (s: OfficeSnapshot): OfficeDefinition => OfficeDefinitionSchema.parse({ name: s.office.name, floors: s.floors });
 
-/** What must be true after the change. `rollback` = campus map back to the original. */
+/** What must be true after the change. `rollback` = back to the original (the campus rooms go). */
 export function verifyChange(before: OfficeSnapshot, after: OfficeSnapshot, invitesBefore: Invites, invitesAfter: Invites, target: OfficeDefinition, rollback: boolean): Check[] {
   const tm = target.floors[0]!.map;
   const am = storedDefinition(after).floors[0]!.map;
@@ -231,9 +268,10 @@ export async function run(argv: string[], io: Io): Promise<number> {
 
     const stored = storedDefinition(before);
     const sm = stored.floors[0]!.map;
-    const target = rollback ? originalOffice() : OfficeDefinitionSchema.parse(defaultOffice());
-    const tm = target.floors[0]!.map;
     const kind = identifyStoredMap(stored);
+    const step = stepTarget(kind, rollback);
+    const target = step?.target ?? (rollback ? originalOffice() : OfficeDefinitionSchema.parse(defaultOffice()));
+    const tm = target.floors[0]!.map;
     const fp = fingerprint(stored);
     const count = (def: OfficeDefinition, layer: string) => def.floors.reduce((n, f) => n + objectLayer(f.map, layer).length, 0);
     io.log(`Office:            "${before.office.name}", version ${before.office.version}, ${stored.floors.length} floor(s)`);
@@ -243,19 +281,20 @@ export async function run(argv: string[], io: Io): Promise<number> {
     io.log(`Proposed rooms:    ${objectLayer(tm, 'rooms').map((o) => o.name).join(', ')}`);
     io.log(`Fingerprint:       ${fp}`);
     io.log(`Original map is:   ${LEGACY_MAP_FINGERPRINT}  ->  ${fp === LEGACY_MAP_FINGERPRINT ? 'MATCH' : 'no match'}`);
-    io.log(`Stored map is:     ${{ original: 'the unmodified original 60 x 40 map', campus: 'already the campus map', customised: 'CUSTOMISED (neither the original nor the campus map)', uncertain: 'NOT IDENTIFIED (the fingerprint and the derived original disagree)' }[kind]}`);
+    io.log(`Stored map is:     ${{ original: 'the unmodified original 60 x 40 map', campus1: 'the campus v1 map (no pool or pond yet)', campus: 'already the current campus map (v2)', customised: 'CUSTOMISED (neither the original nor the campus map)', uncertain: 'NOT IDENTIFIED (the fingerprint and the derived original disagree)' }[kind]}`);
     const stamp = (io.now?.() ?? new Date()).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
     const backupFile = join(resolve(flags.get('--backup-dir') ?? 'office-map-backups'), `office-map-${user.orgId}-v${before.office.version}-${stamp}.json`);
     io.log(`Backup file:       ${backupFile}${dry ? '  (written by --apply / --rollback, not by a dry run)' : ''}`);
 
-    if (!rollback && kind === 'campus') stop('already upgraded: the stored map is the campus map, nothing to do');
+    if (!rollback && kind === 'campus') stop('already upgraded: the stored map is the current campus map, nothing to do');
     if (kind === 'uncertain') stop('the stored map cannot be identified with confidence: not changing it');
-    if (rollback ? kind !== 'campus' : kind !== 'original') stop(rollback ? 'the stored map is not the campus map: nothing to roll back' : 'the stored map is not the unmodified original: not overwriting a customised map');
-    const lost = objectsNotCarried(rollback ? originalOffice() : stored, rollback ? stored : target);
+    if (!step) stop(rollback ? 'the stored map is not a campus map this script made: nothing to roll back' : 'the stored map is neither the unmodified original nor campus v1: not overwriting a customised map');
+    const toOriginal = step!.to === 'original';
+    const lost = objectsNotCarried(rollback ? target : stored, rollback ? stored : target);
     if (lost.length) stop(`the two maps do not share these objects, so their rows would be replaced: ${lost.join('; ')}`);
     if (before.rooms.length !== count(stored, 'rooms') || before.desks.length !== count(stored, 'desks')) stop('the rooms and desks in the database do not match the stored map: not changing it');
     const invitesBefore = await readInvites(before);
-    io.log(`Eligibility:       ELIGIBLE (${rollback ? 'campus map, can be rolled back' : 'unmodified original map, every room and desk keeps its object id'})`);
+    io.log(`Eligibility:       ELIGIBLE (${rollback ? `${kind === 'campus' ? 'campus v2 back to campus v1 (the pool and pond go)' : 'campus v1 back to the original'}` : `${kind === 'original' ? 'unmodified original' : 'campus v1'} to the current campus map; every room and desk keeps its object id`})`);
     if (dry) { io.log('Dry run: nothing was changed.'); return 0; }
 
     const word = `${rollback ? 'ROLLBACK' : 'UPGRADE'} ${user.orgId.slice(0, 8)}`;
@@ -269,13 +308,13 @@ export async function run(argv: string[], io: Io): Promise<number> {
     const res = await fetch(`${api}/office/map`, { method: 'PUT', headers: auth, body: JSON.stringify(target) });
     if (res.status !== 200) stop(`the API refused the map (${res.status}): ${await serverMessage(res)}. Nothing was changed.`);
     const after = await readOffice();
-    const checks = verifyChange(before, after, invitesBefore, await readInvites(after), target, rollback);
+    const checks = verifyChange(before, after, invitesBefore, await readInvites(after), target, toOriginal);
     io.log('');
     io.log(`Done: office version ${after.office.version}; ${after.rooms.length} rooms, ${after.desks.length} desks. Checked by reading the office again:`);
     for (const c of checks) io.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.label}`);
     io.log('  note room passwords are never sent by the API, so they cannot be compared; PUT /office/map does not write them (a room still in PASSWORD mode is covered by the access-mode check)');
-    if (checks.some((c) => !c.ok)) stop(`the result is not what was intended. The previous state is in ${backupFile}; ${rollback ? 'run --apply to put the campus map back' : 'run --rollback to put the original map back'}.`);
-    io.log(rollback ? 'Rolled back.' : 'Upgraded. Now reload the office page in the web app (Ctrl+Shift+R): the map shows the Garden, the Café and the Arcade to the right of the Lounge.');
+    if (checks.some((c) => !c.ok)) stop(`the result is not what was intended. The previous state is in ${backupFile}; ${rollback ? 'run --apply to put the campus map back' : 'run --rollback to go back one version'}.`);
+    io.log(rollback ? `Rolled back to ${step!.to === 'original' ? 'the original map' : 'campus v1'}.` : 'Upgraded. Now reload the office page in the web app (Ctrl+Shift+R): the campus (Garden, Café, Arcade) is to the right of the Lounge, with the pool and the pond in the garden.');
     return 0;
   } catch (e) {
     // Anything unexpected (network failure, an answer of the wrong shape) stops the run the same way.
