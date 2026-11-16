@@ -12,13 +12,15 @@
 // The CSP has no 'unsafe-eval' in production builds; this PixiJS module swaps its generated
 // shader/uniform code for eval-free versions (otherwise the canvas never starts: "0 fps").
 import 'pixi.js/unsafe-eval';
-import { Application, BitmapText, CanvasSource, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
+import { Application, BitmapText, CanvasSource, Container, Graphics, Matrix, Rectangle, Sprite, Texture } from 'pixi.js';
 import { ACTION_MS, AVATAR_FRAMES, AVATAR_KEYS, AVATAR_POSES, avatarKeyOr, createAnimation, FACINGS, gameObjects, objectLayer, poseCell, sheetCell, stepAnimation, TILE_SIZE } from '@hrvo/shared';
 import type { AvatarActionKind, AvatarActionState, AvatarAnimation, AvatarFrame, AvatarKey, AvatarPose, CampusGame, Facing, MapObject, OfficeMap, VoStatus } from '@hrvo/shared';
 import { createAvatarSheetCanvas } from './avatar-sheet';
 import { renderEnvironment } from './office-environment';
 import { renderFestive } from './office-festive';
 import type { AtlasSprite } from './pixel-kit';
+import { depthOf, officeProjection, project, unproject, viewBounds } from './projection';
+import type { Projection, Pt } from './projection';
 import type { OfficeClient, RemoteAvatar } from './office-client';
 
 export const STATUS_COLOUR: Record<VoStatus, number> = {
@@ -126,6 +128,15 @@ export interface AvatarDebug { id: string; self: boolean; key: AvatarKey; facing
 export class OfficeRenderer {
   app = new Application();
   private world = new Container();
+  /**
+   * ADR 061: the floor-flat layers (environment, festive layer). In the isometric view this
+   * container carries the projection matrix; avatars, tall props, labels and links stay upright and
+   * are placed at projected points instead.
+   */
+  private ground = new Container();
+  private labelLayer = new Container();
+  readonly projection: Projection = officeProjection();
+  private P = (x: number, y: number): Pt => project(this.projection, x, y);
   private mapLayer = new Container();
   private linkLayer = new Graphics();
   private avatarLayer = new Container();
@@ -169,13 +180,17 @@ export class OfficeRenderer {
     this.textures = new AvatarTextures();
     this.app.canvas.setAttribute('aria-hidden', 'true');
     this.host.appendChild(this.app.canvas);
-    this.world.addChild(this.mapLayer, this.festiveLayer, this.linkLayer, this.avatarLayer);
+    this.ground.addChild(this.mapLayer, this.festiveLayer);
+    // ADR 061: map (x, y) -> (x - y, (x + y) / 2) for everything flat on the floor.
+    if (this.projection === 'iso') this.ground.setFromMatrix(new Matrix(1, 0.5, -1, 0.5, 0, 0));
+    this.world.addChild(this.ground, this.labelLayer, this.linkLayer, this.avatarLayer);
     this.avatarLayer.sortableChildren = true;
     this.app.stage.addChild(this.world);
     this.app.stage.eventMode = 'static';
     this.app.stage.hitArea = this.app.screen;
     this.app.stage.on('pointerdown', (e) => {
-      const p = this.world.toLocal(e.global);
+      const v = this.world.toLocal(e.global);
+      const p = unproject(this.projection, v.x, v.y);
       const hit = this.games.find((g) => p.x >= g.object.x - 4 && p.x <= g.object.x + g.object.width + 4 && p.y >= g.object.y - 14 && p.y <= g.object.y + g.object.height + 4);
       if (hit && this.onGameObject) { this.onGameObject(hit.game, hit.object); return; }
       this.client.walkTo({ x: p.x, y: p.y });
@@ -264,19 +279,25 @@ export class OfficeRenderer {
       sprite.position.set(chunk.x, chunk.y);
       this.mapLayer.addChild(sprite);
     }
-    // Labels on small cream plates, so they read on every floor.
+    // Labels on small cream plates, so they read on every floor. ADR 061: upright text at the
+    // projected point in the isometric view (a skewed label would not read).
+    for (const c of this.labelLayer.removeChildren()) c.destroy({ children: true });
+    const labels = this.projection === 'iso' ? this.labelLayer : this.mapLayer;
     const plates = new Graphics();
-    this.mapLayer.addChild(plates);
+    labels.addChild(plates);
     for (const r of objectLayer(map, 'rooms')) {
       const label = new BitmapText({ text: r.name, style: { fontFamily: 'Arial', fontSize: 14, fill: 0x24324a } });
-      label.position.set(r.x + 12, r.y + 8);
-      plates.rect(r.x + 6, r.y + 5, Math.ceil(label.width) + 12, 22).fill({ color: 0xfbf6ea, alpha: 0.92 }).stroke({ width: 1, color: 0x2e3d5a, alpha: 0.55 });
-      this.mapLayer.addChild(label);
+      const at = this.projection === 'iso' ? this.P(r.x + r.width / 2, r.y + 16) : { x: r.x + 12, y: r.y + 8 };
+      const lx = this.projection === 'iso' ? at.x - Math.ceil(label.width) / 2 : at.x;
+      label.position.set(lx, at.y);
+      plates.rect(lx - 6, at.y - 3, Math.ceil(label.width) + 12, 22).fill({ color: 0xfbf6ea, alpha: 0.92 }).stroke({ width: 1, color: 0x2e3d5a, alpha: 0.55 });
+      labels.addChild(label);
     }
     for (const d of objectLayer(map, 'desks')) {
       const label = new BitmapText({ text: d.name, style: { fontFamily: 'Arial', fontSize: 10, fill: 0x1f2937 } });
-      label.position.set(d.x + 6, d.y + 7);
-      this.mapLayer.addChild(label);
+      const at = this.projection === 'iso' ? this.P(d.x + d.width / 2, d.y + 4) : { x: d.x + 6, y: d.y + 7 };
+      label.position.set(this.projection === 'iso' ? at.x - Math.ceil(label.width) / 2 : at.x, at.y);
+      labels.addChild(label);
     }
     this.props = env.props ? this.atlasSprites(env.props, this.mapLayer) : null;
     this.map = map;
@@ -294,10 +315,17 @@ export class OfficeRenderer {
     for (const a of atlas.sprites) {
       const texture = new Texture({ source, frame: new Rectangle(a.sx, a.sy, a.width, a.height) });
       const sprite = new Sprite(texture);
-      sprite.position.set(a.x, a.y);
       sprite.roundPixels = true;
-      if (a.depth === null) flat.addChild(sprite);
-      else { sprite.zIndex = a.depth; this.avatarLayer.addChild(sprite); }
+      if (a.depth === null) { sprite.position.set(a.x, a.y); flat.addChild(sprite); }
+      else if (this.projection === 'iso') {
+        // ADR 061: standing pieces stay upright, their base centre placed at the projected point.
+        const bx = a.x + a.width / 2;
+        sprite.anchor.set(0.5, Math.min(1, Math.max(0, (a.depth - a.y) / a.height)));
+        const at = this.P(bx, a.depth);
+        sprite.position.set(at.x, at.y);
+        sprite.zIndex = depthOf('iso', bx, a.depth);
+        this.avatarLayer.addChild(sprite);
+      } else { sprite.position.set(a.x, a.y); sprite.zIndex = a.depth; this.avatarLayer.addChild(sprite); }
       out.textures.push(texture);
       out.sprites.push(sprite);
     }
@@ -354,7 +382,7 @@ export class OfficeRenderer {
   /** ADR 055: the campus game objects on screen in host CSS pixels (overlay prompt, browser tests). */
   gamesOnScreen(): Array<{ game: CampusGame; x: number; y: number; id: number }> {
     return this.games.map((g) => {
-      const p = this.world.toGlobal({ x: g.object.x + g.object.width / 2, y: g.object.y + g.object.height / 2 });
+      const p = this.world.toGlobal(this.P(g.object.x + g.object.width / 2, g.object.y + g.object.height / 2));
       return { game: g.game, x: Math.round(p.x), y: Math.round(p.y), id: g.object.id };
     });
   }
@@ -534,9 +562,12 @@ export class OfficeRenderer {
       this.setStatus(s, a.status, a.away);
       // Remote movement is inferred from the eased position the user actually sees.
       const act = this.shownAction(a.id, false);
-      this.animate(s, key, a.rx - px, a.ry - py, dtMs, act, this.partnerRight(act, a.rx));
-      s.root.position.set(a.rx, a.ry);
-      s.root.zIndex = a.ry;
+      // ADR 061: walk direction and placement as seen on screen.
+      const at = this.P(a.rx, a.ry);
+      const was = this.P(px, py);
+      this.animate(s, key, at.x - was.x, at.y - was.y, dtMs, act, this.partnerRight(act, at.x));
+      s.root.position.set(at.x, at.y);
+      s.root.zIndex = depthOf(this.projection, a.rx, a.ry);
       seen.add(a.id);
     }
     const meEntry = c.roster.get(meId);
@@ -547,10 +578,12 @@ export class OfficeRenderer {
     const last = this.lastSelf;
     const moved = last && last.floorId === self.floorId ? { dx: self.x - last.x, dy: self.y - last.y } : { dx: 0, dy: 0 };
     const myAct = this.shownAction(meId, true);
-    this.animate(mine, myKey, moved.dx, moved.dy, dtMs, myAct, this.partnerRight(myAct, self.x));
+    const me = this.P(self.x, self.y);
+    const step = this.projection === 'iso' ? { dx: moved.dx - moved.dy, dy: (moved.dx + moved.dy) / 2 } : moved;
+    this.animate(mine, myKey, step.dx, step.dy, dtMs, myAct, this.partnerRight(myAct, me.x));
     this.lastSelf = { x: self.x, y: self.y, floorId: self.floorId };
-    mine.root.position.set(self.x, self.y);
-    mine.root.zIndex = self.y + 0.5;
+    mine.root.position.set(me.x, me.y);
+    mine.root.zIndex = depthOf(this.projection, self.x, self.y) + 0.5;
     seen.add(meId);
     for (const [id, s] of this.sprites) if (!seen.has(id)) { s.root.destroy({ children: true }); this.sprites.delete(id); }
     // FR-VO-005: links to the people in the same proximity group.
@@ -558,7 +591,7 @@ export class OfficeRenderer {
     for (const m of c.proximity.members) {
       if (m === meId) continue;
       const a = c.avatars.get(m);
-      if (a) this.linkLayer.moveTo(self.x, self.y).lineTo(a.rx, a.ry);
+      if (a) { const to = this.P(a.rx, a.ry); this.linkLayer.moveTo(me.x, me.y).lineTo(to.x, to.y); }
     }
     if (c.proximity.members.length) this.linkLayer.stroke({ width: 2, color: 0x7c3aed, alpha: 0.35 });
     // Camera follows the user (who stays in the middle, as the overlays expect). ADR 060: when the
@@ -566,14 +599,14 @@ export class OfficeRenderer {
     // the user and leaving an empty band.
     this.world.scale.set(this.zoom);
     this.updateSampling();
-    const axis = (view: number, size: number, at: number): number => {
-      const span = size * this.zoom;
-      return span <= view ? (view - span) / 2 : view / 2 - at * this.zoom;
+    // ADR 061: in view coordinates (projected), over the map's projected extent.
+    const axis = (view: number, min: number, max: number, at: number): number => {
+      const span = (max - min) * this.zoom;
+      return span <= view ? (view - span) / 2 - min * this.zoom : view / 2 - at * this.zoom;
     };
-    const mapW = this.map ? this.map.width * TILE_SIZE : 0;
-    const mapH = this.map ? this.map.height * TILE_SIZE : 0;
-    const camX = mapW ? axis(this.app.screen.width, mapW, self.x) : this.app.screen.width / 2 - self.x * this.zoom;
-    const camY = mapH ? axis(this.app.screen.height, mapH, self.y) : this.app.screen.height / 2 - self.y * this.zoom;
+    const b = this.map ? viewBounds(this.projection, this.map.width * TILE_SIZE, this.map.height * TILE_SIZE) : null;
+    const camX = b ? axis(this.app.screen.width, b.minX, b.maxX, me.x) : this.app.screen.width / 2 - me.x * this.zoom;
+    const camY = b ? axis(this.app.screen.height, b.minY, b.maxY, me.y) : this.app.screen.height / 2 - me.y * this.zoom;
     // Snapped to whole device pixels, so the pixel art does not shimmer while the camera follows.
     const res = this.app.renderer.resolution;
     this.world.position.set(Math.round(camX * res) / res, Math.round(camY * res) / res);

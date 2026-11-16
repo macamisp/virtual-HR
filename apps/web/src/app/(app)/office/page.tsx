@@ -27,6 +27,7 @@ import type { OfficeClient } from '@/lib/office/office-client';
 import { CallContext } from '@/components/media/use-call-controller';
 import { STATUS_COLOUR } from '@/lib/office/office-renderer';
 import type { OfficeRenderer } from '@/lib/office/office-renderer';
+import { screenIntentToMap } from '@/lib/office/projection';
 import { useBroadcast, useClaimDesk, useOfficePeople, useOfficeSnapshot, useReleaseDesk, useSetStatus, useUpdateRoom } from '@/lib/office-queries';
 import { Permission, useCan } from '@/lib/permissions';
 import { cn } from '@/lib/utils';
@@ -174,6 +175,7 @@ function MapView({ client, festive, picture }: { client: OfficeClient; festive: 
         // ADR 054: the static pixel-art environment (texture count, sampling mode).
         const env = renderer.current.environmentInfo();
         host.current?.setAttribute('data-env', `${env.chunks}:${env.sampling}`);
+        host.current?.setAttribute('data-view', renderer.current.projection);
         // ADR 055: the festive layer (on/off, pieces, bulbs) and the game objects on screen.
         const f = renderer.current.festiveInfo();
         host.current?.setAttribute('data-festive', `${f.on ? 'on' : 'off'}:${f.pieces}:${f.bulbs}`);
@@ -188,7 +190,8 @@ function MapView({ client, festive, picture }: { client: OfficeClient; festive: 
   const updateKeys = () => {
     let x = 0; let y = 0;
     for (const k of pressed.current) { const v = KEYS[k]; if (v) { x += v[0]; y += v[1]; } }
-    client.keys = { x: Math.sign(x), y: Math.sign(y) };
+    // ADR 061: the keys mean directions on screen; in the isometric view they become map diagonals.
+    client.keys = screenIntentToMap(renderer.current?.projection ?? 'top', Math.sign(x), Math.sign(y));
   };
   // A key released while the window or tab was not in front never sends its keyup here: forget
   // held keys whenever focus leaves (the element's blur covers most cases, not a hidden tab).
