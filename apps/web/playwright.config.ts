@@ -112,6 +112,9 @@ export default defineConfig({
         NEXT_PUBLIC_LIVEKIT_URL: process.env.LIVEKIT_URL ?? 'ws://localhost:7880',
         NEXT_TELEMETRY_DISABLED: '1',
         NEXT_DIST_DIR: '.next-e2e',
+        // ADR 061: the suite tests the production default (classic office view), whatever a
+        // developer's apps/web/.env.local chooses locally; spec 48 covers the isometric view.
+        NEXT_PUBLIC_OFFICE_DEFAULT_VIEW: 'top',
         // The "Open Mailhog" link on "Check your e-mail" (shown only when this is set, or in next dev).
         NEXT_PUBLIC_MAIL_VIEWER_URL: 'http://localhost:8025',
       } as Record<string, string>,

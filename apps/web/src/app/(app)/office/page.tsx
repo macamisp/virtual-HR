@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Bell, DoorOpen, Lock, Megaphone, Map as MapIcon, Minus, Navigation, Plus, Sparkles, Users } from 'lucide-react';
+import { Bell, Box, DoorOpen, LayoutGrid, Lock, Megaphone, Map as MapIcon, Minus, Navigation, Plus, Sparkles, Users } from 'lucide-react';
 import { ACCESS_MODES, avatarKeyOr, distanceToRect, GAME_REACH, gameObjects, nearestSeat, nearestWalkable, PAIR_LABEL, PAIR_REACH, TILE_SIZE, VO_STATUS_LABEL } from '@hrvo/shared';
 import type { AccessMode, AvatarKey, CampusGame, MapObject, OfficeMap, OfficeSnapshot, Room, VoStatus } from '@hrvo/shared';
 import { AccessDenied, ErrorState, LoadingState } from '@/components/state-views';
@@ -27,7 +27,8 @@ import type { OfficeClient } from '@/lib/office/office-client';
 import { CallContext } from '@/components/media/use-call-controller';
 import { STATUS_COLOUR } from '@/lib/office/office-renderer';
 import type { OfficeRenderer } from '@/lib/office/office-renderer';
-import { screenIntentToMap } from '@/lib/office/projection';
+import { DEFAULT_PROJECTION, officeProjection, saveProjection, screenIntentToMap } from '@/lib/office/projection';
+import type { Projection } from '@/lib/office/projection';
 import { useBroadcast, useClaimDesk, useOfficePeople, useOfficeSnapshot, useReleaseDesk, useSetStatus, useUpdateRoom } from '@/lib/office-queries';
 import { Permission, useCan } from '@/lib/permissions';
 import { cn } from '@/lib/utils';
@@ -106,7 +107,7 @@ function actionContext(client: OfficeClient): ActionContext {
   return { seat, seated, dancing, nearby };
 }
 
-function MapView({ client, festive, picture }: { client: OfficeClient; festive: boolean; picture: AvatarKey }) {
+function MapView({ client, festive, picture, projection }: { client: OfficeClient; festive: boolean; picture: AvatarKey; projection: Projection }) {
   const host = useRef<HTMLDivElement | null>(null);
   const renderer = useRef<OfficeRenderer | null>(null);
   const getRenderer = useCallback(() => renderer.current, []);
@@ -140,7 +141,7 @@ function MapView({ client, festive, picture }: { client: OfficeClient; festive: 
     let cancelled = false;
     void import('@/lib/office/office-renderer').then(async ({ OfficeRenderer: R }) => {
       if (cancelled || !host.current) return;
-      r = new R(client, host.current);
+      r = new R(client, host.current, projection);
       renderer.current = r;
       await r.init();
       r.setFestive(festiveRef.current);
@@ -183,7 +184,8 @@ function MapView({ client, festive, picture }: { client: OfficeClient; festive: 
       }
     }, 500);
     return () => { cancelled = true; clearInterval(t); r?.destroy(); renderer.current = null; };
-  }, [client]);
+    // ADR 061: switching Classic / Isometric builds a new renderer for the chosen view.
+  }, [client, projection]);
 
   const KEYS: Record<string, [number, number]> = { KeyW: [0, -1], ArrowUp: [0, -1], KeyS: [0, 1], ArrowDown: [0, 1], KeyA: [-1, 0], ArrowLeft: [-1, 0], KeyD: [1, 0], ArrowRight: [1, 0] };
   const pressed = useRef(new Set<string>());
@@ -481,6 +483,12 @@ export default function OfficePage() {
     try { const v = window.localStorage.getItem(VIEW_KEY); if (v === 'list' || v === 'map') setView(v); } catch { /* storage unavailable */ }
   }, []);
   const choose = (v: View) => { setView(v); try { window.localStorage.setItem(VIEW_KEY, v); } catch { /* storage unavailable */ } };
+  // ADR 061: Classic (top-down) or Isometric drawing of the map; the person's choice is remembered here.
+  // Null until this browser's saved choice is read, so the map is drawn once, in the right view.
+  const [savedProjection, setProjection] = useState<Projection | null>(null);
+  useEffect(() => { setProjection(officeProjection()); }, []);
+  const projection = savedProjection ?? DEFAULT_PROJECTION;
+  const chooseProjection = (p: Projection) => { setProjection(p); saveProjection(p); };
   const client = useClient(snapshot.data, view);
   const [passwordRoom, setPasswordRoom] = useState<string | null>(null);
   const [festive, setFestive] = useFestiveMode();
@@ -494,9 +502,17 @@ export default function OfficePage() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-2xl font-semibold">{snapshot.data?.office.name ?? 'Office'}</h1>
-        <div role="group" aria-label="View" className="flex gap-1">
-          <Button size="sm" variant={view === 'map' ? 'default' : 'outline'} aria-pressed={view === 'map'} onClick={() => choose('map')}><MapIcon aria-hidden="true" /> Map</Button>
-          <Button size="sm" variant={view === 'list' ? 'default' : 'outline'} aria-pressed={view === 'list'} onClick={() => choose('list')}><Users aria-hidden="true" /> List</Button>
+        <div className="flex flex-wrap gap-2">
+          {view === 'map' ? (
+            <div role="group" aria-label="Map style" className="flex gap-1" data-testid="map-style">
+              <Button size="sm" variant={projection === 'top' ? 'default' : 'outline'} aria-pressed={projection === 'top'} onClick={() => chooseProjection('top')}><LayoutGrid aria-hidden="true" /> Classic</Button>
+              <Button size="sm" variant={projection === 'iso' ? 'default' : 'outline'} aria-pressed={projection === 'iso'} onClick={() => chooseProjection('iso')}><Box aria-hidden="true" /> Isometric</Button>
+            </div>
+          ) : null}
+          <div role="group" aria-label="View" className="flex gap-1">
+            <Button size="sm" variant={view === 'map' ? 'default' : 'outline'} aria-pressed={view === 'map'} onClick={() => choose('map')}><MapIcon aria-hidden="true" /> Map</Button>
+            <Button size="sm" variant={view === 'list' ? 'default' : 'outline'} aria-pressed={view === 'list'} onClick={() => choose('list')}><Users aria-hidden="true" /> List</Button>
+          </div>
         </div>
       </div>
       {snapshot.isPending ? <LoadingState label="Loading the office" rows={4} /> : null}
@@ -546,7 +562,7 @@ export default function OfficePage() {
             {pwRoom ? <PasswordDialog room={pwRoom} onClose={() => setPasswordRoom(null)} onSubmit={(pw) => { void client.teleport({ kind: 'room', roomId: pwRoom.id, password: pw }).then((a) => { if (a.ok) setPasswordRoom(null); }); }} /> : null}
           </div>
           <div className={cn('grid gap-3', view === 'map' ? 'lg:grid-cols-[1fr_22rem]' : 'lg:grid-cols-2')}>
-            {view === 'map' ? <MapView client={client} festive={festive} picture={avatarKeyOr(client.roster.get(snapshot.data.me.id)?.avatar ?? snapshot.data.me.avatarKey)} /> : (
+            {view === 'map' ? savedProjection === null ? null : <MapView client={client} festive={festive} projection={projection} picture={avatarKeyOr(client.roster.get(snapshot.data.me.id)?.avatar ?? snapshot.data.me.avatarKey)} /> : (
               <Card><CardHeader><CardTitle className="text-base">Rooms</CardTitle></CardHeader><CardContent><Rooms client={client} snapshot={snapshot.data} /></CardContent></Card>
             )}
             {/* min-w-0: a long name or status truncates instead of widening the page on a phone. */}

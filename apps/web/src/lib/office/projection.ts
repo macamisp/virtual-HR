@@ -8,14 +8,28 @@
  * - `iso`: a 2:1 isometric view. A map point (x, y) is shown at (x - y, (x + y) / 2), so a 32 px
  *   tile becomes a 64 x 32 diamond. The inverse turns a screen point back into the map.
  *
- * The isometric view is chosen in this browser only (localStorage `hrvo.office.view` = `iso`) while
- * its artwork is built; the default stays `top`.
+ * Which view a person sees: their own choice in this browser (the office's Classic / Isometric
+ * switch, localStorage `hrvo.office.projection`), else the build's default. The default is `top`
+ * (classic) unless the build sets NEXT_PUBLIC_OFFICE_DEFAULT_VIEW=iso. Only local development does
+ * that (apps/web/.env.local, not committed), so production keeps the classic default.
+ *
+ * (The key used to be `hrvo.office.view`, which the page's Map / List toggle also writes: a click on
+ * Map or List erased the isometric choice. ADR 061.)
  */
 export type Projection = 'top' | 'iso';
-export const VIEW_KEY = 'hrvo.office.view';
+export const PROJECTION_KEY = 'hrvo.office.projection';
+export const DEFAULT_PROJECTION: Projection = process.env.NEXT_PUBLIC_OFFICE_DEFAULT_VIEW === 'iso' ? 'iso' : 'top';
 
 export function officeProjection(): Projection {
-  try { return window.localStorage.getItem(VIEW_KEY) === 'iso' ? 'iso' : 'top'; } catch { return 'top'; }
+  try {
+    const v = window.localStorage.getItem(PROJECTION_KEY);
+    return v === 'iso' || v === 'top' ? v : DEFAULT_PROJECTION;
+  } catch { return DEFAULT_PROJECTION; }
+}
+
+/** Remembers the person's choice in this browser. */
+export function saveProjection(v: Projection): void {
+  try { window.localStorage.setItem(PROJECTION_KEY, v); } catch { /* storage unavailable: the choice lasts this page only */ }
 }
 
 export interface Pt { x: number; y: number }

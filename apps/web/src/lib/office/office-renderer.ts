@@ -138,7 +138,7 @@ export class OfficeRenderer {
   private labelLayer = new Container();
   /** ADR 061: room names above the standing pieces (a counter or wall must not hide them). */
   private roomLabelLayer = new Container();
-  readonly projection: Projection = officeProjection();
+  readonly projection: Projection;
   /** ADR 061: standing pieces that fade while the user is behind them, and game bodies on screen (view px). */
   private isoFade: Sprite[] = [];
   private isoGames: Array<{ id: number; x: number; y: number; width: number; height: number }> = [];
@@ -178,7 +178,10 @@ export class OfficeRenderer {
   /** FR-VO-008: a right-click on another person's avatar; the page opens that person's menu. */
   onAvatarMenu: ((userId: string) => void) | null = null;
 
-  constructor(private readonly client: OfficeClient, private readonly host: HTMLElement) {}
+  /** `projection`: the view to draw (ADR 061); the person's saved choice or the build's default. */
+  constructor(private readonly client: OfficeClient, private readonly host: HTMLElement, projection: Projection = officeProjection()) {
+    this.projection = projection;
+  }
 
   async init(): Promise<void> {
     await this.app.init({ resizeTo: this.host, background: 0xf8fafc, antialias: true, autoDensity: true, resolution: Math.min(window.devicePixelRatio || 1, 2) });

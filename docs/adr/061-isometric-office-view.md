@@ -4,6 +4,31 @@ Date: 2026-11-16. Status: proposed. Phase A (projection) and phase B (isometric 
 locally on `integration/local-qa-2026-11-16`, behind a browser-local switch; the default view is
 unchanged. Not pushed, not deployed.
 
+## Default view and the Classic / Isometric switch (2026-11-16)
+
+- **Why the isometric view did not show.** The view was read from localStorage `hrvo.office.view`
+  and defaulted to classic. That key was also written by the page's Map / List toggle (`map` or
+  `list`), so any click on Map or List erased an `iso` choice.
+- **The fix.** The choice has its own key, `hrvo.office.projection`.
+- **The default.** It comes from the build: `NEXT_PUBLIC_OFFICE_DEFAULT_VIEW=iso` makes it
+  isometric, anything else keeps it classic. Local development sets it in `apps/web/.env.local`,
+  which is git-ignored, so CI and production images (built from git) keep the classic default.
+- **The Playwright suite** pins `NEXT_PUBLIC_OFFICE_DEFAULT_VIEW=top`, so it tests production's
+  default whatever a developer's `.env.local` says.
+- **The switch.** The office header has a **Classic | Isometric** switch (shown in the Map view).
+  It rebuilds the renderer in place and saves the choice in this browser. The page reads the saved
+  choice before drawing, so the map is drawn once, in the right view.
+- **Spec 48** (`48-office-view-switch`) covers:
+  - the classic default;
+  - choosing isometric, which survives a reload and a Map / List round trip;
+  - switching back to classic;
+  - in the isometric view: keyboard walking, click to go, a game from its cabinet, a wave and a
+    nudge.
+- **The reported `sw.js` "Failed to fetch" messages** are not from HRVO, which registers no
+  service worker. The browser profile has none registered for `localhost:3000`. The Jam extension
+  (`iohjgamcilhbgmhbnllfolmkmmekfmci`) runs its background worker as `sw.js`, and its failed fetches
+  show in the page's console. No browser data was changed.
+
 ## Phase B (2026-11-16): isometric artwork
 
 **Reference.** The product owner's image (an isometric pixel-art arcade room) was given as
