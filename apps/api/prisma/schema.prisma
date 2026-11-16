@@ -274,6 +274,7 @@ model User {
   ownershipTransfersSent     OwnershipTransfer[]      @relation("OwnershipFrom")
   ownershipTransfersReceived OwnershipTransfer[]      @relation("OwnershipTo")
 
+  @@unique([orgId, id])
   @@map("users")
 }
 
@@ -461,7 +462,7 @@ model OfficePresenceInterval {
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz()
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [orgId, userId], references: [orgId, id], onDelete: Cascade)
 
   @@index([orgId, userId, startedAt])
   @@map("office_presence_intervals")

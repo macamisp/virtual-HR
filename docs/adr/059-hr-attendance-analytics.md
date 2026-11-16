@@ -144,6 +144,24 @@ deletes them with the raw presence events. Reports state the first day office da
 - Production (Supabase) is untouched. A production rollout needs its own approval, the encrypted
   backup first, `migrate deploy` with the release migrate image, and the web and API images.
 
+### Hardening migration `20261116000000_office_presence_security`
+
+A follow-up migration (the first one stays immutable for databases that already applied it):
+
+- `users (org_id, id)` is unique, and an interval's person must belong to the interval's
+  organisation (`FOREIGN KEY (org_id, user_id) REFERENCES users (org_id, id)`). A cross-tenant row is
+  rejected even for the schema owner, below RLS.
+- `fn_close_stale_office_presence` qualifies its table, puts `pg_temp` last in its search path (a
+  caller's temporary table cannot shadow the target), and never closes an interval seen in the last
+  3 minutes, whatever cutoff the caller passes (a future cutoff cannot close live intervals across
+  organisations). The API already passes `now − 3 min`, so its behaviour is unchanged.
+- Rollback: `apps/api/prisma/rollback/20261116000000_office_presence_security.down.sql` restores the
+  single-column key and the original function; no interval is lost. Run it before the
+  `20261115000000` rollback, never after.
+- 2026-11-16, local: rehearsed on a restored copy of `hrvo_demo` (up, no drift, down, up, no drift;
+  73 intervals kept), then applied to `hrvo_demo` (38 → 39) after a local `pg_dump` backup.
+  `office-presence-security.test.ts` 4/4, with the presence and analytics suites 23/23.
+
 ## Consequences
 
 - One more write per person per office join and leave, and one UPDATE per organisation per minute.
