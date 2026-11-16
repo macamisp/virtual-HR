@@ -26,6 +26,21 @@ export function poolConfig(env: Env = process.env): pg.ClientConfig {
   };
 }
 
+/**
+ * Optional connection caps (ADR 052). Behind a session-mode pooler (Supabase Supavisor) every open
+ * client holds a server connection, so the API's total must stay under the pool size. Unset or
+ * invalid values keep the library defaults (pg: 10 per pool; Prisma: derived from CPU count).
+ */
+function positiveInt(value: string | undefined): number | undefined {
+  if (!value || !/^\d+$/.test(value.trim())) return undefined;
+  const n = Number(value.trim());
+  return n >= 1 && n <= 100 ? n : undefined;
+}
+
+export function poolMax(env: Env = process.env): number | undefined {
+  return positiveInt(env.PG_POOL_MAX);
+}
+
 export function databaseUrl(env: Env = process.env): string {
   if (env.DATABASE_URL) return env.DATABASE_URL;
   const c = poolConfig(env);
@@ -33,6 +48,8 @@ export function databaseUrl(env: Env = process.env): string {
   url.username = encodeURIComponent(String(c.user));
   url.password = encodeURIComponent(String(c.password));
   url.searchParams.set('schema', 'public');
+  const limit = positiveInt(env.PRISMA_CONNECTION_LIMIT);
+  if (limit) url.searchParams.set('connection_limit', String(limit));
   if (tlsRequired(env)) {
     url.searchParams.set('sslmode', 'require');
     url.searchParams.set('sslaccept', 'strict');
