@@ -290,6 +290,23 @@ export const BoardAnswerDtoSchema = z.object({ id: z.string().min(1).max(64), ac
 export const BoardMoveDtoSchema = z.object({ id: z.string().min(1).max(64), from: z.number().int().min(0).max(63), to: z.number().int().min(0).max(63), promotion: z.enum(['Q', 'R', 'B', 'N']).optional() }).strict();
 export const BoardIdDtoSchema = z.object({ id: z.string().min(1).max(64) }).strict();
 
+/** ADR 064: a stored game state, checked before a game is restored after a restart. */
+const PIECES = ['wK', 'wQ', 'wR', 'wB', 'wN', 'wP', 'wM', 'wC', 'bK', 'bQ', 'bR', 'bB', 'bN', 'bP', 'bM', 'bC'] as const satisfies readonly Piece[];
+const SquareSchema = z.number().int().min(0).max(63);
+const SideSchema = z.enum(['w', 'b']);
+export const BoardStateSchema: z.ZodType<BoardState> = z.object({
+  kind: z.enum(BOARD_GAMES),
+  board: z.array(z.enum(PIECES).nullable()).length(64),
+  turn: SideSchema,
+  castling: z.string().regex(/^K?Q?k?q?$/),
+  ep: SquareSchema.nullable(),
+  halfmove: z.number().int().nonnegative(),
+  plies: z.number().int().nonnegative(),
+  mustContinue: SquareSchema.nullable(),
+  lastMove: z.object({ from: SquareSchema, to: SquareSchema, promotion: z.enum(['Q', 'R', 'B', 'N']).optional() }).strict().nullable(),
+  result: z.object({ winner: SideSchema.nullable(), reason: z.enum(['checkmate', 'stalemate', 'insufficient', 'fifty-moves', 'no-pieces', 'no-moves', 'resigned', 'left']) }).strict().nullable(),
+}).strict();
+
 export interface BoardPlayer { id: string; name: string }
 /** What both players see after every change. */
 export interface BoardSnapshot {

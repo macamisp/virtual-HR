@@ -637,9 +637,7 @@ export class OfficeGateway implements OnGatewayDisconnect, OnModuleInit {
     if (g.state.turn !== side) return { ok: false, error: 'It is not your turn', code: 'NOT_YOUR_TURN' };
     const next = playMove(g.state, { from: dto.from, to: dto.to, ...(dto.promotion ? { promotion: dto.promotion } : {}) });
     if (!next) return { ok: false, error: 'That move is not allowed', code: 'ILLEGAL' };
-    g.state = next;
-    if (next.result) world.endBoardGame(g, next.result, this.personalEmitter);
-    else world.sendBoard(g, this.personalEmitter);
+    world.applyBoardState(g, next, this.personalEmitter);
     return { ok: true };
   }
 

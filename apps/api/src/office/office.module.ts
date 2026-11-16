@@ -5,11 +5,12 @@ import { OfficeService } from './office.service.ts';
 import { OfficeRegistry } from './office-registry.ts';
 import { OfficeGateway } from './office.gateway.ts';
 import { OfficePresenceStore } from './office-presence.ts';
+import { OfficeBoardStore } from './office-boards.ts';
 
 @Module({
   imports: [AttendanceModule],
   controllers: [OfficeController, OfficeAdminController, OfficeBroadcastController],
-  providers: [OfficeRegistry, OfficeService, OfficeGateway, OfficePresenceStore],
-  exports: [OfficeRegistry, OfficeGateway, OfficePresenceStore],
+  providers: [OfficeRegistry, OfficeService, OfficeGateway, OfficePresenceStore, OfficeBoardStore],
+  exports: [OfficeRegistry, OfficeGateway, OfficePresenceStore, OfficeBoardStore],
 })
 export class OfficeModule {}

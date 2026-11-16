@@ -46,6 +46,8 @@ export class DataExportService {
         presenceEvents: await one(`SELECT server_ts, event_type, state, ip, meta FROM presence_events WHERE user_id = $1 ORDER BY server_ts DESC`),
         // ADR 059: when the person was connected to the virtual office (nothing about where or what).
         officeConnections: await one(`SELECT started_at, ended_at, last_seen_at, end_reason FROM office_presence_intervals WHERE user_id = $1 ORDER BY started_at DESC`),
+        // ADR 064: board games in progress (deleted when they end).
+        officeGamesInProgress: await one(`SELECT kind, CASE WHEN white_id = $1 THEN 'white' ELSE 'black' END AS side, started_at, updated_at, (state->>'plies')::int AS moves_played FROM office_board_games WHERE white_id = $1 OR black_id = $1 ORDER BY started_at`),
       },
       timesheets: {
         timesheets: await one(`SELECT id, period_start, period_end, status, attendance_minutes, logged_minutes, billable_minutes, variance_minutes, amount::text, currency, notes, submitted_at, approved_at, rejected_at, rejection_reason FROM timesheets WHERE user_id = $1 ORDER BY period_start`),

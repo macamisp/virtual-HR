@@ -4,7 +4,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { inCheck, legalMoves, newBoard, playMove, squareOf } from '../../../packages/shared/src/office/board-games.ts';
+import { BoardStateSchema, inCheck, legalMoves, newBoard, playMove, squareOf } from '../../../packages/shared/src/office/board-games.ts';
 import type { BoardState, Piece } from '../../../packages/shared/src/office/board-games.ts';
 
 const sq = squareOf;
@@ -119,5 +119,33 @@ describe('Checkers rules', () => {
     assert.equal(back.board[sq('a8')], 'wC');
     const win = play(position('checkers', { c3: 'wM', d4: 'bM' }), 'c3e5');
     assert.deepEqual(win.result, { winner: 'w', reason: 'no-pieces' });
+  });
+});
+
+describe('Stored game state (ADR 064)', () => {
+  it('a state after real moves survives a JSON round trip unchanged, for both games', () => {
+    let chess = newBoard('chess');
+    for (const [f, t] of [['e2', 'e4'], ['e7', 'e5'], ['g1', 'f3']] as const) chess = playMove(chess, { from: squareOf(f), to: squareOf(t) })!;
+    let checkers = newBoard('checkers');
+    checkers = playMove(checkers, { from: squareOf('c3'), to: squareOf('d4') })!;
+    for (const s of [newBoard('chess'), chess, checkers]) {
+      const back = BoardStateSchema.parse(JSON.parse(JSON.stringify(s)));
+      assert.deepEqual(back, s);
+    }
+  });
+
+  it('a damaged state is refused: unknown piece, wrong board size, bad castling, bad side, extra field', () => {
+    const ok = newBoard('chess');
+    const bad: unknown[] = [
+      { ...ok, board: ok.board.map((p, i) => (i === 0 ? 'wX' : p)) },
+      { ...ok, board: ok.board.slice(1) },
+      { ...ok, castling: 'KK' },
+      { ...ok, turn: 'x' },
+      { ...ok, ep: 64 },
+      { ...ok, extra: 1 },
+      { ...ok, kind: 'go' },
+      'not a state',
+    ];
+    for (const b of bad) assert.equal(BoardStateSchema.safeParse(b).success, false, JSON.stringify(b).slice(0, 60));
   });
 });

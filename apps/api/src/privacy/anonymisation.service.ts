@@ -106,6 +106,7 @@ export class AnonymisationService {
       { dataset: 'Sign-in sessions', count: await count(`SELECT count(*)::int AS n FROM auth_sessions WHERE user_id = $1 AND NOT is_revoked`), action: 'REVOKE' },
       { dataset: 'Raw presence events', count: await count(`SELECT count(*)::int AS n FROM presence_events WHERE user_id = $1`), action: 'DELETE' },
       { dataset: 'Office connection times', count: await count(`SELECT count(*)::int AS n FROM office_presence_intervals WHERE user_id = $1`), action: 'DELETE' },
+      { dataset: 'Office board games in progress', count: await count(`SELECT count(*)::int AS n FROM office_board_games WHERE white_id = $1 OR black_id = $1`), action: 'DELETE' },
       { dataset: 'Attendance session IPs and device ids', count: await count(`SELECT count(*)::int AS n FROM attendance_sessions WHERE user_id = $1`), action: 'REPLACE' },
       { dataset: 'Correction, timesheet and time-entry free text', count: await count(`SELECT count(*)::int AS n FROM time_entries WHERE user_id = $1 AND (note <> '' OR manual_reason IS NOT NULL)`), action: 'REPLACE' },
       { dataset: 'Task comments written by the person', count: await count(`SELECT count(*)::int AS n FROM task_comments WHERE author_id = $1`), action: 'REPLACE' },
@@ -184,6 +185,7 @@ export class AnonymisationService {
       await run('timesheetNotes', `UPDATE timesheets SET notes = '' WHERE user_id = $1 AND notes <> ''`);
       await run('taskComments', `UPDATE task_comments SET body = '[comment removed: author anonymised]' WHERE author_id = $1`);
       // Personal working data and access: gone.
+      await run('boardGames', `DELETE FROM office_board_games WHERE white_id = $1 OR black_id = $1`); // ADR 064
       await run('dailyPlans', `DELETE FROM daily_plans WHERE user_id = $1`);
       await run('weeklyPlans', `DELETE FROM weekly_plans WHERE user_id = $1`);
       await run('savedViews', `DELETE FROM task_saved_views WHERE user_id = $1`);

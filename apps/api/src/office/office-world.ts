@@ -70,7 +70,16 @@ export interface PairRequest { id: string; kind: PairAction; from: string; to: s
 export interface Nudge { id: string; from: string; to: string; expiresAt: number }
 /** FR-VO-017 (ADR 062): an invitation to a board game at a table, and a game being played. */
 export interface BoardInvite { id: string; kind: BoardGameKind; tableId: number; floorId: string; from: string; to: string; expiresAt: number }
-export interface BoardGame { id: string; kind: BoardGameKind; tableId: number; floorId: string; white: BoardPlayer; black: BoardPlayer; state: BoardState }
+export interface BoardGame {
+  id: string; kind: BoardGameKind; tableId: number; floorId: string; white: BoardPlayer; black: BoardPlayer; state: BoardState;
+  /** ADR 064: restored after a restart; until then a player who has not come back yet does not lose. */
+  resumeBy?: number;
+}
+/** ADR 064: where games in progress are written behind the world (OfficeBoardStore). */
+export interface BoardSink {
+  saved(orgId: string, g: BoardGame, at: number): void;
+  ended(orgId: string, gameId: string): void;
+}
 
 export type Denial = 'KNOCK' | 'INVITE' | 'PASSWORD' | 'FULL';
 
@@ -107,9 +116,11 @@ export class OfficeWorld {
   readonly requests = new Map<string, PairRequest>();
   /** ADR 058: open nudges, by id. In memory only, like everything else about the world. */
   readonly nudges = new Map<string, Nudge>();
-  /** FR-VO-017: open board-game invitations and the games being played. In memory only. */
+  /** FR-VO-017: open board-game invitations (in memory only) and the games being played. */
   readonly boardInvites = new Map<string, BoardInvite>();
   readonly boardGames = new Map<string, BoardGame>();
+  /** ADR 064: games in progress are also written here, so a restart does not end them. */
+  boardSink: BoardSink | null = null;
 
   constructor(
     readonly orgId: string,
@@ -283,9 +294,18 @@ export class OfficeWorld {
   startBoardGame(i: BoardInvite, from: Avatar, to: Avatar, emit?: WorldEmitter): BoardGame {
     const g: BoardGame = { id: i.id, kind: i.kind, tableId: i.tableId, floorId: i.floorId, white: { id: from.userId, name: from.name }, black: { id: to.userId, name: to.name }, state: newBoard(i.kind) };
     this.boardGames.set(g.id, g);
+    this.boardSink?.saved(this.orgId, g, Date.now());
     this.closeBoardInvite(i, 'accepted', emit);
     this.sendBoard(g, emit);
     return g;
+  }
+
+  /** A move the rules accepted: the new state is kept (and written), then shown or the game ends. */
+  applyBoardState(g: BoardGame, next: BoardState, emit?: WorldEmitter): void {
+    g.state = next;
+    if (next.result) { this.endBoardGame(g, next.result, emit); return; }
+    this.boardSink?.saved(this.orgId, g, Date.now());
+    this.sendBoard(g, emit);
   }
 
   boardSnapshot(g: BoardGame): BoardSnapshot {
@@ -301,6 +321,7 @@ export class OfficeWorld {
   /** Ends a game (resigned, a player left): both are told the result once; the game is then gone. */
   endBoardGame(g: BoardGame, result: BoardResult, emit?: WorldEmitter): void {
     if (!this.boardGames.delete(g.id)) return;
+    this.boardSink?.ended(this.orgId, g.id);
     g.state = { ...g.state, result: g.state.result ?? result };
     this.sendBoard(g, emit);
   }
@@ -432,8 +453,16 @@ export class OfficeWorld {
       else if (now >= i.expiresAt) this.closeBoardInvite(i, 'timeout', emit);
     }
     for (const g of [...this.boardGames.values()]) {
-      if (!this.avatars.has(g.white.id)) this.endBoardGame(g, { winner: 'b', reason: 'left' }, emit);
-      else if (!this.avatars.has(g.black.id)) this.endBoardGame(g, { winner: 'w', reason: 'left' }, emit);
+      const white = this.avatars.has(g.white.id);
+      const black = this.avatars.has(g.black.id);
+      // ADR 064: a game restored after a restart waits for both players to come back, for a while.
+      if (g.resumeBy !== undefined) {
+        if (white && black) delete g.resumeBy;
+        else if (now < g.resumeBy) continue;
+        else { this.endBoardGame(g, { winner: white ? 'w' : black ? 'b' : null, reason: 'left' }, emit); continue; }
+      }
+      if (!white) this.endBoardGame(g, { winner: 'b', reason: 'left' }, emit);
+      else if (!black) this.endBoardGame(g, { winner: 'w', reason: 'left' }, emit);
     }
     // ADR 048: a dropped connection (reload) keeps its place for the grace, then is gone for everyone.
     for (const a of this.avatars.values()) {

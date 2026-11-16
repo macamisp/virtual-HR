@@ -63,3 +63,7 @@ may be added without the owner's approval, and the map (room ids, desks, collisi
   - rules unit tests (11);
   - socket end to end `office-board-e2e` (6), with real sockets and another organisation;
   - Playwright 49, two browsers, classic and isometric (2).
+
+## Addendum (2026-11-16)
+
+Games in progress are now stored until they end, and survive an API restart: ADR 064.

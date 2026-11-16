@@ -3,7 +3,8 @@
  * arcade's chess table; an invitation reaches only the person invited; Decline, Accept, moves
  * checked by the server (out of turn, illegal, not your game), fool's mate ends the game for both,
  * checkers on the same table, resigning, and leaving ends the game. Refused: away from the table,
- * yourself, someone in another organisation, a second game at a busy table. Nothing is stored.
+ * yourself, someone in another organisation, a second game at a busy table. Games in progress are
+ * also written to the database (ADR 064: office-board-restart-e2e).
  */
 import 'reflect-metadata';
 import { describe, it, before, after } from 'node:test';

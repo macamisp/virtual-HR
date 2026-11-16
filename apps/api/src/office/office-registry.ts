@@ -6,6 +6,7 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service.ts';
 import { ensureOffice, loadDesks, loadInvites, loadRooms } from './office-store.ts';
 import { OfficeWorld } from './office-world.ts';
+import { OfficeBoardStore } from './office-boards.ts';
 import type { WorldEmitter } from './office-world.ts';
 
 export const TICK_MS = 100; // 10 Hz (SRS 8.4)
@@ -21,7 +22,7 @@ export class OfficeRegistry implements OnModuleDestroy {
   /** ADR 048: how long a dropped socket keeps its avatar (a reload rejoins the same spot); 0 removes at once. */
   readonly leaveGraceMs = Math.max(0, Number(process.env.OFFICE_LEAVE_GRACE_MS ?? 8000) || 0);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly boards: OfficeBoardStore) {}
 
   start(emitter: WorldEmitter): void {
     this.emitter = emitter;
@@ -63,13 +64,20 @@ export class OfficeRegistry implements OnModuleDestroy {
       for (const [u, g] of old.grants) w.grants.set(u, g);
       // ADR 056: open hug / high-five requests survive the reload (seats are read from the avatars).
       for (const [id, r] of old.requests) w.requests.set(id, r);
+      // ADR 064: so do board invitations and games (the running world is newer than the stored rows).
+      for (const [id, i] of old.boardInvites) w.boardInvites.set(id, i);
+      for (const [id, g] of old.boardGames) w.boardGames.set(id, g);
     }
   }
 
   private async load(orgId: string): Promise<OfficeWorld> {
     return await this.prisma.runWithTenantContext(orgId, async (db) => {
       const office = await ensureOffice(db, orgId);
-      return new OfficeWorld(orgId, office.id, office.definition, await loadRooms(db, office.id), await loadDesks(db, office.id), await loadInvites(db), office.proximityRadius);
+      const world = new OfficeWorld(orgId, office.id, office.definition, await loadRooms(db, office.id), await loadDesks(db, office.id), await loadInvites(db), office.proximityRadius);
+      // ADR 064: the games that were in progress when the last process stopped.
+      for (const g of await this.boards.load(db, orgId, Date.now(), (floorId, tableId, kind) => world.boardTable(floorId, tableId, kind) !== null)) world.boardGames.set(g.id, g);
+      world.boardSink = this.boards;
+      return world;
     });
   }
 
