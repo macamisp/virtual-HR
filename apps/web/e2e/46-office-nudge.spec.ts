@@ -30,6 +30,8 @@ async function shot(p: Page, name: string): Promise<void> {
 async function office(browser: Browser, email: string, opts: BrowserContextOptions = {}) {
   const ctx = await browser.newContext(opts);
   const page = await ctx.newPage();
+  // Every nudge this person sends (the office socket frame), for the server's rate rules below.
+  page.on('websocket', (ws) => ws.on('framesent', (f) => { if (typeof f.payload === 'string' && f.payload.includes('"office:nudge",')) (sent[email] ??= []).push(Date.now()); }));
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
@@ -73,6 +75,25 @@ async function ended(sender: Page, recipient: Page, outcome: string, senderText:
   await expect(result(sender)).toHaveCount(0);
 }
 
+/**
+ * The server's nudge rules outlive a browser (they are per person and per pair): the 8 s pair
+ * cooldown (playwright.config) and NUDGES_PER_MINUTE per sender. A later test that starts quickly
+ * waits only for what is left of them after the earlier tests' nudges, so it never depends on how
+ * long the earlier tests happened to take.
+ */
+const NUDGES_PER_MINUTE = 6; // packages/shared/src/office/nudge.ts
+const sent: Record<string, number[]> = {};
+/** `planned`: how many nudges the caller sends within the next minute (they must all fit the per-minute limit). */
+async function nudgeAllowed(p: Page, email: string, planned = 1): Promise<void> {
+  const times = sent[email] ?? [];
+  const now = Date.now();
+  const cooldownLeft = times.length ? times[times.length - 1]! + COOLDOWN_MS - now : 0;
+  const recent = times.filter((t) => now - t < 60_000);
+  const keep = Math.max(0, NUDGES_PER_MINUTE - planned); // sends that may still be in the window
+  const windowLeft = recent.length > keep ? recent[recent.length - keep - 1]! + 60_000 - now : 0;
+  await p.waitForTimeout(Math.max(0, cooldownLeft, windowLeft) + 250);
+}
+
 test.describe.serial('Office avatar nudge (ADR 058)', () => {
   test('two people: bell on hover, chime, Accept, cooldown, keyboard and Ignore, Cancel, expiry, Do not disturb, distance, leaving', async ({ browser }) => {
     test.setTimeout(240_000);
@@ -86,6 +107,7 @@ test.describe.serial('Office avatar nudge (ADR 058)', () => {
 
     // Nobody can nudge themselves: there is no bell (and no avatar button) for my own avatar.
     await expect(worker.getByRole('button', { name: `Nudge ${USERS.worker.name}` })).toHaveCount(0);
+    await nudgeAllowed(worker, USERS.worker.email, NUDGES_PER_MINUTE); // a clear minute: this test sends several
     // The bell for a nearby colleague is hidden until the pointer is over their avatar.
     await expect(bell(worker)).toHaveCount(1);
     await expect.poll(() => opacity(worker)).toBe('0');
@@ -209,6 +231,7 @@ test.describe.serial('Office avatar nudge (ADR 058)', () => {
     const box = (await bell(worker).boundingBox())!;
     expect(Math.min(box.width, box.height)).toBeGreaterThanOrEqual(32);
     await shot(worker, 'nudge-11-phone-bell');
+    await nudgeAllowed(worker, USERS.worker.email);
     await bell(worker).tap();
     await expect(worker.getByTestId('nudge-pending')).toBeVisible();
     const request = lead.getByTestId('nudge-request');
@@ -241,7 +264,7 @@ test.describe.serial('Office avatar nudge (ADR 058)', () => {
     const worker = w.page;
     const lead = l.page;
     await goNextTo(worker, USERS.lead.name);
-    await worker.waitForTimeout(COOLDOWN_MS); // the previous test's nudge to the same person
+    await nudgeAllowed(worker, USERS.worker.email); // the earlier tests' nudges by the same person
     await avatarButton(worker, USERS.lead.name).hover();
     await expect.poll(() => opacity(worker)).toBe('1');
     expect(await bell(worker).evaluate((el) => getComputedStyle(el).transitionProperty)).toBe('none');
