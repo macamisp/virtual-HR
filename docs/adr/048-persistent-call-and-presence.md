@@ -107,6 +107,34 @@ and camera changes run through one queue (`sync()`), so a click during a room sw
 the new room's publish. Spec 39 reproduced the bug first (mic "on" after the room change), then
 passes.
 
+**Publishing waits for the connected room** (production hotfix, 2026-11-17). Right after a room
+switch the microphone or camera could fail with LiveKit's *engine not connected within timeout*:
+`sync()` published while the new `Room` was still connecting, and the office shows no error, so
+the user was silently not heard (spec 36's `cameraOn()` retry was working around it). Now:
+`sync()` only publishes when `room.state` is `Connected` and runs again on every
+`ConnectionStateChanged → Connected` (so the kept choice is also re-applied after a reconnect);
+`setDeviceEnabled()` retries only that transient engine error (3 tries, 350/700 ms), never a
+permission or device error; a `connect()` that resolves or fails after the user has already moved
+to another room disconnects that old room and changes nothing; screen share, hand and *Allow
+sound* also wait for the connected room. The toolbar disables the room controls (microphone,
+camera, share, hand, audio only) unless the call is `connected`, i.e. also while connecting and
+reconnecting. **The speaker switch stays enabled** (the supplied patch disabled it too; that was
+not applied): it is a local preference that never touches the room, is kept across room changes
+(above) and spec 39 requires it before any call. Spec 39 covers the connecting state (LiveKit
+signalling held with `page.routeWebSocket`), a room change while connecting, and the controls
+while reconnecting.
+
+The room-change test also found a leak that predates the hotfix: livekit-client 2.22
+(`singlePeerConnection`, the default) creates the publisher `RTCPeerConnection` before the
+signalling join, and when that join is aborted, `engine.close()` returns early because the engine
+was never opened, so every room change or Leave while connecting left one idle peer connection
+behind (no media, no network; the spec counted 3 open instead of 2). `leaveRoom()` in
+`media-session.ts` keeps the engine from before `room.disconnect()` and closes what it still
+holds (`engine.cleanupPeerConnections()`, typed and public in the client's declarations); for a
+room that connected it is a no-op. Revisit when livekit-client is upgraded. Single peer connection
+mode itself was not turned off: the local server (1.9.1) answers `/rtc/v1` with 404 and the client
+falls back to two connections, but the production server's version is not recorded here.
+
 ### 4. One tab owns the call
 
 Like the heartbeat leader, the call owner holds the Web Lock `hrvo-call-owner`. A tab that wants
