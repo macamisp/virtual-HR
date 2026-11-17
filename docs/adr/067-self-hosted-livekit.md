@@ -1,9 +1,11 @@
 # ADR 067: Self-hosted LiveKit media server
 
-Date: 2026-11-17. Status: proposed (built and rehearsed locally on `feat/livekit-selfhost-2026-11-17`;
-nothing provisioned, deployed or switched; production audit pending SSH access).
+Date: 2026-11-17 (revised the same day after the pre-install safety review). Status: proposed
+(built, rehearsed and regression-tested locally on `feat/livekit-selfhost-2026-11-17`; nothing
+provisioned, deployed or switched).
 Related: FR-VO-009, FR-MEET-004, FR-MEET-005, FR-MEET-007, FR-MEET-010; ADR 016 (LiveKit), 024
-(recording), 046 (single-EC2 staging), 047 (IMDS isolation), 048 (persistent call, hotfix b1584a8).
+(recording), 046 (single-EC2 staging), 047 (IMDS isolation), 048 (persistent call, hotfix b1584a8),
+052 (Supabase).
 
 ## Context
 
@@ -29,14 +31,15 @@ How HRVO uses LiveKit (unchanged by this ADR):
    (`livekit/generate`): its own Compose project with host networking; `livekit/livekit-server`
    v1.13.11; `livekit/caddyl4` v2.11.3 terminating TLS on 443 and routing by SNI (signalling name →
    LiveKit :7880 on loopback; TURN name → LiveKit's TURN listener, `turn.external_tls: true`);
-   its own Redis on loopback (required by Egress); optional `livekit/egress` v1.15.0 behind the
-   `recording` profile. Keys and the Redis password come from `secrets.env` (mode 600) through
-   `LIVEKIT_KEYS` / `REDIS_PASSWORD`; the rendered configs hold no secret. `configure.sh` generates
+   its own Redis on loopback. Images pinned to their multi-arch index digests. The LiveKit key
+   pair and the Redis password come from `secrets.env`, Redis gets only its password from
+   `redis.env` (both mode 600); the rendered configs hold no secret. Let's Encrypt is chosen
+   explicitly per run (`ACME_CA=staging|production`, no default) with a required `ACME_EMAIL`. `configure.sh` generates
    a new production key pair (never printed, never the development pair) and renders the configs;
    `check.py` verifies DNS, TLS, signalling, TURN/TLS, TURN/UDP, ICE/TCP and closed ports from
    outside.
 2. **Media never passes through Cloudflare's proxy or an HTTP proxy.** Both names are DNS-only
-   (grey cloud) A records to the media host's Elastic IP. UDP 50000-60000, TCP 7881 and UDP 3478
+   (grey cloud) A records to the host's public IP. UDP 50000-60000, TCP 7881 and UDP 3478
    go straight to LiveKit; TCP 443 (signalling and TURN/TLS) to Caddy, TCP 80 for ACME only.
    7880 (Twirp/WebSocket, plain), 6389 (Redis) and 5349 (plain TURN behind Caddy) stay closed.
 3. **Dual-server window in the application** (this is the only code change):
@@ -52,12 +55,33 @@ How HRVO uses LiveKit (unchanged by this ADR):
 4. **Switching never moves a live call.** Clients keep their connection to the server they joined
    until they leave; new joins go to the new server. The switch is made at a quiet time after
    LiveKit Cloud reports no rooms; the API-only switch and rollback are scripted
-   (`switch-api-env.py`: names only, mode-600 backups, byte-identical restore).
-5. **Where it runs is the operator's choice, after the audit** (runbook §2): co-located on the
-   existing EC2 host (no new instance cost, shares CPU with the app and exposes the host's IP) or a
-   dedicated small compute-optimised instance (recommended; needs cost approval). Egress for
-   recording needs ≥ 4 vCPU / 4 GB per LiveKit's guidance, so recording either stays on a sized
-   host or recording is paused until one is approved.
+   (`switch-api-env.py`: names only, mode-600 backups). The rollback `to-cloud` is the mirror image
+   of `to-selfhost`: Cloud becomes current and the self-hosted pair becomes the previous one, so
+   rooms still running on the self-hosted server keep closing their attendance.
+5. **Co-located on the application's EC2 host** (operator decision, 2026-11-17: no new paid
+   infrastructure; m7i-flex.large, 2 vCPU, 7.6 GB). Limits fit that host: LiveKit 1 GiB / 1 CPU,
+   Caddy 128 MiB / 0.5 CPU, Redis 64 MiB / 0.25 CPU, no swap, `oom_score_adj: 500` so the kernel
+   kills these before the application under memory pressure. **No Egress** on this host (recording
+   needs ≥ 4 CPUs): recording is unavailable on the self-hosted server until a sized host is
+   approved. `scripts/livekit-compose-policy.ts` checks all of this on the rendered project.
+6. **Isolation on a shared host.** Host networking (LiveKit's guidance for media) makes these
+   containers' packets leave through the host's output path, which ADR 047's `inet hrvo_imds`
+   table does not filter, so they could otherwise reach the instance metadata service and the
+   role's KMS credentials. Every LiveKit container therefore runs with a dedicated group
+   (`LIVEKIT_GID`, 64900) and `livekit-guard.sh` loads a table of its own, `inet hrvo_livekit`:
+   - output: drop that group's packets to 169.254.169.254 and fd00:ec2::254;
+   - input: 5349 (plain TURN), 7880 (signalling/Twirp) and 6389 (Redis) answer on loopback only.
+   `cap_drop: ALL` + `no-new-privileges` keep any process from changing its group. The table is
+   replaced atomically and no other table is touched or flushed; a systemd unit loads it before
+   Docker and a Docker drop-in refuses to start without it (fail closed, like ADR 047). Bridge
+   networking with a single UDP port would isolate more (no host loopback either) but is
+   unrehearsed; the residual risk is that a compromised LiveKit process shares the host's network
+   namespace (loopback-bound app ports, password-protected bridges).
+7. **Production compose commands always keep the Supabase overlay.** `prod-compose.sh` (installed
+   to /opt/hrvo-livekit, outside the app checkout) is the only documented way to drive the
+   application stack: it adds the HTTPS and Supabase overlays and `.env.staging.supabase`, refuses
+   to run when any is missing, and refuses `config` without `-q` and `down`. Without it, recreating
+   the API with the pre-Supabase command would point it at the old local PostgreSQL.
 
 ## Consequences
 
@@ -68,5 +92,11 @@ How HRVO uses LiveKit (unchanged by this ADR):
 - We now operate a media server: TLS renewals (automatic), version upgrades, UDP capacity and
   monitoring become ours. LiveKit Cloud stays configured as the rollback until the drain is over
   and the self-hosted server has run cleanly for an agreed period.
-- New images: `livekit/caddyl4`, `livekit/egress` v1.15.0 and `livekit/livekit-cli` (tests only).
-  No npm package was added.
+- New images: `livekit/caddyl4` and `livekit/livekit-cli` (tests only). No npm package was added.
+- Tests: `npm run test:livekit-guard` (functional, user + network namespace; also re-proves ADR 047)
+  and `apps/api/test/livekit-selfhost-infra.test.ts` (policy, Let's Encrypt rendering, secrets,
+  `prod-compose.sh`, runbook commands, `to-cloud` through the API's webhook check). `docker compose
+  config` and `caddy validate` run in that file only where those binaries exist.
+- Open before staging (runbook §2): ports 80/443 free on the host and the content of the root-only
+  HTTPS overlay (P4), Elastic IP (P5), recording decision (P6), webhook route and key for the
+  staging test API (P7).

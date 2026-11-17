@@ -7,11 +7,17 @@ other line stays byte-identical. A mode-600 backup is written first. Values are 
   to-selfhost  LIVEKIT_URL/KEY/SECRET := the self-hosted server (key pair from its secrets.env);
                the old values become LIVEKIT_PREVIOUS_API_KEY/SECRET (webhooks from calls still on
                the old server keep verifying) and LIVEKIT_EXTRA_URLS (the web CSP keeps allowing it).
-  drop-previous  after the old server has no rooms left: remove LIVEKIT_PREVIOUS_API_KEY/SECRET.
-  restore BACKUP rollback: put a backup written by this script back in place (itself backed up).
+  to-cloud     ROLLBACK, the mirror image: LIVEKIT_URL/KEY/SECRET := LiveKit Cloud again (from the
+               previous pair, or with --cloud-from BACKUP once that was dropped); the self-hosted pair
+               becomes the previous one, so rooms still running on the self-hosted server can close
+               (participant_left, meeting attendance) instead of leaving people BUSY for 12 h.
+  drop-previous  after the other server has no rooms left: remove LIVEKIT_PREVIOUS_API_KEY/SECRET.
+  restore BACKUP  last resort: put a backup back byte for byte. It forgets the server being left, so
+               its webhooks are refused: prefer to-cloud.
 
-Then recreate only the API: `$C up -d --no-deps api` (the web build already allows both URLs when
-it was built with LIVEKIT_EXTRA_URLS; see the runbook).
+Then recreate only the API, always through prod-compose.sh (keeps the Supabase overlay):
+  /opt/hrvo-livekit/prod-compose.sh up -d --no-deps api
+The web build already allows both URLs when it was built with LIVEKIT_EXTRA_URLS (see the runbook).
 """
 import argparse
 import os
@@ -65,10 +71,23 @@ def write_env(path, lines, updates, removals=()):
 
 
 def backup(path):
-    dest = f'{path}.livekit-backup-{time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())}'
-    shutil.copy2(path, dest)
-    os.chmod(dest, 0o600)
-    return dest
+    """A new mode-600 copy; never overwrites an earlier backup (two steps within one second keep both:
+    the one written by to-selfhost holds the LiveKit Cloud values a later to-cloud may need)."""
+    stamp = f'{path}.livekit-backup-{time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())}'
+    with open(path, 'rb') as src:
+        data = src.read()
+    for n in range(1000):
+        dest = stamp if n == 0 else f'{stamp}-{n}'
+        try:
+            fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        shutil.copystat(path, dest)
+        os.chmod(dest, 0o600)
+        return dest
+    sys.exit(f'too many backups of {path} in one second')
 
 
 def read_selfhost_keys(path):
@@ -90,6 +109,8 @@ def main():
     s = sub.add_parser('to-selfhost')
     s.add_argument('--secrets', required=True, help='the self-hosted server secrets.env')
     s.add_argument('--url', required=True, help='wss://livekit.virtual-hr.site')
+    c = sub.add_parser('to-cloud')
+    c.add_argument('--cloud-from', help='a backup written by to-selfhost (needed once drop-previous removed the Cloud pair)')
     sub.add_parser('drop-previous')
     r = sub.add_parser('restore')
     r.add_argument('backup')
@@ -113,31 +134,60 @@ def main():
         print(f'removed LIVEKIT_PREVIOUS_API_KEY, LIVEKIT_PREVIOUS_API_SECRET (backup {saved})')
         return
 
-    if not re.match(r'^wss://[A-Za-z0-9.-]+(:\d+)?$', a.url):
-        sys.exit('--url must be wss://<host>[:port]')
     for n in ('LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'):
         if not values.get(n):
             sys.exit(f'{a.env} has no {n}; nothing to switch from')
-    if values['LIVEKIT_URL'] == a.url:
-        sys.exit(f'LIVEKIT_URL already points at {a.url}')
-    key, secret = read_selfhost_keys(a.secrets)
+
+    if a.cmd == 'to-selfhost':
+        key, secret = read_selfhost_keys(a.secrets)
+        switch(a.env, lines, values, a.url, key, secret, 'self-hosted')
+        return
+
+    # to-cloud: the Cloud values from the previous pair (+ LIVEKIT_EXTRA_URLS), or from a backup.
+    if a.cloud_from:
+        src = a.cloud_from
+        if not os.path.basename(src).startswith(os.path.basename(a.env) + '.livekit-backup-'):
+            sys.exit('--cloud-from takes a backup written by this script')
+        if stat.S_IMODE(os.stat(src).st_mode) & 0o077:
+            sys.exit(f'{src} must not be readable by group or others')
+        _, old = read_env(src)
+        url, key, secret = old.get('LIVEKIT_URL', ''), old.get('LIVEKIT_API_KEY', ''), old.get('LIVEKIT_API_SECRET', '')
+    else:
+        extra = values.get('LIVEKIT_EXTRA_URLS', '').split(',')
+        url = extra[0].strip() if len(extra) == 1 else ''
+        key, secret = values.get('LIVEKIT_PREVIOUS_API_KEY', ''), values.get('LIVEKIT_PREVIOUS_API_SECRET', '')
+    if not (url and key and secret):
+        sys.exit('no LiveKit Cloud values to go back to: the previous pair and LIVEKIT_EXTRA_URLS are gone; pass --cloud-from <backup written by to-selfhost>')
+    switch(a.env, lines, values, url, key, secret, 'LiveKit Cloud')
+
+
+def switch(path, lines, values, url, key, secret, label):
+    """Make (url, key, secret) current and keep the current server as the previous one."""
+    if not re.match(r'^wss://[A-Za-z0-9.-]+(:\d+)?$', url):
+        sys.exit('the target URL must be wss://<host>[:port]')
+    if len(secret) < 32:
+        sys.exit('the target secret must be at least 32 characters')
+    if values['LIVEKIT_URL'] == url:
+        sys.exit(f'LIVEKIT_URL already points at {url}')
     if key == values['LIVEKIT_API_KEY']:
-        sys.exit('the self-hosted key name equals the current one; generate a new pair')
-    saved = backup(a.env)
+        sys.exit('the target key name equals the current one; each server needs its own pair')
+    saved = backup(path)
     updates = {
-        'LIVEKIT_URL': a.url,
+        'LIVEKIT_URL': url,
         'LIVEKIT_API_KEY': key,
         'LIVEKIT_API_SECRET': secret,
+        # Rooms still running on the server being left keep sending webhooks: verify them.
         'LIVEKIT_PREVIOUS_API_KEY': values['LIVEKIT_API_KEY'],
         'LIVEKIT_PREVIOUS_API_SECRET': values['LIVEKIT_API_SECRET'],
+        # The web build's CSP must allow both (it does when built with this value).
         'LIVEKIT_EXTRA_URLS': values['LIVEKIT_URL'],
     }
     # The API derives the Twirp address from LIVEKIT_URL; a leftover LIVEKIT_HTTP_URL would still
     # name the old server.
     removals = ('LIVEKIT_HTTP_URL',) if 'LIVEKIT_HTTP_URL' in values else ()
-    write_env(a.env, lines, updates, removals)
-    del secret
-    print('updated ' + ', '.join(updates) + (', removed LIVEKIT_HTTP_URL' if removals else '') + f' in {a.env} (backup {saved}; values not shown)')
+    write_env(path, lines, updates, removals)
+    print(f'switched to {label}: updated ' + ', '.join(updates) + (', removed LIVEKIT_HTTP_URL' if removals else '')
+          + f' in {path} (backup {saved}; values not shown)')
 
 
 if __name__ == '__main__':
