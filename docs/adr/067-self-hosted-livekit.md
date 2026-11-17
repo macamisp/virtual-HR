@@ -55,9 +55,13 @@ How HRVO uses LiveKit (unchanged by this ADR):
 4. **Switching never moves a live call.** Clients keep their connection to the server they joined
    until they leave; new joins go to the new server. The switch is made at a quiet time after
    LiveKit Cloud reports no rooms; the API-only switch and rollback are scripted
-   (`switch-api-env.py`: names only, mode-600 backups). The rollback `to-cloud` is the mirror image
-   of `to-selfhost`: Cloud becomes current and the self-hosted pair becomes the previous one, so
-   rooms still running on the self-hosted server keep closing their attendance.
+   (`switch-api-env.py`: names only). The rollback `to-cloud` is the mirror image of `to-selfhost`:
+   Cloud becomes current and the self-hosted pair becomes the previous one, so rooms still running
+   on the self-hosted server keep closing their attendance; it must run before any rollback of the
+   application images (their CSP does not allow the self-hosted server). `drop-previous` asks the
+   previous server for its rooms and refuses while any remain. Backups of `.env.staging` go to a
+   root-only directory outside the checkout (/var/backups/hrvo-livekit-env), are written atomically
+   and never overwritten.
 5. **Co-located on the application's EC2 host** (operator decision, 2026-11-17: no new paid
    infrastructure; m7i-flex.large, 2 vCPU, 7.6 GB). Limits fit that host: LiveKit 1 GiB / 1 CPU,
    Caddy 128 MiB / 0.5 CPU, Redis 64 MiB / 0.25 CPU, no swap, `oom_score_adj: 500` so the kernel
@@ -73,14 +77,22 @@ How HRVO uses LiveKit (unchanged by this ADR):
    - input: 5349 (plain TURN), 7880 (signalling/Twirp) and 6389 (Redis) answer on loopback only.
    `cap_drop: ALL` + `no-new-privileges` keep any process from changing its group. The table is
    replaced atomically and no other table is touched or flushed; a systemd unit loads it before
-   Docker and a Docker drop-in refuses to start without it (fail closed, like ADR 047). Bridge
+   Docker and a Docker drop-in refuses to start without it (fail closed, like ADR 047). Its one
+   settings file is mandatory, root-owned and strictly parsed, and its group and private ports must
+   equal those of the rendered Compose project, so a changed `LIVEKIT_GID` fails closed instead of
+   leaving the old group protected; `verify` also checks every LiveKit container's group, and
+   `remove` refuses while one runs or the drop-in is installed. Bridge
    networking with a single UDP port would isolate more (no host loopback either) but is
    unrehearsed; the residual risk is that a compromised LiveKit process shares the host's network
    namespace (loopback-bound app ports, password-protected bridges).
 7. **Production compose commands always keep the Supabase overlay.** `prod-compose.sh` (installed
    to /opt/hrvo-livekit, outside the app checkout) is the only documented way to drive the
    application stack: it adds the HTTPS and Supabase overlays and `.env.staging.supabase`, refuses
-   to run when any is missing, and refuses `config` without `-q` and `down`. Without it, recreating
+   to run when any is missing, and runs only an allow-list (`ps`, `images`, `logs`, `version`,
+   `build api|web`, `config -q`, and recreating api/web detached without their dependencies:
+   `prod-compose.sh up -d --no-deps api`); global options, `config`/`convert`
+   with output, `down`, `exec`, `run` and the like are refused, and inherited `COMPOSE_*` variables
+   cleared. Without it, recreating
    the API with the pre-Supabase command would point it at the old local PostgreSQL.
 
 ## Consequences

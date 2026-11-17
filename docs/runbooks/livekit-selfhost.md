@@ -16,10 +16,19 @@ Files: `infra/livekit-selfhost/` — `docker-compose.yml`, `livekit.yaml.tmpl`, 
 1. **The application stack is only ever driven through `/opt/hrvo-livekit/prod-compose.sh`.**
    Production runs on Supabase (ADR 052): a compose command without the Supabase overlay and
    `.env.staging.supabase` recreates the API against the old local PostgreSQL. The wrapper always
-   adds them, refuses to run when any is missing, refuses `config` without `-q` (it prints secrets)
-   and refuses `down`. It lives outside the app checkout, so it is still there after a rollback.
+   adds them, refuses to run when any is missing, and runs only an allow-list: `ps`, `images`,
+   `logs`, `version`, `build api|web`, `config -q`, and recreating api/web detached without their
+   dependencies (`prod-compose.sh up -d --no-deps api`). Everything else is
+   refused: options before the subcommand (`-f`, `-p`, `--profile`, `--ansi`, ...), `config`/`convert`
+   with output (they print every secret), `down`, `stop`, `rm`, `restart`, `exec`, `run`, unknown
+   flags and services. It clears inherited `COMPOSE_*`/`DOCKER_HOST` variables. It lives outside the
+   app checkout, so it is still there after a rollback. Anything outside the allow-list needs a
+   reviewed change to the wrapper, not a workaround.
 2. **The LiveKit project (`/opt/hrvo-livekit`, plain `docker compose`) never starts unless
-   `hrvo-livekit-guard check` and `hrvo-imds-guard check` both pass.**
+   `hrvo-livekit-guard check` and `hrvo-imds-guard check` both pass, and `hrvo-livekit-guard verify`
+   passes after every start.**
+3. **Rollback order: `switch-api-env.py to-cloud` first, application images second.** The previous
+   web image's Content Security Policy does not allow the self-hosted server.
 
 ## 1. What runs where
 
@@ -114,9 +123,11 @@ cp livekit.env.example livekit.env      # set ACME_EMAIL, ACME_CA=staging, NODE_
 ./configure.sh init-secrets             # secrets.env + redis.env (600); prints the key NAME only
 ./configure.sh render                   # generated/*.yaml, generated/hrvo-livekit-guard.default, .env
 
-# 3. Host guard, next to ADR 047's (fail closed: Docker requires both).
+# 3. Host guard, next to ADR 047's (fail closed: Docker requires both). The settings file is
+#    mandatory (root-owned, not writable by others) and must name the same group and private ports
+#    as the rendered Compose project (.env): check/apply refuse otherwise.
 sudo install -m 755 livekit-guard.sh /usr/local/sbin/hrvo-livekit-guard
-sudo install -m 644 generated/hrvo-livekit-guard.default /etc/default/hrvo-livekit-guard
+sudo install -o root -g root -m 644 generated/hrvo-livekit-guard.default /etc/default/hrvo-livekit-guard
 sudo install -m 644 hrvo-livekit-guard.service /etc/systemd/system/hrvo-livekit-guard.service
 sudo hrvo-livekit-guard apply           # one transaction on its own table; other tables untouched
 sudo hrvo-imds-guard check              # ADR 047 still loaded and correct
@@ -132,8 +143,19 @@ sudo -n docker compose config --format json | sudo -n docker run --rm -i --netwo
 
 # 5. Start (only after the security group rules and the two DNS-only records exist).
 sudo hrvo-livekit-guard check && sudo hrvo-imds-guard check && sudo -n docker compose pull && sudo -n docker compose up -d
+sudo hrvo-livekit-guard verify           # every LiveKit container (running or stopped) has LIVEKIT_GID
 sudo -n docker compose ps                # livekit and redis healthy, caddy running
 /opt/hrvo-livekit/prod-compose.sh ps    # the application's containers: same IDs, still healthy
+```
+
+Changing `LIVEKIT_GID` later (all four steps, in this order; the guard refuses in between, which is
+the point):
+
+```sh
+./configure.sh render                                                     # .env + settings: new group
+sudo install -o root -g root -m 644 generated/hrvo-livekit-guard.default /etc/default/hrvo-livekit-guard
+sudo hrvo-livekit-guard apply                                             # the table now protects the new group
+sudo -n docker compose up -d --force-recreate && sudo hrvo-livekit-guard verify   # containers follow
 ```
 
 Verify the metadata service is unreachable from **every** LiveKit container (each must time out;
@@ -173,16 +195,21 @@ hours. Certificates renew automatically (Caddy).
 ### Regression tests (repository; no containers, no root)
 
 - `npm run test:livekit-guard`: a user + network namespace plays the EC2 host (fake metadata
-  service, Internet client, API and web bridges, unrelated nftables tables). Proves: every LiveKit
-  identity (uid 0 and 999, group 64900) is cut off from IPv4/IPv6 metadata and the IMDSv2 token;
-  ADR 047 still lets only the API through; 5349/7880/6389 closed from outside but open on loopback;
-  443/80/7881/3478 open; other tables byte-identical after apply, re-apply and remove; tampering is
-  detected and repaired; unsafe settings refused.
+  service, Internet client, API and web bridges, unrelated nftables tables, a stub Docker). Proves:
+  every LiveKit identity (uid 0 and 999, group 64900) is cut off from IPv4/IPv6 metadata and the
+  IMDSv2 token; ADR 047 still lets only the API through; 5349/7880/6389 closed from outside but open
+  on loopback; 443/80/7881/3478 open; other tables byte-identical after apply, re-apply and remove;
+  tampering is detected and repaired; a missing, malformed, foreign-owned or world-writable settings
+  file and a group or ports that differ from the Compose project all fail closed (environment
+  variables ignored); a changed group is refused until settings, table and containers all follow
+  (`verify`); `remove` refuses while a LiveKit container runs or the Docker drop-in is installed.
 - `npm run test:imds-guard` (ADR 047) unchanged and passing.
 - `apps/api/test/livekit-selfhost-infra.test.ts` (in `npm test`): compose policy on the shipped file
   and on mutated renderings, digests, Let's Encrypt staging/production rendering and refusals,
-  secret placement, guard rendering, `prod-compose.sh` refusing to run without the Supabase overlay,
-  this runbook's commands, and the `to-cloud` rollback verified through the API's own webhook check.
+  secret placement, guard settings and systemd units, `prod-compose.sh` (Supabase overlay, the
+  allow-list and every bypass from the review), this runbook's commands, backups (private directory
+  outside the checkout, atomic, never overwritten), the drain check of `drop-previous` against a
+  stand-in LiveKit server, and the `to-cloud` rollback verified through the API's own webhook check.
   `docker compose config` and `caddy validate` run there when `DOCKER_COMPOSE` / `CADDY_BIN` are
   available (not on the workstation that wrote them: see the ADR 067 report).
 
@@ -261,9 +288,19 @@ a sign-in work; the API log shows no local `postgres` host).
    room.
 
 **Phase C — drain.** Calls that were on Cloud keep running there until they end; their webhooks
-still verify ("via previous key"). When none appear for a day and Cloud shows no rooms:
+still verify ("via previous key"). When none appear for a day:
 `sudo python3 /opt/hrvo-livekit/switch-api-env.py --env .env.staging drop-previous`, then
-`/opt/hrvo-livekit/prod-compose.sh up -d --no-deps api`.
+`/opt/hrvo-livekit/prod-compose.sh up -d --no-deps api`. `drop-previous` asks the previous server
+(ListRooms with its own key) and refuses while it reports rooms or cannot be asked;
+`--confirm-no-rooms` is for a server that is gone, after the operator has checked by other means.
+
+**Backups.** Every change made by `switch-api-env.py` first writes a backup of `.env.staging` to
+`/var/backups/hrvo-livekit-env` (created root-only, mode 700; files mode 600), never into the app
+checkout: atomically (temp file, fsync, link into a name that cannot already exist), named
+`.env.staging.<UTC time to the microsecond>.before-<command>.bak`, never overwritten and never
+deleted by the script. `switch-api-env.py --env .env.staging list-backups` lists them (no values).
+They contain every production secret: delete old ones deliberately, by hand, once the switch-over
+is closed.
 
 **Phase D — retire Cloud** after an agreed clean period (e.g. two weeks): revoke the Cloud key pair
 in the LiveKit Cloud dashboard. Until then it is the rollback.
@@ -273,24 +310,31 @@ that `meeting_participants` closes, the office voice dots, and the API log for w
 
 ## 7. Rollback
 
-- **After Phase B (API on the self-hosted server):**
-  ```sh
-  cd /opt/virtual-hr/app
-  sudo python3 /opt/hrvo-livekit/switch-api-env.py --env .env.staging to-cloud
-  #   (after drop-previous: add --cloud-from .env.staging.livekit-backup-<timestamp of to-selfhost>)
-  /opt/hrvo-livekit/prod-compose.sh up -d --no-deps api
-  ```
-  New joins go back to Cloud at once (the web image allows both). The self-hosted pair becomes the
-  previous one, so rooms still running on the self-hosted server keep closing their attendance
-  through webhooks. Keep the LiveKit stack running until `check.py --secrets` lists no rooms, then
-  `drop-previous` and stop it. (`restore <backup>` puts a file back byte for byte but forgets the
-  self-hosted pair: last resort only.)
-- **After Phase A (new images):** retag the `:pre-adr067` images to the live tags,
-  `git -C /opt/virtual-hr/app checkout --detach <previous commit>`, then
-  `/opt/hrvo-livekit/prod-compose.sh up -d --no-deps api web` (the wrapper is outside the checkout,
-  so it still exists). The schema is unchanged.
-- **The LiveKit stack itself:** in /opt/hrvo-livekit, `sudo -n docker compose down`; then remove the
-  docker drop-in (`/etc/systemd/system/docker.service.d/hrvo-livekit-guard.conf`),
-  `sudo systemctl disable hrvo-livekit-guard.service`, `sudo hrvo-livekit-guard remove` (deletes only
-  its own table), the security group rules and the two DNS records. Nothing in the application
-  database depends on it.
+**Order matters: step 1 before step 2.** The previous web image's Content Security Policy does not
+allow the self-hosted server, so rolling back images while the API still hands out self-hosted
+tokens breaks every call.
+
+1. **The API back to LiveKit Cloud (if Phase B happened):**
+   ```sh
+   cd /opt/virtual-hr/app
+   sudo python3 /opt/hrvo-livekit/switch-api-env.py --env .env.staging to-cloud
+   /opt/hrvo-livekit/prod-compose.sh up -d --no-deps api
+   ```
+   `to-cloud` takes the Cloud values from the previous pair, or (after a `drop-previous`) from the
+   newest `before-to-selfhost` backup (or `--cloud-from <path from list-backups>`). It refuses when
+   already on Cloud. New joins go back to Cloud at once (the web image allows both). The self-hosted
+   pair becomes the previous one, so rooms still running on the self-hosted server keep closing
+   their attendance through webhooks. **Keep the self-hosted stack running and
+   `/opt/hrvo-livekit/secrets.env` in place until those rooms have drained**; `drop-previous` checks
+   that before it removes the pair. (`restore <backup>` puts a file back byte for byte but forgets
+   the self-hosted pair: last resort only.)
+2. **The application images (if Phase A must be undone; only after step 1):** retag the
+   `:pre-adr067` images to the live tags, `git -C /opt/virtual-hr/app checkout --detach <previous commit>`,
+   then `/opt/hrvo-livekit/prod-compose.sh up -d --no-deps api web` (the wrapper is outside the
+   checkout, so it still exists). The schema is unchanged.
+3. **The LiveKit stack itself (only after step 1 and the drain):** in /opt/hrvo-livekit,
+   `sudo -n docker compose down`; then remove the docker drop-in
+   (`/etc/systemd/system/docker.service.d/hrvo-livekit-guard.conf`) and `sudo systemctl daemon-reload`,
+   `sudo systemctl disable hrvo-livekit-guard.service`, `sudo hrvo-livekit-guard remove` (deletes only
+   its own table; it refuses while a LiveKit container runs or the drop-in is still installed), then
+   the security group rules and the two DNS records. Nothing in the application database depends on it.

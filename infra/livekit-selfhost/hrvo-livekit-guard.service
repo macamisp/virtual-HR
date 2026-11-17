@@ -13,7 +13,8 @@ Conflicts=shutdown.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-EnvironmentFile=-/etc/default/hrvo-livekit-guard
+# The one mandatory settings file (missing or malformed: the guard fails, so this fails closed).
+Environment=HRVO_LIVEKIT_GUARD_SETTINGS=/etc/default/hrvo-livekit-guard
 ExecStart=/usr/local/sbin/hrvo-livekit-guard apply
 # Stopping this unit does not remove the rules; rolling back is `hrvo-livekit-guard remove`.
 

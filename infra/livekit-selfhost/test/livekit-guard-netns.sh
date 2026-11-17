@@ -34,7 +34,39 @@ cleanup() { kill "${imds_pid:-}" "${listen_pid:-}" 2>/dev/null || true; rm -rf "
 trap cleanup EXIT
 
 GID=64900
-export LIVEKIT_GID=$GID LIVEKIT_PRIVATE_TCP_PORTS="5349 7880 6389" TUNNEL_GROUP=""
+export TUNNEL_GROUP=""
+# The guard's mandatory settings file and the rendered Compose project it must agree with
+# (configure.sh writes both). A stub `docker` stands in for the daemon (verify/remove).
+cfg="$work/cfg"; mkdir -p "$cfg"
+settings="$cfg/hrvo-livekit-guard"; compose_env="$cfg/compose.env"; dropin="$cfg/dropin.conf"
+write_settings() { # write_settings <gid> [ports]   (a new file: owner root, mode 644)
+  rm -f "$settings"
+  printf '# test\nLIVEKIT_GID=%s\nLIVEKIT_PRIVATE_TCP_PORTS="%s"\nLIVEKIT_COMPOSE_ENV=%s\n' "$1" "${2:-5349 7880 6389}" "$compose_env" > "$settings"
+  chmod 644 "$settings"
+}
+write_compose_env() { printf 'LIVEKIT_PORT=7880\nREDIS_PORT=6389\nCADDY_TLS_PORT=443\nTURN_TLS_PORT=5349\nLIVEKIT_GID=%s\n' "$1" > "$compose_env"; }
+cat > "$cfg/docker" <<'STUB'
+#!/bin/sh
+# Stub Docker: STUB_CONTAINERS="id,name,user,state ..." (user may contain ":"); STUB_DOWN=1 = daemon not answering.
+[ "${STUB_DOWN:-}" = 1 ] && exit 1
+case "$1" in
+  info) exit 0 ;;
+  ps) all=0; for a in "$@"; do [ "$a" = -a ] && all=1; done
+      for c in ${STUB_CONTAINERS:-}; do IFS=, read -r id name user run <<EOT
+$c
+EOT
+        if [ "$all" = 1 ] || [ "$run" = running ]; then case "$*" in *'{{.ID}}'*) echo "$id $name";; *) echo "$name";; esac; fi
+      done ;;
+  inspect) id=$(eval echo "\${$#}"); for c in ${STUB_CONTAINERS:-}; do IFS=, read -r cid name user run <<EOT
+$c
+EOT
+        [ "$cid" = "$id" ] && echo "$user"; done ;;
+esac
+exit 0
+STUB
+chmod 755 "$cfg/docker"
+export HRVO_LIVEKIT_GUARD_SETTINGS="$settings" HRVO_LIVEKIT_GUARD_DROPIN="$dropin" HRVO_LIVEKIT_GUARD_DOCKER="$cfg/docker"
+write_settings $GID; write_compose_env $GID
 fails=0
 pass() { echo "ok   $*"; }
 fail() { echo "FAIL $*"; fails=$((fails + 1)); }
@@ -201,12 +233,69 @@ h="$(nft -a list chain inet hrvo_livekit input | grep -F 'dport' | grep -o 'hand
 nft delete rule inet hrvo_livekit input handle "$h"
 bash "$guard" check >/dev/null 2>&1 && fail "check fails when the inbound rule is missing" || pass "check fails when the inbound rule is missing"
 bash "$guard" apply >/dev/null
-LIVEKIT_GID='0; flush ruleset' bash "$guard" render >/dev/null 2>&1 && fail "rejects an unsafe LIVEKIT_GID" || pass "rejects an unsafe LIVEKIT_GID"
-LIVEKIT_GID=0 bash "$guard" render >/dev/null 2>&1 && fail "rejects group 0 (would cut root off IMDS)" || pass "rejects group 0 (would cut root off IMDS)"
-LIVEKIT_PRIVATE_TCP_PORTS='5349 } accept; {' bash "$guard" render >/dev/null 2>&1 && fail "rejects unsafe port lists" || pass "rejects unsafe port lists"
+
+echo "# Finding 2: the settings file is mandatory, strict and must match the Compose project"
+LIVEKIT_GID=1234 LIVEKIT_PRIVATE_TCP_PORTS=22 bash "$guard" check >/dev/null 2>&1 && pass "environment variables of the same names are ignored" || fail "environment variables of the same names are ignored"
+refuses() { # refuses <description> <expected message (ERE)> <command...>: fails for that reason, table unchanged
+  local desc=$1 why=$2 before err; shift 2
+  before="$(nft -s list table inet hrvo_livekit 2>/dev/null || true)"
+  if err="$("$@" 2>&1 >/dev/null)"; then fail "$desc (it succeeded)"; return; fi
+  grep -qE -- "$why" <<<"$err" || { fail "$desc (wrong reason: $err)"; return; }
+  [[ "$(nft -s list table inet hrvo_livekit 2>/dev/null || true)" == "$before" ]] && pass "refuses: $desc" || fail "$desc (table changed)"
+}
+mv "$settings" "$settings.bak"
+refuses "missing settings file: check" "is missing" bash "$guard" check
+refuses "missing settings file: apply" "is missing" bash "$guard" apply
+refuses "missing settings file: render" "is missing" bash "$guard" render
+mv "$settings.bak" "$settings"
+malformed() { # malformed <description> <file content> <expected message>
+  printf '%s\n' "$2" > "$settings"; chmod 644 "$settings"
+  refuses "malformed settings ($1): apply" "$3" bash "$guard" apply
+  refuses "malformed settings ($1): check" "$3" bash "$guard" check
+}
+malformed "unknown key" "$(printf 'LIVEKIT_GID=%s\nLIVEKIT_PRIVATE_TCP_PORTS="5349 7880 6389"\nLIVEKIT_COMPOSE_ENV=%s\nEXTRA=1' $GID "$compose_env")" "not an allowed setting line"
+malformed "injection in the group" "$(printf 'LIVEKIT_GID=%s; flush ruleset\nLIVEKIT_PRIVATE_TCP_PORTS="5349 7880 6389"\nLIVEKIT_COMPOSE_ENV=%s' $GID "$compose_env")" "not an allowed setting line"
+malformed "injection in the ports" "$(printf 'LIVEKIT_GID=%s\nLIVEKIT_PRIVATE_TCP_PORTS="5349 } accept; {"\nLIVEKIT_COMPOSE_ENV=%s' $GID "$compose_env")" "not an allowed setting line"
+malformed "group 0" "$(printf 'LIVEKIT_GID=0\nLIVEKIT_PRIVATE_TCP_PORTS="5349 7880 6389"\nLIVEKIT_COMPOSE_ENV=%s' "$compose_env")" "from 1000 to 65533"
+malformed "group set twice" "$(printf 'LIVEKIT_GID=%s\nLIVEKIT_GID=65000\nLIVEKIT_PRIVATE_TCP_PORTS="5349 7880 6389"\nLIVEKIT_COMPOSE_ENV=%s' $GID "$compose_env")" "set twice"
+malformed "no ports" "$(printf 'LIVEKIT_GID=%s\nLIVEKIT_COMPOSE_ENV=%s' $GID "$compose_env")" "LIVEKIT_PRIVATE_TCP_PORTS is missing"
+malformed "no Compose project" "$(printf 'LIVEKIT_GID=%s\nLIVEKIT_PRIVATE_TCP_PORTS="5349 7880 6389"' $GID)" "LIVEKIT_COMPOSE_ENV is missing"
+malformed "shell syntax" "$(printf 'export LIVEKIT_GID=%s\nLIVEKIT_PRIVATE_TCP_PORTS="5349 7880 6389"\nLIVEKIT_COMPOSE_ENV=%s' $GID "$compose_env")" "not an allowed setting line"
+write_settings $GID; chmod 666 "$settings"
+refuses "settings writable by others" "writable by group or others" bash "$guard" check
+write_settings $GID; chown 1000 "$settings"
+refuses "settings not owned by root" "owned by root" bash "$guard" check
+write_settings $GID
+bash "$guard" check >/dev/null && pass "valid settings: check passes" || fail "valid settings: check passes"
+
+echo "# a changed LIVEKIT_GID fails closed until the guard and the containers follow"
+write_compose_env 65000     # configure.sh render with LIVEKIT_GID=65000, settings not yet reinstalled
+refuses "Compose project uses 65000, guard settings 64900: check" "LIVEKIT_GID differs" bash "$guard" check
+refuses "Compose project uses 65000, guard settings 64900: apply" "LIVEKIT_GID differs" bash "$guard" apply
+write_settings 65000        # the operator installs the newly rendered settings ...
+refuses "settings 65000 while the loaded table still protects 64900: check" "skgid 65000" bash "$guard" check
+bash "$guard" apply >/dev/null && pass "... and applies: the table now protects 65000" || fail "apply with 65000"
+expect 000 "a process with the new group 65000 is blocked" "$(as_http 0 65000 "$IMDS")"
+export STUB_CONTAINERS="c1,hrvo-livekit-livekit-1,0:64900,running c2,hrvo-livekit-redis-1,redis:64900,running"
+refuses "verify: containers still run with the old group 64900" "runs with group 64900, the guard protects group 65000" bash "$guard" verify
+export STUB_CONTAINERS="c1,hrvo-livekit-livekit-1,0:65000,running c2,hrvo-livekit-caddy-1,0:65000,exited"
+bash "$guard" verify >/dev/null && pass "verify passes once every container (running or stopped) uses 65000" || fail "verify with 65000"
+export STUB_CONTAINERS="c1,hrvo-livekit-livekit-1,0,running"
+refuses "verify: a container without an explicit group" "without an explicit group" bash "$guard" verify
+STUB_DOWN=1 bash "$guard" verify >/dev/null 2>&1 && fail "verify fails when Docker cannot be asked" || pass "verify fails when Docker cannot be asked"
+unset STUB_CONTAINERS
+write_compose_env $GID; write_settings $GID; bash "$guard" apply >/dev/null
 
 echo "# rollback"
-bash "$guard" remove >/dev/null && pass "remove succeeds" || fail "remove succeeds"
+export STUB_CONTAINERS="c1,hrvo-livekit-livekit-1,0:64900,running"
+refuses "remove while a LiveKit container runs" "containers are running" bash "$guard" remove
+nft list table inet hrvo_livekit >/dev/null 2>&1 && pass "the table is still loaded after the refused remove" || fail "table kept after refused remove"
+export STUB_CONTAINERS="c1,hrvo-livekit-livekit-1,0:64900,exited"
+touch "$dropin"
+refuses "remove while the Docker drop-in is installed" "drop-in .* is still installed" bash "$guard" remove
+rm -f "$dropin"
+bash "$guard" remove >/dev/null && pass "remove succeeds (containers stopped, drop-in removed)" || fail "remove succeeds"
+unset STUB_CONTAINERS
 bash "$guard" check >/dev/null 2>&1 && fail "check fails after remove" || pass "check fails after remove"
 expect "$before" "other tables are byte-identical after remove" "$(snapshot)"
 expect 200 "after remove the LiveKit group reaches IMDS again (the table was the cause)" "$(as_http 0 $GID "$IMDS")"

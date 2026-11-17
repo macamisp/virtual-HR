@@ -13,8 +13,8 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -329,50 +329,129 @@ describe("Let's Encrypt issuer and secrets (P8; ADR 067)", () => {
 });
 
 // ------------------------------------------------------------------------------------------------
-describe('host guard: metadata and inbound ports (P1, P3; ADR 067, ADR 047)', () => {
+describe('host guard: metadata, inbound ports, mandatory settings (P1, P3, Finding 2; ADR 067, ADR 047)', () => {
   const guard = join(BUNDLE, 'livekit-guard.sh');
-  const render = (env: Record<string, string> = {}) => run('bash', [guard, 'render'], { env: { LIVEKIT_GID: GID, LIVEKIT_PRIVATE_TCP_PORTS: '5349 7880 6389', ...env } });
+  /** A settings file + matching Compose .env in a temp dir; returns the env for the guard. */
+  function guardFiles(opts: { gid?: string; composeGid?: string; ports?: string; settings?: string; mode?: number } = {}): { dir: string; env: Record<string, string> } {
+    const dir = mkdtempSync(join(tmpdir(), 'hrvo-guard-'));
+    const composeEnv = join(dir, 'compose.env');
+    writeFileSync(composeEnv, `LIVEKIT_PORT=7880\nREDIS_PORT=6389\nCADDY_TLS_PORT=443\nTURN_TLS_PORT=5349\nLIVEKIT_GID=${opts.composeGid ?? GID}\n`);
+    const settings = join(dir, 'settings');
+    writeFileSync(settings, opts.settings ?? `LIVEKIT_GID=${opts.gid ?? GID}\nLIVEKIT_PRIVATE_TCP_PORTS="${opts.ports ?? '5349 7880 6389'}"\nLIVEKIT_COMPOSE_ENV=${composeEnv}\n`);
+    chmodSync(settings, opts.mode ?? 0o644);
+    return { dir, env: { HRVO_LIVEKIT_GUARD_SETTINGS: settings, HRVO_LIVEKIT_GUARD_DROPIN: join(dir, 'dropin.conf'), HRVO_LIVEKIT_GUARD_DOCKER: join(dir, 'no-docker') } };
+  }
+  const guardRun = (cmd: string, env: Record<string, string>) => run('bash', [guard, cmd], { env });
 
   it('renders one table of its own: metadata dropped for the LiveKit group, 5349/7880/6389 loopback only', () => {
-    const r = render();
-    assert.equal(r.status, 0, r.stderr);
-    const tables = [...r.stdout.matchAll(/^table (.+) \{$/gm)].map((m) => m[1]);
-    assert.deepEqual(tables, ['inet hrvo_livekit']);
-    assert.match(r.stdout, new RegExp(`meta skgid ${GID} ip daddr 169\\.254\\.169\\.254 counter drop`));
-    assert.match(r.stdout, new RegExp(`meta skgid ${GID} ip6 daddr fd00:ec2::254 counter drop`));
-    assert.match(r.stdout, /iifname != "lo" tcp dport \{ 5349, 6389, 7880 \} counter drop/);
-    assert.doesNotMatch(r.stdout, /flush|hrvo_imds/);
+    const g = guardFiles();
+    try {
+      const r = guardRun('render', g.env);
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual([...r.stdout.matchAll(/^table (.+) \{$/gm)].map((m) => m[1]), ['inet hrvo_livekit']);
+      assert.match(r.stdout, new RegExp(`meta skgid ${GID} ip daddr 169\\.254\\.169\\.254 counter drop`));
+      assert.match(r.stdout, new RegExp(`meta skgid ${GID} ip6 daddr fd00:ec2::254 counter drop`));
+      assert.match(r.stdout, /iifname != "lo" tcp dport \{ 5349, 6389, 7880 \} counter drop/);
+      assert.doesNotMatch(r.stdout, /flush|hrvo_imds/);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); }
   });
 
-  it('never flushes or deletes anything but its own table', () => {
+  it('never flushes, and deletes no table but its own', () => {
     const code = readFileSync(guard, 'utf8').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
     assert.doesNotMatch(code, /flush\s+(ruleset|table|chain)/);
-    for (const m of code.matchAll(/delete table ([^"\s]+(?: [^"\s]+)?)/g)) assert.equal(m[1], '$TABLE');
+    for (const m of code.matchAll(/delete table ([^"\s;]+(?: [^"\s;]+)?)/g)) assert.equal(m[1], '$TABLE');
     assert.match(code, /TABLE='inet hrvo_livekit'/);
   });
 
-  it('refuses values that would inject nftables syntax or cut root off the metadata service', () => {
-    assert.notEqual(render({ LIVEKIT_GID: '0' }).status, 0);
-    assert.notEqual(render({ LIVEKIT_GID: '64900; flush ruleset' }).status, 0);
-    assert.notEqual(render({ LIVEKIT_PRIVATE_TCP_PORTS: '5349 } accept; {' }).status, 0);
+  it('ignores environment variables of the setting names: only the settings file counts', () => {
+    const g = guardFiles();
+    try {
+      const r = guardRun('render', { ...g.env, LIVEKIT_GID: '1234', LIVEKIT_PRIVATE_TCP_PORTS: '22' });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, new RegExp(`skgid ${GID} `));
+      assert.doesNotMatch(r.stdout, /1234|dport \{ 22 \}/);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); }
   });
 
-  it('the guard settings written by configure.sh match the Compose group', () => {
+  for (const [what, opts, message] of [
+    ['a missing settings file', { settings: '' }, /is missing/],
+    ['an unknown setting', { settings: `LIVEKIT_GID=${GID}\nLIVEKIT_PRIVATE_TCP_PORTS="5349 7880 6389"\nLIVEKIT_COMPOSE_ENV=/x/.env\nFOO=1\n` }, /not an allowed setting line/],
+    ['shell code in the group', { settings: `LIVEKIT_GID=${GID}; flush ruleset\nLIVEKIT_PRIVATE_TCP_PORTS="5349 7880 6389"\nLIVEKIT_COMPOSE_ENV=/x/.env\n` }, /not an allowed setting line/],
+    ['nft syntax in the ports', { ports: '5349 } accept; {' }, /not an allowed setting line/],
+    ['group 0', { gid: '0', composeGid: '0' }, /from 1000 to 65533/],
+    ['a group set twice', { settings: `LIVEKIT_GID=${GID}\nLIVEKIT_GID=65000\n` }, /set twice/],
+    ['no Compose project named', { settings: `LIVEKIT_GID=${GID}\nLIVEKIT_PRIVATE_TCP_PORTS="5349 7880 6389"\n` }, /LIVEKIT_COMPOSE_ENV is missing/],
+    ['a settings file writable by others', { mode: 0o666 }, /writable by group or others/],
+    ['a Compose project rendered with another group (changed LIVEKIT_GID)', { composeGid: '65000' }, /LIVEKIT_GID differs: .* has 64900, the Compose project .* has 65000/],
+    ['private ports that differ from the Compose project', { ports: '5349 7880 6390' }, /private ports differ/],
+  ] as Array<[string, Parameters<typeof guardFiles>[0], RegExp]>) {
+    it(`fails closed on ${what}`, () => {
+      const g = guardFiles(opts);
+      try {
+        if (opts?.settings === '') rmSync(g.env.HRVO_LIVEKIT_GUARD_SETTINGS!);
+        for (const cmd of ['render', 'check', 'apply']) {
+          const r = guardRun(cmd, g.env);
+          assert.notEqual(r.status, 0, `${cmd} must fail`);
+          assert.match(r.stderr, message, `${cmd}: ${r.stderr}`);
+        }
+      } finally { rmSync(g.dir, { recursive: true, force: true }); }
+    });
+  }
+
+  it('the systemd unit and the Docker drop-in use the same mandatory settings file (no optional EnvironmentFile)', () => {
+    const unit = readFileSync(join(BUNDLE, 'hrvo-livekit-guard.service'), 'utf8');
+    const dropin = readFileSync(join(BUNDLE, 'docker-hrvo-livekit-guard.conf'), 'utf8');
+    for (const [name, text] of [['unit', unit], ['drop-in', dropin]] as const) {
+      assert.doesNotMatch(text, /^EnvironmentFile=/m, `${name}: no optional EnvironmentFile`);
+      assert.match(text, /^Environment=HRVO_LIVEKIT_GUARD_SETTINGS=\/etc\/default\/hrvo-livekit-guard$/m, `${name}: the settings file`);
+    }
+    assert.match(unit, /^ExecStart=\/usr\/local\/sbin\/hrvo-livekit-guard apply$/m);
+    assert.match(unit, /^Before=.*docker\.service/m);
+    assert.match(dropin, /^ExecStartPre=\/usr\/local\/sbin\/hrvo-livekit-guard check$/m, 'Docker refuses to start unless check passes');
+    assert.match(dropin, /^After=hrvo-livekit-guard\.service$/m);
+    // check/apply never call Docker (they run while docker.service starts).
+    const code = readFileSync(guard, 'utf8');
+    const branch = (c: string) => (new RegExp(`^  ${c}\\)([\\s\\S]*?);;`, 'm').exec(code) ?? [])[1] ?? '';
+    for (const c of ['check', 'apply']) assert.doesNotMatch(branch(c), /verify_containers|docker_up|DOCKER/, `${c} must not call Docker`);
+    assert.match(branch('verify'), /verify_containers/);
+  });
+
+  it('remove refuses while a LiveKit container runs, or while the Docker drop-in is installed', () => {
+    const g = guardFiles();
+    try {
+      const stub = join(g.dir, 'docker');
+      writeFileSync(stub, '#!/bin/sh\ncase "$1" in info) exit 0;; ps) echo hrvo-livekit-livekit-1;; esac\n', { mode: 0o755 });
+      const running = guardRun('remove', { ...g.env, HRVO_LIVEKIT_GUARD_DOCKER: stub });
+      assert.notEqual(running.status, 0);
+      assert.match(running.stderr, /LiveKit containers are running \(hrvo-livekit-livekit-1\)/);
+      writeFileSync(stub, '#!/bin/sh\ncase "$1" in info) exit 0;; ps) exit 1;; esac\n', { mode: 0o755 });
+      const unknown = guardRun('remove', { ...g.env, HRVO_LIVEKIT_GUARD_DOCKER: stub });
+      assert.notEqual(unknown.status, 0, 'cannot list containers: refused');
+      assert.match(unknown.stderr, /cannot list the running LiveKit containers/);
+      writeFileSync(g.env.HRVO_LIVEKIT_GUARD_DROPIN!, '[Service]\n');
+      const dropin = guardRun('remove', g.env);
+      assert.notEqual(dropin.status, 0);
+      assert.match(dropin.stderr, /drop-in .* is still installed/);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); }
+  });
+
+  it('the settings rendered by configure.sh are accepted and match the Compose group', () => {
     const dir = bundle(SETTINGS);
     try {
       assert.equal(configure(dir, 'init-secrets').status, 0);
       assert.equal(configure(dir, 'render').status, 0);
-      const defaults = readFileSync(join(dir, 'generated', 'hrvo-livekit-guard.default'), 'utf8');
-      const env = Object.fromEntries(defaults.trim().split('\n').map((l) => { const [k, ...v] = l.split('='); return [k!, v.join('=').replace(/^"|"$/g, '')]; }));
-      const r = render(env);
-      assert.equal(r.status, 0);
+      const settings = join(dir, 'generated', 'hrvo-livekit-guard.default');
+      assert.equal(envValue(settings, 'LIVEKIT_COMPOSE_ENV'), join(realpathSync(dir), '.env'));
+      assert.equal(envValue(join(dir, '.env'), 'TURN_TLS_PORT'), '5349');
+      const r = guardRun('render', { HRVO_LIVEKIT_GUARD_SETTINGS: settings });
+      assert.equal(r.status, 0, r.stderr);
       assert.match(r.stdout, new RegExp(`meta skgid ${envValue(join(dir, '.env'), 'LIVEKIT_GID')} ip daddr`));
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   // Functional: a user + network namespace plays the EC2 host (needs unshare with subordinate IDs).
   for (const [name, script, want] of [
-    ['LiveKit guard: metadata unreachable for every LiveKit identity; 5349 closed from outside; other tables untouched', 'infra/livekit-selfhost/test/livekit-guard-netns.sh', 'livekit-guard: all checks passed'],
+    ['LiveKit guard: metadata unreachable for every LiveKit identity; 5349 closed from outside; settings mandatory and matched; verify/remove refusals; other tables untouched', 'infra/livekit-selfhost/test/livekit-guard-netns.sh', 'livekit-guard: all checks passed'],
     ['ADR 047 guard still effective', 'infra/staging-ec2/test/imds-guard-netns.sh', 'imds-guard: all checks passed'],
   ] as const) {
     it(`functional: ${name}`, { timeout: 180_000 }, (t) => {
@@ -385,38 +464,123 @@ describe('host guard: metadata and inbound ports (P1, P3; ADR 067, ADR 047)', ()
 });
 
 // ------------------------------------------------------------------------------------------------
-describe('production compose command keeps the Supabase overlay (P2; ADR 052, ADR 067)', () => {
+describe('production compose wrapper: Supabase overlay always, allow-list only (P2, Finding 1; ADR 052, ADR 067)', () => {
   const wrapper = join(BUNDLE, 'prod-compose.sh');
   const FILES = ['docker-compose.staging.yml', 'docker-compose.staging.ssh.yml', 'docker-compose.staging.https.yml', 'docker-compose.staging.supabase.yml'];
   const ENVS = ['.env.staging', '.env.staging.db', '.env.staging.supabase'];
+  const PREFIX = [
+    'compose',
+    '-f', 'docker-compose.staging.yml', '-f', 'docker-compose.staging.ssh.yml',
+    '-f', 'docker-compose.staging.https.yml', '-f', 'docker-compose.staging.supabase.yml',
+    '--env-file', '.env.staging', '--env-file', '.env.staging.db', '--env-file', '.env.staging.supabase',
+  ];
 
   function app(opts: { omit?: string; noHost?: boolean; overlayWithoutSupabase?: boolean; loose?: string } = {}): { dir: string; stub: string; log: string } {
     const dir = mkdtempSync(join(tmpdir(), 'hrvo-app-'));
     for (const f of FILES) if (f !== opts.omit) writeFileSync(join(dir, f), f.endsWith('supabase.yml') && !opts.overlayWithoutSupabase ? 'services:\n  api:\n    environment:\n      PGHOST: ${SUPABASE_PGHOST:?x}\n' : 'services: {}\n');
-    for (const e of ENVS) if (e !== opts.omit) writeFileSync(join(dir, e), e === '.env.staging.supabase' && !opts.noHost ? 'SUPABASE_PGHOST=db.secret-host.test\n' : 'X=1\n', { mode: e === opts.loose ? 0o644 : 0o600 });
+    for (const e of ENVS) if (e !== opts.omit) writeFileSync(join(dir, e), e === '.env.staging.supabase' && !opts.noHost ? 'SUPABASE_PGHOST=db.secret-host.test\n' : 'X=1\n', { mode: 0o600 });
     if (opts.loose) chmodSync(join(dir, opts.loose), 0o644);
     const log = join(dir, 'docker-args');
     const stub = join(dir, 'docker-stub');
-    writeFileSync(stub, `#!/bin/sh\n{ pwd; printf '%s\\n' "$@"; } > '${log}'\n`, { mode: 0o755 });
+    // Records the working directory, the Compose environment it was given, and every argument.
+    writeFileSync(stub, `#!/bin/sh\n{ pwd; echo "env:\${COMPOSE_PROJECT_NAME-}|\${COMPOSE_PROFILES-}|\${COMPOSE_FILE-}|\${DOCKER_HOST-}"; printf '%s\\n' "$@"; } > '${log}'\n`, { mode: 0o755 });
     return { dir, stub, log };
   }
   const wrap = (a: { dir: string; stub: string }, args: string[], env: Record<string, string> = {}) =>
     run('sh', [wrapper, ...args], { env: { APP_DIR: a.dir, DOCKER_CMD: a.stub, ...env } });
 
-  it('runs docker compose in the app directory with every overlay, the Supabase one last, and its env file', () => {
+  // Allowed: exactly what the runbook needs, passed through unchanged after the fixed prefix.
+  for (const args of [
+    ['up', '-d', '--no-deps', 'api'], ['up', '--no-deps', '-d', 'web', 'api'], ['up', '--detach', '--no-deps', '--no-build', '--wait', 'api'],
+    ['build', 'api', 'web'], ['build', '--pull', '--no-cache', 'api'],
+    ['ps'], ['ps', '-a'], ['ps', '--services'], ['images'], ['version'],
+    ['logs', 'api'], ['logs', '--tail', '100', '--since', '1h', 'api', 'web'], ['logs', '--tail=50', '-t', '--no-color', 'proxy'],
+    ['config', '-q'], ['config', '--quiet'],
+  ]) {
+    it(`allows: ${args.join(' ')}`, () => {
+      const a = app();
+      try {
+        const r = wrap(a, args);
+        assert.equal(r.status, 0, r.stderr);
+        const [cwd, env, ...got] = readFileSync(a.log, 'utf8').trim().split('\n');
+        assert.equal(cwd, a.dir);
+        assert.equal(env, 'env:|||');
+        assert.deepEqual(got, [...PREFIX, ...args]);
+      } finally { rmSync(a.dir, { recursive: true, force: true }); }
+    });
+  }
+
+  // Refused: every bypass from the review and equivalent arrangements. Nothing reaches Docker.
+  for (const [args, why] of [
+    [['config'], /only 'config -q'/],
+    [['config', '--format', 'json'], /only 'config -q'/],
+    [['config', '-q', '--format', 'json'], /only 'config -q'/],
+    [['config', '--environment'], /only 'config -q'/],
+    [['config', '--variables'], /only 'config -q'/],
+    [['config', '-q', '-q'], /only 'config -q'/],
+    [['convert'], /alias of config/],
+    [['convert', '-q'], /alias of config/],
+    [['--profile', 'tools', 'config'], /options before the subcommand/],
+    [['--profile=tools', 'config'], /options before the subcommand/],
+    [['--profile', 'tools', 'config', '--format', 'json'], /options before the subcommand/],
+    [['-p', 'x', 'config'], /options before the subcommand/],
+    [['-px', 'config'], /options before the subcommand/],
+    [['--project-name=x', 'up', '-d', '--no-deps', 'api'], /options before the subcommand/],
+    [['--ansi', 'never', 'down'], /options before the subcommand/],
+    [['--ansi=never', 'down'], /options before the subcommand/],
+    [['--dry-run', 'down'], /options before the subcommand/],
+    [['-f', 'docker-compose.staging.yml', 'up', '-d', '--no-deps', 'api'], /options before the subcommand/],
+    [['--env-file', '.env.staging', 'up', '-d', '--no-deps', 'api'], /options before the subcommand/],
+    [['--project-directory', '/tmp', 'ps'], /options before the subcommand/],
+    [['--', 'config'], /options before the subcommand/],
+    [['down'], /not allowed through this wrapper/],
+    [['down', '-v'], /not allowed through this wrapper/],
+    [['stop', 'api'], /not allowed/], [['kill', 'api'], /not allowed/], [['rm', '-sf', 'api'], /not allowed/],
+    [['restart', 'api'], /not allowed/], [['exec', 'api', 'env'], /not allowed/], [['run', '--rm', 'migrate'], /not allowed/],
+    [['cp', 'api:/run/x', '.'], /not allowed/], [['create', 'api'], /not allowed/], [['start', 'api'], /not allowed/],
+    [['pause', 'api'], /not allowed/], [['scale', 'api=0'], /not allowed/], [['watch'], /not allowed/], [['pull'], /not allowed/],
+    [['Config', '-q'], /unknown compose command/], [['frobnicate'], /unknown compose command/], [[''], /unknown compose command/],
+    [['up'], /-d is required/],
+    [['up', '--no-deps', 'api'], /-d is required/],
+    [['up', '-d', 'api'], /--no-deps is required/],
+    [['up', '-d', '--no-deps'], /name the services/],
+    [['up', '-d', '--no-deps', 'postgres'], /only api web may be recreated/],
+    [['up', '-d', '--no-deps', 'api', 'redis'], /only api web may be recreated/],
+    [['up', '-d', '--no-deps', 'api;down'], /only api web may be recreated/],
+    [['up', '-d', '--no-deps', '--force-recreate', 'api'], /'--force-recreate' is not allowed/],
+    [['up', '-d', '--no-deps', '--remove-orphans', 'api'], /'--remove-orphans' is not allowed/],
+    [['up', '-d', '--no-deps', '-V', 'api'], /'-V' is not allowed/],
+    [['up', '-d', '--no-deps', '--profile', 'tools', 'api'], /'--profile' is not allowed/],
+    [['up', '-d', '--no-deps', '--no-deps=false', 'api'], /'--no-deps=false' is not allowed/],
+    [['up', '-d', '--no-deps', 'api', '--', 'x'], /'--' is not allowed/],
+    [['build', 'postgres'], /only api web may be built/],
+    [['build'], /name the services/],
+    [['build', '--build-arg', 'X=1', 'api'], /'--build-arg' is not allowed/],
+    [['logs', '--tail', '50;down', 'api'], /not a valid value/],
+    [['logs', '--tail'], /needs a value/],
+    [['logs', '--tail=$(id)', 'api'], /invalid value/],
+    [['logs', 'unknown'], /unknown service/],
+    [['logs', '--follow', '--', 'api'], /'--' is not allowed/],
+    [['ps', '--format', 'json'], /'--format' is not allowed/],
+    [['version', '--short'], /takes no arguments/],
+  ] as Array<[string[], RegExp]>) {
+    it(`refuses: ${JSON.stringify(args)}`, () => {
+      const a = app();
+      try {
+        const r = wrap(a, args);
+        assert.notEqual(r.status, 0);
+        assert.match(r.stderr, why);
+        assert.equal(existsSync(a.log), false, 'docker was not run');
+      } finally { rmSync(a.dir, { recursive: true, force: true }); }
+    });
+  }
+
+  it('clears COMPOSE_* and DOCKER_HOST/DOCKER_CONTEXT from the environment', () => {
     const a = app();
     try {
-      const r = wrap(a, ['up', '-d', '--no-deps', 'api']);
+      const r = wrap(a, ['ps'], { COMPOSE_PROJECT_NAME: 'evil', COMPOSE_PROFILES: 'tools', COMPOSE_FILE: '/tmp/x.yml', DOCKER_HOST: 'tcp://203.0.113.1:2375' });
       assert.equal(r.status, 0, r.stderr);
-      const [cwd, ...args] = readFileSync(a.log, 'utf8').trim().split('\n');
-      assert.equal(cwd, a.dir);
-      assert.deepEqual(args, [
-        'compose',
-        '-f', 'docker-compose.staging.yml', '-f', 'docker-compose.staging.ssh.yml',
-        '-f', 'docker-compose.staging.https.yml', '-f', 'docker-compose.staging.supabase.yml',
-        '--env-file', '.env.staging', '--env-file', '.env.staging.db', '--env-file', '.env.staging.supabase',
-        'up', '-d', '--no-deps', 'api',
-      ]);
+      assert.equal(readFileSync(a.log, 'utf8').split('\n')[1], 'env:|||');
     } finally { rmSync(a.dir, { recursive: true, force: true }); }
   });
 
@@ -439,19 +603,15 @@ describe('production compose command keeps the Supabase overlay (P2; ADR 052, AD
     });
   }
 
-  it("refuses 'config' without -q (it prints secrets) and 'down'; --print shows names only", () => {
+  it('--print shows file names only and runs nothing', () => {
     const a = app();
     try {
-      assert.match(wrap(a, ['config']).stderr, /config -q/);
-      assert.equal(wrap(a, ['config', '-q']).status, 0);
-      assert.match(wrap(a, ['down']).stderr, /HRVO_ALLOW_DOWN/);
-      assert.equal(wrap(a, ['down'], { HRVO_ALLOW_DOWN: '1' }).status, 0);
-      rmSync(a.log, { force: true });
       const p = wrap(a, ['--print', 'up', '-d', '--no-deps', 'api']);
       assert.equal(p.status, 0);
       assert.match(p.stdout, /-f docker-compose\.staging\.supabase\.yml --env-file \.env\.staging --env-file \.env\.staging\.db --env-file \.env\.staging\.supabase up -d --no-deps api/);
       assert.doesNotMatch(p.stdout, /secret-host/);
-      assert.equal(existsSync(a.log), false, '--print runs nothing');
+      assert.equal(existsSync(a.log), false);
+      assert.notEqual(wrap(a, ['--print', 'down']).status, 0, '--print does not bypass the allow-list');
     } finally { rmSync(a.dir, { recursive: true, force: true }); }
   });
 
@@ -461,6 +621,7 @@ describe('production compose command keeps the Supabase overlay (P2; ADR 052, AD
       for (const [i, line] of lines.entries()) {
         assert.doesNotMatch(line, /\$C\b|\$NEW\b|\$OLD\b/, `${f}:${i + 1} uses a hand-built compose variable`);
         assert.doesNotMatch(line, /docker compose[^`]*-f docker-compose\.staging/, `${f}:${i + 1} builds the production compose command by hand`);
+        assert.doesNotMatch(line, /HRVO_ALLOW_DOWN/, `${f}:${i + 1} mentions the removed down override`);
         if (/--no-deps/.test(line)) assert.match(line, /prod-compose\.sh/, `${f}:${i + 1} recreates an app container without prod-compose.sh`);
       }
     }
@@ -469,23 +630,26 @@ describe('production compose command keeps the Supabase overlay (P2; ADR 052, AD
 });
 
 // ------------------------------------------------------------------------------------------------
-describe('switching back to LiveKit Cloud keeps verifying self-hosted webhooks (P11; ADR 067)', () => {
+describe('switching LiveKit servers: backups outside the checkout, rollback keeps webhooks verifying (P11, Finding 3; ADR 067)', () => {
   const script = join(BUNDLE, 'switch-api-env.py');
   const cloud = { url: 'wss://proj.livekit.cloud', key: 'APIcloudpair', secret: 'c'.repeat(44) };
   const self = { url: 'wss://livekit.example.test', key: 'APIselfpair', secret: 's'.repeat(48) };
 
-  function setup(): { dir: string; env: string; secrets: string } {
-    const dir = mkdtempSync(join(tmpdir(), 'hrvo-switch-'));
-    const env = join(dir, '.env.staging');
+  function setup(): { app: string; env: string; secrets: string; backups: string; cleanup: () => void } {
+    const app = mkdtempSync(join(tmpdir(), 'hrvo-switch-app-'));
+    const priv = mkdtempSync(join(tmpdir(), 'hrvo-switch-backups-'));
+    const env = join(app, '.env.staging');
     writeFileSync(env, `WEB_URL=https://app.example.test\nLIVEKIT_URL=${cloud.url}\nLIVEKIT_HTTP_URL=https://proj.livekit.cloud\nLIVEKIT_API_KEY=${cloud.key}\n# kept\nLIVEKIT_API_SECRET=${cloud.secret}\nREDIS_PASSWORD=keep\n`, { mode: 0o600 });
-    const secrets = join(dir, 'secrets.env');
+    const secrets = join(priv, 'secrets.env');
     writeFileSync(secrets, `LIVEKIT_KEYS=${self.key}: ${self.secret}\nREDIS_PASSWORD=r\n`, { mode: 0o600 });
-    return { dir, env, secrets };
+    // Not created yet: the script creates it (mode 700).
+    const backups = join(priv, 'env-backups');
+    return { app, env, secrets, backups, cleanup: () => { rmSync(app, { recursive: true, force: true }); rmSync(priv, { recursive: true, force: true }); } };
   }
-  const sw = (env: string, ...args: string[]) => run('python3', ['-I', script, '--env', env, ...args]);
+  const sw = (s: { env: string; backups: string }, ...args: string[]) => run('python3', ['-I', script, '--env', s.env, '--backup-dir', s.backups, ...args]);
   const read = (env: string) => Object.fromEntries(readFileSync(env, 'utf8').split('\n').filter((l) => /^[A-Z0-9_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
-  const noSecrets = (out: string) => { for (const s of [cloud.secret, self.secret]) assert.ok(!out.includes(s), 'no secret printed'); };
-  /** What the API would decide for a webhook from each server, with this env file loaded. */
+  const noSecrets = (out: string) => { for (const sec of [cloud.secret, self.secret]) assert.ok(!out.includes(sec), 'no secret printed'); };
+  const backupsOf = (dir: string) => readdirSync(dir).filter((n) => n.startsWith('.env.staging.')).sort();
   function verdicts(env: string): { fromSelf: string | null; fromCloud: string | null; forged: string | null } {
     const v = read(env);
     const body = JSON.stringify({ event: 'participant_left', room: { name: 'meet-x' } });
@@ -502,56 +666,199 @@ describe('switching back to LiveKit Cloud keeps verifying self-hosted webhooks (
     });
   }
 
-  it('to-selfhost, then to-cloud: Cloud is current again and self-hosted rooms still verify (as previous)', () => {
-    const { dir, env, secrets } = setup();
+  it('to-selfhost then to-cloud: Cloud current again, self-hosted rooms still verify; backups outside the checkout', () => {
+    const s = setup();
     try {
-      const a = sw(env, 'to-selfhost', '--secrets', secrets, '--url', self.url);
+      const a = sw(s, 'to-selfhost', '--secrets', s.secrets, '--url', self.url);
       assert.equal(a.status, 0, a.stderr);
       noSecrets(a.stdout + a.stderr);
-      assert.deepEqual(verdicts(env), { fromSelf: 'current', fromCloud: 'previous', forged: null });
+      assert.deepEqual(verdicts(s.env), { fromSelf: 'current', fromCloud: 'previous', forged: null });
 
-      const b = sw(env, 'to-cloud');
+      const b = sw(s, 'to-cloud');
       assert.equal(b.status, 0, b.stderr);
       noSecrets(b.stdout + b.stderr);
-      const v = read(env);
+      const v = read(s.env);
       assert.equal(v.LIVEKIT_URL, cloud.url);
-      assert.equal(v.LIVEKIT_API_KEY, cloud.key);
-      assert.equal(v.LIVEKIT_PREVIOUS_API_KEY, self.key);
-      assert.equal(v.LIVEKIT_EXTRA_URLS, self.url, 'the CSP keeps allowing the self-hosted server');
+      assert.equal(v.LIVEKIT_PREVIOUS_API_KEY, self.key, 'the self-hosted key stays until drained');
+      assert.equal(v.LIVEKIT_EXTRA_URLS, self.url);
       assert.equal(v.LIVEKIT_HTTP_URL, undefined);
-      assert.equal(v.WEB_URL, 'https://app.example.test');
       assert.equal(v.REDIS_PASSWORD, 'keep');
-      assert.deepEqual(verdicts(env), { fromSelf: 'previous', fromCloud: 'current', forged: null });
-      for (const f of readdirSync(dir).filter((n) => n.startsWith('.env.staging'))) assert.equal(mode(join(dir, f)), '600', f);
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+      assert.deepEqual(verdicts(s.env), { fromSelf: 'previous', fromCloud: 'current', forged: null });
+
+      // Backups: in the private directory (700), each 600, named by time and command; none in the checkout.
+      assert.equal(mode(s.backups), '700');
+      const names = backupsOf(s.backups);
+      assert.equal(names.length, 2);
+      assert.match(names[0]!, /^\.env\.staging\.\d{8}T\d{6}\.\d{6}Z\.before-to-selfhost\.bak$/);
+      assert.match(names[1]!, /\.before-to-cloud\.bak$/);
+      for (const n of names) assert.equal(mode(join(s.backups, n)), '600');
+      assert.deepEqual(readdirSync(s.app).filter((n) => n !== '.env.staging'), [], 'nothing else written into the app directory');
+      assert.match(readFileSync(join(s.backups, names[0]!), 'utf8'), new RegExp(`^LIVEKIT_URL=${cloud.url.replace(/[.]/g, '\\.')}$`, 'm'));
+    } finally { s.cleanup(); }
   });
 
-  it('after drop-previous, to-cloud needs the backup written by to-selfhost, and still keeps the self-hosted pair', () => {
-    const { dir, env, secrets } = setup();
+  it('a second to-cloud is refused (it would otherwise switch to the self-hosted pair kept as previous)', () => {
+    const s = setup();
     try {
-      assert.equal(sw(env, 'to-selfhost', '--secrets', secrets, '--url', self.url).status, 0);
-      const backup = readdirSync(dir).filter((n) => n.startsWith('.env.staging.livekit-backup-')).sort()[0]!;
-      assert.equal(sw(env, 'drop-previous').status, 0);
-      // Within the same second: drop-previous wrote a second backup, the first one is intact.
-      assert.equal(readdirSync(dir).filter((n) => n.startsWith('.env.staging.livekit-backup-')).length, 2);
-      assert.match(readFileSync(join(dir, backup), 'utf8'), new RegExp(`^LIVEKIT_URL=${cloud.url.replace(/[.]/g, '\\.')}$`, 'm'));
-      const refused = sw(env, 'to-cloud');
-      assert.notEqual(refused.status, 0);
-      assert.match(refused.stderr, /--cloud-from/);
-      const r = sw(env, 'to-cloud', '--cloud-from', join(dir, backup));
+      assert.equal(sw(s, 'to-selfhost', '--secrets', s.secrets, '--url', self.url).status, 0);
+      assert.equal(sw(s, 'to-cloud').status, 0);
+      const again = sw(s, 'to-cloud');
+      assert.notEqual(again.status, 0);
+      assert.match(again.stderr, /already LiveKit Cloud/);
+      assert.match(sw(s, 'to-selfhost', '--secrets', s.secrets, '--url', cloud.url).stderr, /not a LiveKit Cloud one/);
+    } finally { s.cleanup(); }
+  });
+
+  it('after the previous pair is gone, to-cloud finds the newest before-to-selfhost backup by itself; backups are never overwritten', () => {
+    const s = setup();
+    try {
+      assert.equal(sw(s, 'to-selfhost', '--secrets', s.secrets, '--url', self.url).status, 0);
+      const before = Object.fromEntries(backupsOf(s.backups).map((n) => [n, readFileSync(join(s.backups, n), 'utf8')]));
+      // As after a drained drop-previous (done here by hand: no test talks to LiveKit Cloud).
+      writeFileSync(s.env, readFileSync(s.env, 'utf8').split('\n').filter((l) => !/^LIVEKIT_PREVIOUS_API_(KEY|SECRET)=/.test(l)).join('\n'), { mode: 0o600 });
+      const r = sw(s, 'to-cloud');
       assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /before-to-selfhost\.bak/, 'says which backup it used');
       noSecrets(r.stdout + r.stderr);
-      assert.deepEqual(verdicts(env), { fromSelf: 'previous', fromCloud: 'current', forged: null });
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+      assert.deepEqual(verdicts(s.env), { fromSelf: 'previous', fromCloud: 'current', forged: null });
+      for (const [n, text] of Object.entries(before)) assert.equal(readFileSync(join(s.backups, n), 'utf8'), text, `${n} unchanged`);
+      const names = backupsOf(s.backups);
+      assert.equal(names.length, 2);
+      assert.equal(new Set(names).size, 2);
+      const list = sw(s, 'list-backups');
+      assert.equal(list.status, 0);
+      noSecrets(list.stdout);
+      assert.match(list.stdout, /before-to-selfhost[\s\S]*before-to-cloud/);
+    } finally { s.cleanup(); }
   });
 
-  it('refuses to-cloud when already on Cloud, and a --cloud-from file it did not write', () => {
-    const { dir, env } = setup();
+  it('rapid successive changes get distinct backups; earlier ones stay byte-identical', () => {
+    const s = setup();
     try {
-      assert.notEqual(sw(env, 'to-cloud').status, 0);
-      const other = join(dir, 'cloud.env');
-      writeFileSync(other, `LIVEKIT_URL=${cloud.url}\n`, { mode: 0o600 });
-      assert.match(sw(env, 'to-cloud', '--cloud-from', other).stderr, /backup written by this script/);
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+      const seen: Record<string, string> = {};
+      for (let i = 0; i < 3; i++) {
+        assert.equal(sw(s, 'to-selfhost', '--secrets', s.secrets, '--url', self.url).status, 0);
+        assert.equal(sw(s, 'to-cloud').status, 0);
+        for (const n of backupsOf(s.backups)) {
+          const text = readFileSync(join(s.backups, n), 'utf8');
+          if (seen[n] !== undefined) assert.equal(text, seen[n], `${n} never rewritten`);
+          seen[n] = text;
+        }
+      }
+      assert.equal(backupsOf(s.backups).length, 6);
+      assert.deepEqual(readdirSync(s.backups).filter((n) => n.endsWith('.tmp')), [], 'no temp files left');
+    } finally { s.cleanup(); }
+  });
+
+  it('refuses backup directories that are shared, linked, or inside the checkout or a git repository', () => {
+    const s = setup();
+    try {
+      mkdirSync(s.backups, { mode: 0o755 });
+      chmodSync(s.backups, 0o755);
+      assert.match(sw(s, 'list-backups').stderr, /must not be accessible by group or others/);
+      rmSync(s.backups, { recursive: true });
+      const real = mkdtempSync(join(tmpdir(), 'hrvo-real-'));
+      chmodSync(real, 0o700);
+      symlinkSync(real, s.backups);
+      assert.match(sw(s, 'list-backups').stderr, /must be a real directory/);
+      rmSync(s.backups);
+      rmSync(real, { recursive: true, force: true });
+      const inApp = join(s.app, 'backups');
+      assert.match(run('python3', ['-I', script, '--env', s.env, '--backup-dir', inApp, 'list-backups']).stderr, /inside the application directory or a git checkout/);
+      const repo = mkdtempSync(join(tmpdir(), 'hrvo-repo-'));
+      mkdirSync(join(repo, '.git'));
+      assert.match(run('python3', ['-I', script, '--env', s.env, '--backup-dir', join(repo, 'b'), 'list-backups']).stderr, /inside the application directory or a git checkout/);
+      rmSync(repo, { recursive: true, force: true });
+    } finally { s.cleanup(); }
+  });
+
+  it('restore and --cloud-from accept only backups of this file from the private directory', () => {
+    const s = setup();
+    try {
+      assert.equal(sw(s, 'to-selfhost', '--secrets', s.secrets, '--url', self.url).status, 0);
+      const outside = join(s.app, '.env.staging.20261117T000000.000000Z.before-to-selfhost.bak');
+      writeFileSync(outside, `LIVEKIT_URL=${cloud.url}\n`, { mode: 0o600 });
+      assert.match(sw(s, 'restore', outside).stderr, /is not a backup of \.env\.staging in/);
+      assert.match(sw(s, 'to-cloud', '--cloud-from', outside).stderr, /is not a backup of \.env\.staging in/);
+      const [first] = backupsOf(s.backups);
+      const r = sw(s, 'restore', join(s.backups, first!));
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(read(s.env).LIVEKIT_URL, cloud.url);
+    } finally { s.cleanup(); }
+  });
+
+  describe('drop-previous waits until the previous server has drained', () => {
+    /** A stand-in LiveKit RoomService in another process: answers ListRooms with `rooms` rooms when the
+     *  bearer token is signed by the given pair, 401 otherwise. Resolves with its port. */
+    function fakeLiveKit(rooms: number, key: string, secret: string): Promise<{ port: number; stop: () => void }> {
+      const code = String.raw`
+import base64, hashlib, hmac, http.server, json, sys
+rooms, key, secret = int(sys.argv[1]), sys.argv[2], sys.argv[3].encode()
+def b64(s): return base64.urlsafe_b64decode(s + '=' * (-len(s) % 4))
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        ok = False
+        try:
+            h, p, sig = self.headers['Authorization'].split(' ', 1)[1].split('.')
+            ok = hmac.compare_digest(b64(sig), hmac.new(secret, f'{h}.{p}'.encode(), hashlib.sha256).digest()) and json.loads(b64(p))['iss'] == key
+        except Exception: pass
+        body = json.dumps({'rooms': [{'name': f'r{i}'} for i in range(rooms)]}).encode() if ok else b'{}'
+        self.send_response(200 if ok and self.path.endswith('/ListRooms') else 401)
+        self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+s = http.server.HTTPServer(('127.0.0.1', 0), H)
+print(s.server_address[1], flush=True)
+s.serve_forever()`;
+      const child = spawn('python3', ['-I', '-c', code, String(rooms), key, secret], { stdio: ['ignore', 'pipe', 'inherit'] });
+      return new Promise((resolve, reject) => {
+        child.stdout.once('data', (d: Buffer) => resolve({ port: Number(String(d).trim()), stop: () => child.kill() }));
+        child.once('error', reject);
+      });
+    }
+    function onSelfWithPrevious(s: { env: string }, previousUrl: string): void {
+      writeFileSync(s.env, `LIVEKIT_URL=${self.url}\nLIVEKIT_API_KEY=${self.key}\nLIVEKIT_API_SECRET=${self.secret}\nLIVEKIT_PREVIOUS_API_KEY=${cloud.key}\nLIVEKIT_PREVIOUS_API_SECRET=${cloud.secret}\nLIVEKIT_EXTRA_URLS=${previousUrl}\n`, { mode: 0o600 });
+    }
+
+    it('refuses while the previous server reports active rooms, and keeps the pair', async () => {
+      const lk = await fakeLiveKit(2, cloud.key, cloud.secret);
+      const s = setup();
+      try {
+        onSelfWithPrevious(s, `ws://127.0.0.1:${lk.port}`);
+        const r = sw(s, 'drop-previous');
+        assert.notEqual(r.status, 0);
+        assert.match(r.stderr, /still has 2 active room/);
+        assert.equal(read(s.env).LIVEKIT_PREVIOUS_API_KEY, cloud.key);
+        assert.equal(existsSync(s.backups) ? backupsOf(s.backups).length : 0, 0, 'no backup for a refused change');
+      } finally { lk.stop(); s.cleanup(); }
+    });
+
+    it('drops the pair once the previous server reports no rooms', async () => {
+      const lk = await fakeLiveKit(0, cloud.key, cloud.secret);
+      const s = setup();
+      try {
+        onSelfWithPrevious(s, `ws://127.0.0.1:${lk.port}`);
+        const r = sw(s, 'drop-previous');
+        assert.equal(r.status, 0, r.stderr);
+        assert.match(r.stdout, /no active rooms/);
+        assert.equal(read(s.env).LIVEKIT_PREVIOUS_API_KEY, undefined);
+        noSecrets(r.stdout + r.stderr);
+      } finally { lk.stop(); s.cleanup(); }
+    });
+
+    it('refuses when the previous server cannot be asked (wrong key, unreachable) unless the operator confirms', async () => {
+      const lk = await fakeLiveKit(0, 'APIother', 'o'.repeat(44));
+      const s = setup();
+      try {
+        onSelfWithPrevious(s, `ws://127.0.0.1:${lk.port}`);
+        assert.match(sw(s, 'drop-previous').stderr, /cannot ask the previous server/);
+        onSelfWithPrevious(s, 'ws://127.0.0.1:9');
+        assert.match(sw(s, 'drop-previous').stderr, /cannot ask the previous server/);
+        assert.equal(read(s.env).LIVEKIT_PREVIOUS_API_KEY, cloud.key);
+        const r = sw(s, 'drop-previous', '--confirm-no-rooms');
+        assert.equal(r.status, 0, r.stderr);
+        assert.match(r.stdout, /confirmed by the operator/);
+      } finally { lk.stop(); s.cleanup(); }
+    });
   });
 });

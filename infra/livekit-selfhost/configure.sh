@@ -160,9 +160,15 @@ case "$cmd" in
     render caddy.yaml.tmpl > generated/caddy.yaml
     # The host firewall's settings (sudo install -m 644 generated/hrvo-livekit-guard.default
     # /etc/default/hrvo-livekit-guard): the same group and the internal ports of this rendering.
-    printf 'LIVEKIT_GID=%s\nLIVEKIT_PRIVATE_TCP_PORTS="%s %s %s"\n' "$LIVEKIT_GID" "$TURN_TLS_PORT" "$LIVEKIT_PORT" "$REDIS_PORT" > generated/hrvo-livekit-guard.default
+    {
+      echo "# HRVO LiveKit host guard settings (ADR 067), rendered by configure.sh."
+      echo "# Install: sudo install -o root -g root -m 644 generated/hrvo-livekit-guard.default /etc/default/hrvo-livekit-guard"
+      printf 'LIVEKIT_GID=%s\nLIVEKIT_PRIVATE_TCP_PORTS="%s %s %s"\nLIVEKIT_COMPOSE_ENV=%s/.env\n' \
+        "$LIVEKIT_GID" "$TURN_TLS_PORT" "$LIVEKIT_PORT" "$REDIS_PORT" "$(pwd -P)"
+    } > generated/hrvo-livekit-guard.default
     chmod 644 generated/livekit.yaml generated/caddy.yaml generated/hrvo-livekit-guard.default
-    printf 'LIVEKIT_PORT=%s\nREDIS_PORT=%s\nCADDY_TLS_PORT=%s\nLIVEKIT_GID=%s\n' "$LIVEKIT_PORT" "$REDIS_PORT" "$CADDY_TLS_PORT" "$LIVEKIT_GID" > .env
+    # TURN_TLS_PORT is not used by Compose: the guard compares its private ports with this file.
+    printf 'LIVEKIT_PORT=%s\nREDIS_PORT=%s\nCADDY_TLS_PORT=%s\nTURN_TLS_PORT=%s\nLIVEKIT_GID=%s\n' "$LIVEKIT_PORT" "$REDIS_PORT" "$CADDY_TLS_PORT" "$TURN_TLS_PORT" "$LIVEKIT_GID" > .env
     ca_note=""; [ "$TLS_ISSUER" = acme ] && ca_note=", Let's Encrypt $ACME_CA"
     echo "rendered generated/livekit.yaml, generated/caddy.yaml, generated/hrvo-livekit-guard.default and .env for $LIVEKIT_DOMAIN / $TURN_DOMAIN (webhook key $keyname, group $LIVEKIT_GID$ca_note)"
     ;;
