@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 
 /**
@@ -19,15 +17,6 @@ const WEB_PORT = port('HRVO_E2E_WEB_PORT', 3100);
 const FAKE_GOOGLE_PORT = port('HRVO_E2E_GOOGLE_PORT', 3102);
 if (new Set([API_PORT, WEB_PORT, FAKE_GOOGLE_PORT]).size !== 3) throw new Error('E2E service ports must be distinct');
 const apiUrl = `http://localhost:${API_PORT}`;
-// Meeting attendance and recording state (specs 17, 22) arrive as LiveKit webhooks, and the local
-// LiveKit posts them only to the URLs in infra/livekit/livekit.dev.yaml. Say so instead of failing later.
-{
-  let targets: number[] = [];
-  try { targets = [...readFileSync(join(__dirname, '../../infra/livekit/livekit.dev.yaml'), 'utf8').matchAll(/127\.0\.0\.1:(\d+)\/media\/livekit\/webhook/g)].map((m) => Number(m[1])); } catch { /* no local LiveKit config */ }
-  if (targets.length > 0 && !targets.includes(API_PORT)) {
-    console.warn(`[e2e] LiveKit webhooks go to ports ${targets.join(', ')}, not to the e2e API on ${API_PORT}: meeting attendance and recording (specs 17, 22) will fail. Add the port to infra/livekit/livekit.dev.yaml and restart LiveKit, or use one of those ports.`);
-  }
-}
 const webUrl = `http://localhost:${WEB_PORT}`;
 const fakeGoogleUrl = `http://localhost:${FAKE_GOOGLE_PORT}`;
 // Shared with mail-link checks, the Electron agent and direct API/socket browser tests.
