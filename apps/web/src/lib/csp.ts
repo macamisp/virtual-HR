@@ -1,4 +1,5 @@
 import { followPageHost } from '@hrvo/shared/local-url';
+import { liveKitConnectSources, parseLiveKitUrlList } from '@hrvo/shared/livekit-urls';
 
 /**
  * Content Security Policy for a page, built per request (src/middleware.ts) so connect-src allows
@@ -13,21 +14,22 @@ export interface CspInput {
   isDev: boolean;
   apiUrl: string;
   liveKitUrl: string;
+  /** ADR 067: other LiveKit servers a token may name during a switch-over (Cloud and self-hosted). */
+  liveKitExtraUrls?: readonly string[];
   storageUrl: string;
 }
 
 const dedupe = (items: string[]) => [...new Set(items.filter(Boolean))];
 
-export function buildCsp({ page, isDev, apiUrl, liveKitUrl, storageUrl }: CspInput): string {
+export function buildCsp({ page, isDev, apiUrl, liveKitUrl, liveKitExtraUrls = [], storageUrl }: CspInput): string {
   const api = page ? followPageHost(apiUrl, page) : apiUrl;
-  const liveKit = (page ? followPageHost(liveKitUrl, page) : liveKitUrl).replace(/\/$/, '');
+  const atPage = (u: string) => (page ? followPageHost(u, page) : u).replace(/\/$/, '');
   const storage = page ? followPageHost(storageUrl, page) : storageUrl;
   const connect = dedupe([
     "'self'",
     apiUrl, apiUrl.replace(/^http/, 'ws'),
     api, api.replace(/^http/, 'ws'),
-    liveKitUrl, liveKitUrl.replace(/^ws/, 'http'),
-    liveKit, liveKit.replace(/^ws/, 'http'),
+    ...liveKitConnectSources(liveKitUrl, [atPage(liveKitUrl), ...liveKitExtraUrls.map(atPage)]),
     storageUrl, storage,
     // Next.js dev hot reload connects back to the page's own host.
     ...(isDev && page ? [`${page.https ? 'wss' : 'ws'}://${page.host}`] : isDev ? ['ws://localhost:3000'] : []),
@@ -56,5 +58,6 @@ export const CSP_ENV = {
   isDev: process.env.NODE_ENV !== 'production',
   apiUrl: (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001').replace(/\/$/, ''),
   liveKitUrl: (process.env.NEXT_PUBLIC_LIVEKIT_URL ?? 'ws://localhost:7880').replace(/\/$/, ''),
+  liveKitExtraUrls: parseLiveKitUrlList(process.env.NEXT_PUBLIC_LIVEKIT_EXTRA_URLS),
   storageUrl: (process.env.NEXT_PUBLIC_STORAGE_URL ?? '').replace(/\/$/, ''),
 };

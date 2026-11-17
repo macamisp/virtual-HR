@@ -1,0 +1,106 @@
+# Self-hosted LiveKit media server for HRVO (ADR 067; runbook docs/runbooks/livekit-selfhost.md).
+#
+# Layout follows LiveKit's official VM deployment (livekit/generate): host networking, Caddy with the
+# layer4 module on 443 routing by SNI (signalling domain -> LiveKit :7880, TURN domain -> LiveKit's
+# TURN listener), Redis on loopback. Media (UDP 50000-60000, TCP 7881, TURN/UDP 3478) goes straight
+# to the host: never through Cloudflare's proxy or any HTTP reverse proxy.
+#
+#   cd /opt/hrvo-livekit
+#   ./configure.sh init-secrets     # once: secrets.env (600), new production key pair, never printed
+#   ./configure.sh render           # generated/livekit.yaml + generated/caddy.yaml from livekit.env
+#   docker compose up -d            # add --profile recording for Egress (see the runbook first)
+#
+# Separate Compose project from the application (docker-compose.staging.yml): nothing here joins
+# the application's networks, volumes or Redis.
+
+name: hrvo-livekit
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }
+
+x-hardening: &hardening
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+
+volumes:
+  caddy_data:
+  redis_data:
+
+services:
+  caddy:
+    image: livekit/caddyl4:v2.11.3
+    command: ["run", "--config", "/etc/caddy.yaml", "--adapter", "yaml"]
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./generated/caddy.yaml:/etc/caddy.yaml:ro,z
+      - caddy_data:/data
+    <<: *hardening
+    cap_add: [NET_BIND_SERVICE]
+    mem_limit: 256m
+    # No container healthcheck: a probe without a TLS hello is logged by layer4 as an error every
+    # time. The external check of https://<LIVEKIT_DOMAIN>/ (runbook §4) covers Caddy end to end.
+    logging: *logging
+
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    command: ["--config", "/etc/livekit.yaml"]
+    restart: unless-stopped
+    network_mode: host
+    # LIVEKIT_KEYS ("<key>: <secret>") and REDIS_PASSWORD: never in the config file or the command line.
+    env_file: [secrets.env]
+    volumes:
+      - ./generated/livekit.yaml:/etc/livekit.yaml:ro,z
+    depends_on:
+      redis: { condition: service_healthy }
+    <<: *hardening
+    mem_limit: 2g
+    ulimits:
+      nofile: { soft: 65536, hard: 65536 }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:${LIVEKIT_PORT:-7880}/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *logging
+
+  redis:
+    image: redis:7.4.6-alpine
+    restart: unless-stopped
+    network_mode: host
+    env_file: [secrets.env]
+    # Loopback only, own port (the application's Redis is elsewhere); password via a 600 file.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        test -n "$$REDIS_PASSWORD" &&
+        umask 077 && printf 'bind 127.0.0.1\nport ${REDIS_PORT:-6389}\nrequirepass %s\nprotected-mode yes\nappendonly no\nsave ""\n' "$$REDIS_PASSWORD" > /tmp/redis.conf &&
+        exec redis-server /tmp/redis.conf
+    user: redis
+    <<: *hardening
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli -p ${REDIS_PORT:-6389} ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  # Meeting recording (FR-MEET-007, ADR 024). LiveKit recommends at least 4 CPUs / 4 GB per Egress
+  # instance and 2-6 CPUs per room-composite recording: only enable on a host sized for it.
+  egress:
+    image: livekit/egress:v1.15.0
+    profiles: [recording]
+    restart: unless-stopped
+    network_mode: host
+    # EGRESS_CONFIG_BODY (one-line JSON with the API key pair and the Redis password) from secrets.env.
+    env_file: [secrets.env]
+    depends_on:
+      livekit: { condition: service_healthy }
+    # Chrome renders only LiveKit's own room-composite layout page (no user-supplied URLs).
+    security_opt: ["no-new-privileges:true"]
+    shm_size: 1g
+    mem_limit: 4g
+    logging: *logging

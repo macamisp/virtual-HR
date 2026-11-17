@@ -11,7 +11,7 @@ import type { MediaTokenRequest } from '../../../../packages/shared/src/meetings
 import { MediaService } from './media.service.ts';
 import type { WebhookEvent } from './media.service.ts';
 import { MeetingsService } from '../meetings/meetings.service.ts';
-import { liveKitConfig, verifyWebhook } from './livekit.ts';
+import { liveKitConfig, webhookSigner } from './livekit.ts';
 import { Public } from '../common/decorators/public.decorator.ts';
 
 /** ADR 016: short-lived LiveKit tokens, one room each, chosen by the server. */
@@ -52,10 +52,12 @@ export class LiveKitWebhookController {
     // reports as sent can be traced to this API; a 401 is otherwise silent (ADR 016).
     if (!raw || raw.length === 0) { this.log.warn('webhook rejected: empty body'); throw new UnauthorizedException('Bad signature'); }
     if (!auth) { this.log.warn(`webhook rejected: no Authorization header (${raw.length} bytes)`); throw new UnauthorizedException('Bad signature'); }
-    if (!verifyWebhook(liveKitConfig(), auth, raw)) { this.log.warn(`webhook rejected: signature does not verify with the configured LIVEKIT_API_KEY/SECRET (${raw.length} bytes)`); throw new UnauthorizedException('Bad signature'); }
+    const signer = webhookSigner(liveKitConfig(), auth, raw);
+    if (!signer) { this.log.warn(`webhook rejected: signature does not verify with the configured LIVEKIT_API_KEY/SECRET (${raw.length} bytes)`); throw new UnauthorizedException('Bad signature'); }
     let event: WebhookEvent;
     try { event = JSON.parse(raw.toString('utf8')) as WebhookEvent; } catch { this.log.warn('webhook rejected: body is not JSON'); throw new UnauthorizedException('Bad body'); }
-    this.log.log(`webhook accepted: ${event.event ?? 'unknown'} room=${event.room?.name ?? '-'}`);
+    // ADR 067: "via previous key" = sent by the media server being switched away from (drain watch).
+    this.log.log(`webhook accepted: ${event.event ?? 'unknown'} room=${event.room?.name ?? '-'}${signer === 'previous' ? ' via previous key' : ''}`);
     await this.media.handleWebhook(event);
     return { ok: true };
   }

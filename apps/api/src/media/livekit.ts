@@ -9,11 +9,31 @@ import { isProduction } from '../common/config.ts';
 
 const DEV_SECRET = 'hrvo-dev-secret-change-me-0123456789abcdef'; // gitleaks:allow (local dev key, refused in production)
 
-export interface LiveKitConfig {
-  url: string;
-  httpUrl: string;
+export interface LiveKitKeyPair {
   apiKey: string;
   apiSecret: string;
+}
+
+export interface LiveKitConfig extends LiveKitKeyPair {
+  url: string;
+  httpUrl: string;
+  /**
+   * ADR 067: the key pair of the media server being switched away from. Only ever used to verify
+   * webhooks, so calls still running there can close; never for tokens or API calls.
+   */
+  previous?: LiveKitKeyPair;
+}
+
+function previousPair(current: LiveKitKeyPair): LiveKitKeyPair | undefined {
+  const apiKey = process.env.LIVEKIT_PREVIOUS_API_KEY || '';
+  const apiSecret = process.env.LIVEKIT_PREVIOUS_API_SECRET || '';
+  if (!apiKey && !apiSecret) return undefined;
+  if (!apiKey || !apiSecret) throw new Error('Set both LIVEKIT_PREVIOUS_API_KEY and LIVEKIT_PREVIOUS_API_SECRET, or neither');
+  if (isProduction()) {
+    if (apiSecret === DEV_SECRET || apiSecret.length < 32) throw new Error('LIVEKIT_PREVIOUS_API_SECRET must be at least 32 characters in production');
+    if (apiKey === current.apiKey || apiSecret === current.apiSecret) throw new Error('The previous LiveKit key pair must differ from LIVEKIT_API_KEY/SECRET');
+  }
+  return { apiKey, apiSecret };
 }
 
 export function liveKitConfig(): LiveKitConfig {
@@ -23,7 +43,8 @@ export function liveKitConfig(): LiveKitConfig {
     throw new Error('LIVEKIT_API_SECRET must be set to a unique value of at least 32 characters in production');
   }
   const url = process.env.LIVEKIT_URL || 'ws://localhost:7880';
-  return { url, httpUrl: process.env.LIVEKIT_HTTP_URL || url.replace(/^ws/, 'http'), apiKey, apiSecret };
+  const previous = previousPair({ apiKey, apiSecret });
+  return { url, httpUrl: process.env.LIVEKIT_HTTP_URL || url.replace(/^ws/, 'http'), apiKey, apiSecret, ...(previous ? { previous } : {}) };
 }
 
 export const TOKEN_TTL_SECONDS = 10 * 60;
@@ -55,13 +76,27 @@ export function accessToken(cfg: LiveKitConfig, identity: string, name: string, 
   return { token, expiresAt: new Date((now + ttlSeconds) * 1000) };
 }
 
+/**
+ * Which configured key pair signed a webhook: 'current', 'previous' (ADR 067, while switching media
+ * servers) or null when neither verifies.
+ */
+export function webhookSigner(cfg: LiveKitConfig, authorization: string | undefined, rawBody: Buffer): 'current' | 'previous' | null {
+  if (verifiedBy(cfg, authorization, rawBody)) return 'current';
+  if (cfg.previous && verifiedBy(cfg.previous, authorization, rawBody)) return 'previous';
+  return null;
+}
+
 /** LiveKit signs webhooks with a JWT whose `sha256` claim is the base64 SHA-256 of the raw body. */
 export function verifyWebhook(cfg: LiveKitConfig, authorization: string | undefined, rawBody: Buffer): boolean {
+  return webhookSigner(cfg, authorization, rawBody) !== null;
+}
+
+function verifiedBy(pair: LiveKitKeyPair, authorization: string | undefined, rawBody: Buffer): boolean {
   if (!authorization) return false;
   const token = authorization.replace(/^Bearer\s+/i, '');
   let claims: { sha256?: string; iss?: string };
   try {
-    claims = jwt.verify(token, cfg.apiSecret, { algorithms: ['HS256'], issuer: cfg.apiKey }) as typeof claims;
+    claims = jwt.verify(token, pair.apiSecret, { algorithms: ['HS256'], issuer: pair.apiKey }) as typeof claims;
   } catch {
     return false;
   }
@@ -73,7 +108,7 @@ export function verifyWebhook(cfg: LiveKitConfig, authorization: string | undefi
 }
 
 /** Test helper and documentation of the format: how LiveKit signs a webhook body. */
-export function signWebhook(cfg: LiveKitConfig, rawBody: string): string {
+export function signWebhook(cfg: LiveKitKeyPair, rawBody: string): string {
   const sha256 = createHash('sha256').update(rawBody).digest('base64');
   return jwt.sign({ sha256 }, cfg.apiSecret, { algorithm: 'HS256', issuer: cfg.apiKey, expiresIn: 300 });
 }
