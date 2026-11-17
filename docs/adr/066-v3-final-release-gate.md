@@ -45,6 +45,14 @@ checks. `HRVO_E2E_ORG_ID` optionally gives the browser fixtures a distinct valid
 isolating deterministic LiveKit room names and object-storage keys as well. Defaults are unchanged.
 The final complete gate uses its own ports and tenant; no other worktree or server is stopped.
 
+**LiveKit webhooks follow the API port** (2026-11-17). Meeting attendance (`meeting_participants`)
+and recording state arrive only as LiveKit webhooks, and the local LiveKit
+(`infra/livekit/livekit.dev.yaml`) posted them to `127.0.0.1:3001` and `:3101` only. The gate's
+API on 3351 therefore never heard of anyone joining: specs 17 (attendance 0 of 2) and 22
+(recording banner) failed although both people were connected and saw each other. The local
+LiveKit config now also posts to 3351; it applies after LiveKit restarts with that file. The
+Playwright config warns when the e2e API port is not a webhook target instead of failing later.
+
 The additional tests cover contention, rollback and both board-game kinds without changing
 attendance or introducing packages, tables, routes, production diagnostics or operational scripts.
 Final counts, measured limits, external-configuration gaps and the release decision are recorded

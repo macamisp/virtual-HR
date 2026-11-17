@@ -135,6 +135,16 @@ room that connected it is a no-op. Revisit when livekit-client is upgraded. Sing
 mode itself was not turned off: the local server (1.9.1) answers `/rtc/v1` with 404 and the client
 falls back to two connections, but the production server's version is not recorded here.
 
+**The meeting page and the dock follow the same rule** (meeting system repair, 2026-11-17, V3).
+With the hotfix, screen share and hand do nothing until the room is connected, but `CallView`
+(meeting page) and the floating dock still offered microphone, camera, share, hand and audio
+only while connecting and reconnecting, so a click could look accepted while nothing happened.
+They are now disabled unless the call is `connected`; Leave, the speakers and Return stay usable.
+The meeting page itself shows *Joining…* (no controls) until LiveKit has connected. Spec 17 adds
+a two-person test for both directions: each hears and sees the other, mute and camera reach the
+other side, the controls wait while reconnecting after a network drop, the call survives a page
+change, and Leave stops every local track and closes every peer connection on both sides.
+
 ### 4. One tab owns the call
 
 Like the heartbeat leader, the call owner holds the Web Lock `hrvo-call-owner`. A tab that wants

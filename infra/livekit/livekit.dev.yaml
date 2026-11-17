@@ -23,6 +23,7 @@ webhook:
   urls:
     - http://127.0.0.1:3001/media/livekit/webhook   # npm run api
     - http://127.0.0.1:3101/media/livekit/webhook   # Playwright API
+    - http://127.0.0.1:3351/media/livekit/webhook   # Playwright API of the V3 gate worktree (HRVO_E2E_API_PORT=3351, ADR 066)
 room:
   empty_timeout: 60
   max_participants: 50

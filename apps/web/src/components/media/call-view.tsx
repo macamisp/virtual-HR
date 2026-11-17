@@ -89,6 +89,8 @@ export function CallView({ session, onLeave, compact, extraControls, controls = 
   const tiles = session.tiles();
   const presenters = tiles.filter((t) => t.screen);
   const handUp = tiles.find((t) => t.isLocal)?.hand ?? false;
+  // The room's controls act on LiveKit, so they wait for the connected room (also while reconnecting).
+  const ready = session.status === 'connected';
   return (
     <section aria-label={`Call: ${session.token?.label ?? ''}`} className="space-y-2" data-testid="call-view" data-status={session.status}>
       {session.status === 'connecting' ? <p className="text-sm text-muted-foreground" role="status">Connecting…</p> : null}
@@ -104,11 +106,11 @@ export function CallView({ session, onLeave, compact, extraControls, controls = 
         {tiles.map((t) => <TileView key={t.identity} t={t} />)}
       </div>
       {controls ? <div role="toolbar" aria-label="Call controls" className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant={session.micOn ? 'default' : 'outline'} aria-pressed={session.micOn} onClick={() => void session.toggleMic()}>{session.micOn ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />} {session.micOn ? 'Mute' : 'Unmute'}</Button>
-        <Button size="sm" variant={session.camOn ? 'default' : 'outline'} aria-pressed={session.camOn} onClick={() => void session.toggleCam()}>{session.camOn ? <Video aria-hidden="true" /> : <VideoOff aria-hidden="true" />} Camera</Button>
-        <Button size="sm" variant={session.sharing ? 'default' : 'outline'} aria-pressed={session.sharing} onClick={() => void session.toggleShare()}><MonitorUp aria-hidden="true" /> {session.sharing ? 'Stop sharing' : 'Share screen'}</Button>
-        <Button size="sm" variant={handUp ? 'default' : 'outline'} aria-pressed={handUp} onClick={() => void session.raiseHand(!handUp)}><Hand aria-hidden="true" /> {handUp ? 'Lower hand' : 'Raise hand'}</Button>
-        <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={session.audioOnly} onChange={(e) => void session.setAudioOnly(e.target.checked)} /> Audio only</label>
+        <Button size="sm" variant={session.micOn ? 'default' : 'outline'} aria-pressed={session.micOn} disabled={!ready} onClick={() => void session.toggleMic()}>{session.micOn ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />} {session.micOn ? 'Mute' : 'Unmute'}</Button>
+        <Button size="sm" variant={session.camOn ? 'default' : 'outline'} aria-pressed={session.camOn} disabled={!ready} onClick={() => void session.toggleCam()}>{session.camOn ? <Video aria-hidden="true" /> : <VideoOff aria-hidden="true" />} Camera</Button>
+        <Button size="sm" variant={session.sharing ? 'default' : 'outline'} aria-pressed={session.sharing} disabled={!ready} onClick={() => void session.toggleShare()}><MonitorUp aria-hidden="true" /> {session.sharing ? 'Stop sharing' : 'Share screen'}</Button>
+        <Button size="sm" variant={handUp ? 'default' : 'outline'} aria-pressed={handUp} disabled={!ready} onClick={() => void session.raiseHand(!handUp)}><Hand aria-hidden="true" /> {handUp ? 'Lower hand' : 'Raise hand'}</Button>
+        <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={session.audioOnly} disabled={!ready} onChange={(e) => void session.setAudioOnly(e.target.checked)} /> Audio only</label>
         {extraControls}
         <Button size="sm" variant="destructive" onClick={onLeave}><PhoneOff aria-hidden="true" /> Leave</Button>
       </div> : null}

@@ -143,6 +143,8 @@ function DockBody({ floating, onFloat, onUnfloat }: { floating: boolean; onFloat
   };
 
   const handUp = tiles.find((t) => t.isLocal)?.hand ?? false;
+  // The room's controls act on LiveKit, so they wait for the connected room; speakers, Leave and Return do not.
+  const ready = session.status === 'connected';
   const shown = tiles.slice(0, MAX_TILES);
   const more = tiles.length - shown.length;
   const back = cur.kind === 'office' ? '/office' : `/meetings/${cur.meetingId}`;
@@ -180,11 +182,11 @@ function DockBody({ floating, onFloat, onUnfloat }: { floating: boolean; onFloat
         {more > 0 ? <p className="grid place-items-center rounded bg-muted text-xs text-muted-foreground" aria-label={`${more} more in the call`}>+{more}</p> : null}
       </div>
       <div role="toolbar" aria-label="Call controls" className="mt-1 flex flex-wrap items-center gap-1">
-        <Button size="sm" variant={session.micOn ? 'default' : 'outline'} aria-pressed={session.micOn} aria-label={session.micOn ? 'Mute' : 'Unmute'} title={session.micOn ? 'Mute' : 'Unmute'} onClick={() => void session.toggleMic()}>{session.micOn ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />}</Button>
+        <Button size="sm" variant={session.micOn ? 'default' : 'outline'} aria-pressed={session.micOn} aria-label={session.micOn ? 'Mute' : 'Unmute'} title={session.micOn ? 'Mute' : 'Unmute'} disabled={!ready} onClick={() => void session.toggleMic()}>{session.micOn ? <Mic aria-hidden="true" /> : <MicOff aria-hidden="true" />}</Button>
         <Button size="sm" variant={session.speakerMuted ? 'outline' : 'default'} aria-pressed={!session.speakerMuted} aria-label={session.speakerMuted ? 'Unmute speakers' : 'Mute speakers'} title={session.speakerMuted ? 'Unmute speakers' : 'Mute speakers'} onClick={() => void session.setSpeakerMuted(!session.speakerMuted)}>{session.speakerMuted ? <VolumeX aria-hidden="true" /> : <Volume2 aria-hidden="true" />}</Button>
-        <Button size="sm" variant={session.camOn ? 'default' : 'outline'} aria-pressed={session.camOn} aria-label="Camera" title="Camera" onClick={() => void session.toggleCam()}>{session.camOn ? <Video aria-hidden="true" /> : <VideoOff aria-hidden="true" />}</Button>
-        <Button size="sm" variant={session.sharing ? 'default' : 'outline'} aria-pressed={session.sharing} aria-label={session.sharing ? 'Stop sharing' : 'Share screen'} title={session.sharing ? 'Stop sharing' : 'Share screen'} onClick={() => void session.toggleShare()}><MonitorUp aria-hidden="true" /></Button>
-        <Button size="sm" variant={handUp ? 'default' : 'outline'} aria-pressed={handUp} aria-label={handUp ? 'Lower hand' : 'Raise hand'} title={handUp ? 'Lower hand' : 'Raise hand'} onClick={() => void session.raiseHand(!handUp)}><Hand aria-hidden="true" /></Button>
+        <Button size="sm" variant={session.camOn ? 'default' : 'outline'} aria-pressed={session.camOn} aria-label="Camera" title="Camera" disabled={!ready} onClick={() => void session.toggleCam()}>{session.camOn ? <Video aria-hidden="true" /> : <VideoOff aria-hidden="true" />}</Button>
+        <Button size="sm" variant={session.sharing ? 'default' : 'outline'} aria-pressed={session.sharing} aria-label={session.sharing ? 'Stop sharing' : 'Share screen'} title={session.sharing ? 'Stop sharing' : 'Share screen'} disabled={!ready} onClick={() => void session.toggleShare()}><MonitorUp aria-hidden="true" /></Button>
+        <Button size="sm" variant={handUp ? 'default' : 'outline'} aria-pressed={handUp} aria-label={handUp ? 'Lower hand' : 'Raise hand'} title={handUp ? 'Lower hand' : 'Raise hand'} disabled={!ready} onClick={() => void session.raiseHand(!handUp)}><Hand aria-hidden="true" /></Button>
         <Button size="sm" variant="destructive" aria-label="Leave" title="Leave" onClick={() => void c.leave()}><PhoneOff aria-hidden="true" /></Button>
         <Button size="sm" variant="outline" className="ml-auto" onClick={() => { onUnfloat?.(); router.push(back); }}><ArrowLeftRight aria-hidden="true" /> {cur.kind === 'office' ? 'Return to office' : 'Return to meeting'}</Button>
       </div>
