@@ -186,6 +186,12 @@ sudo sshd -T -C user=tester1,host=x,addr=127.0.0.1 | grep -E '^(permitopen|allow
 
 ## 3. Deploy in SSH mode
 
+> **Production since 2026-11-12 (ADR 052): the `$C` below predates Supabase.** On the live host every
+> compose command must also carry `-f docker-compose.staging.https.yml -f docker-compose.staging.supabase.yml`
+> and `--env-file .env.staging.supabase`, or `up` recreates the API against the old local
+> PostgreSQL. Use `/opt/hrvo-livekit/prod-compose.sh <command>` (from `infra/livekit-selfhost/`, ADR 067),
+> which always adds them and refuses to run without them. The commands here are for a fresh host.
+
 ```bash
 cd /opt/virtual-hr/app
 git fetch origin && git checkout --detach <release commit>

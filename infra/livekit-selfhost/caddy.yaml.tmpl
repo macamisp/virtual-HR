@@ -1,0 +1,46 @@
+# Caddy (layer4) for HRVO's LiveKit (ADR 067). Rendered by configure.sh into generated/caddy.yaml.
+# One TLS listener, routed by SNI: the signalling domain to LiveKit's HTTP/WebSocket port and the
+# TURN domain to LiveKit's TURN listener. Certificates are obtained automatically (ACME HTTP-01 on
+# port 80, so both names must be DNS-only records pointing at this host).
+admin:
+  disabled: true
+logging:
+  logs:
+    default:
+      level: INFO
+storage:
+  module: file_system
+  root: /data
+apps:
+  tls:
+    certificates:
+      automate:
+        - @LIVEKIT_DOMAIN@
+        - @TURN_DOMAIN@
+    automation:
+      policies:
+        - subjects: [@LIVEKIT_DOMAIN@, @TURN_DOMAIN@]
+          issuers: @TLS_ISSUERS@
+  layer4:
+    servers:
+      main:
+        listen: [":@CADDY_TLS_PORT@"]
+        routes:
+          - match:
+              - tls:
+                  sni: [@TURN_DOMAIN@]
+            handle:
+              - handler: tls
+              - handler: proxy
+                upstreams:
+                  - dial: ["127.0.0.1:@TURN_TLS_PORT@"]
+          - match:
+              - tls:
+                  sni: [@LIVEKIT_DOMAIN@]
+            handle:
+              - handler: tls
+                connection_policies:
+                  - alpn: ["http/1.1"]
+              - handler: proxy
+                upstreams:
+                  - dial: ["127.0.0.1:@LIVEKIT_PORT@"]

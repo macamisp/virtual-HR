@@ -1,0 +1,22 @@
+# Loads the LiveKit host firewall (livekit-guard.sh, ADR 067) at boot, before Docker starts any
+# container, next to ADR 047's hrvo-imds-guard. The rules are an nftables table of their own, so
+# restarting Docker leaves them alone. Install: docs/runbooks/livekit-selfhost.md §4.
+[Unit]
+Description=HRVO: LiveKit containers cannot reach instance metadata; internal LiveKit ports loopback only
+Documentation=file:///opt/virtual-hr/app/docs/adr/067-self-hosted-livekit.md
+DefaultDependencies=no
+After=local-fs.target
+Wants=network-pre.target
+Before=network-pre.target docker.service containerd.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The one mandatory settings file (missing or malformed: the guard fails, so this fails closed).
+Environment=HRVO_LIVEKIT_GUARD_SETTINGS=/etc/default/hrvo-livekit-guard
+ExecStart=/usr/local/sbin/hrvo-livekit-guard apply
+# Stopping this unit does not remove the rules; rolling back is `hrvo-livekit-guard remove`.
+
+[Install]
+WantedBy=multi-user.target
