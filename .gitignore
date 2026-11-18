@@ -34,3 +34,6 @@ rootCA*
 .env.staging.db
 .env.staging.supabase
 .staging/
+
+# Office map upgrade (scripts/office-map-upgrade.ts): backups of an organisation's map, rooms and desks
+office-map-backups/

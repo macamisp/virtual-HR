@@ -66,6 +66,9 @@ export default defineConfig({
         // minutes instead of fifteen (the web app refreshes a minute before expiry, as in production).
         ACCESS_TOKEN_TTL_SECONDS: '120',
         BREACHED_PASSWORD_CHECK: 'local',
+        // Spec 46 (ADR 058): a nudge can be repeated after 8 s instead of 30 s, and expires after 6 s instead of 20 s.
+        OFFICE_NUDGE_COOLDOWN_MS: '8000',
+        OFFICE_NUDGE_TTL_MS: '6000',
         // No Redis needed: notification emails are sent inline and no schedulers run, except the
         // attendance reconciler, which the accuracy spec (23) needs for tab-close and network-loss.
         JOBS_ENABLED: 'false',

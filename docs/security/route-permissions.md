@@ -38,6 +38,7 @@ Guards: `JwtAuthGuard` = bearer token required; `PermissionsGuard` = effective p
 | POST | `/attendance/flags/:id/resolve` | ATTENDANCE_CORRECTIONS_REVIEW | JwtAuthGuard,PermissionsGuard | — | OK |
 | GET | `/attendance/live` | ATTENDANCE_READ_TEAM | JwtAuthGuard,PermissionsGuard | — | OK |
 | GET | `/attendance/me/corrections` | ATTENDANCE_CORRECTIONS_CREATE | JwtAuthGuard,PermissionsGuard | — | OK |
+| GET | `/attendance/me/analytics` | ATTENDANCE_READ_OWN | JwtAuthGuard,PermissionsGuard | — | OK |
 | GET | `/attendance/me/days` | ATTENDANCE_READ_OWN | JwtAuthGuard,PermissionsGuard | — | OK |
 | GET | `/attendance/me/events` | signed-in (own data) | JwtAuthGuard,PermissionsGuard | — | OK |
 | GET | `/attendance/me/today` | ATTENDANCE_READ_OWN | JwtAuthGuard,PermissionsGuard | — | OK |
@@ -197,6 +198,8 @@ Guards: `JwtAuthGuard` = bearer token required; `PermissionsGuard` = effective p
 | GET | `/recordings/:id/content` | MEETINGS_USE | ThrottlerGuard,JwtAuthGuard,PermissionsGuard | — | OK |
 | POST | `/recordings/:id/stop` | MEETINGS_USE | ThrottlerGuard,JwtAuthGuard,PermissionsGuard | — | OK |
 | GET | `/reports/attendance` | any of REPORTS_TEAM,REPORTS_ALL | JwtAuthGuard,PermissionsGuard | — | OK |
+| GET | `/reports/attendance-analytics` | any of REPORTS_TEAM,REPORTS_ALL (export: ATTENDANCE_EXPORT, in the service) | JwtAuthGuard,PermissionsGuard | — | OK |
+| GET | `/reports/attendance-analytics/people/:userId` | any of REPORTS_TEAM,REPORTS_ALL (+ ATTENDANCE_READ_ALL or ATTENDANCE_READ_TEAM in scope, else 404) | JwtAuthGuard,PermissionsGuard | — | OK |
 | GET | `/reports/compliance` | any of REPORTS_TEAM,REPORTS_ALL | JwtAuthGuard,PermissionsGuard | — | OK |
 | GET | `/reports/compliance/requirements` | any of REPORTS_TEAM,REPORTS_ALL | JwtAuthGuard,PermissionsGuard | — | OK |
 | PUT | `/reports/compliance/requirements` | ORG_MANAGE | JwtAuthGuard,PermissionsGuard | — | OK |

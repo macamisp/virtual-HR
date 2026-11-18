@@ -115,15 +115,20 @@ test.describe.serial('Office avatar actions (ADR 056)', () => {
     await menuItem(worker, /Friendly hug/).click();
     await menuItem(worker, USERS.lead.name).click();
     await lead.getByTestId('pair-request').getByRole('button', { name: 'Accept' }).click();
-    await expect.poll(async () => (await of(lead, USERS.worker.id))?.pose).toMatch(/^hug-/);
-    await expect.poll(async () => (await mine(lead))?.pose).toMatch(/^hug-/);
+    // Both poses are read in the same look, while the hug is on: it lasts 2.2 s, and the steps
+    // below (another tab to the front, a screenshot) can outlast it, after which the pose is null.
+    let a = '';
+    let b = '';
+    await expect.poll(async () => {
+      a = (await of(lead, USERS.worker.id))?.pose ?? '';
+      b = (await mine(lead))?.pose ?? '';
+      return `${a} ${b}`;
+    }).toMatch(/^hug-\S+ hug-\S+$/);
     // The asker sees it too, on their own screen (a page behind another one does not animate).
     await worker.bringToFront();
     await expect.poll(async () => (await mine(worker))?.lastPose, { message: 'the asker sees it too' }).toMatch(/^hug-/);
     await expect.poll(async () => (await of(worker, USERS.lead.id))?.lastPose).toMatch(/^hug-/);
     await shot(lead, 'actions-03-hug');
-    const a = (await of(lead, USERS.worker.id))!.pose!;
-    const b = (await mine(lead))!.pose!;
     expect(a, 'they face each other').not.toBe(b);
     expect(w.errors).toEqual([]);
     expect(l.errors).toEqual([]);
