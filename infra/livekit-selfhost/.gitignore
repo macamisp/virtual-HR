@@ -1,0 +1,6 @@
+# Server-local files (ADR 067): secrets and rendered configs never enter git.
+secrets.env
+redis.env
+livekit.env
+.env
+generated/

@@ -90,6 +90,8 @@ services:
         NEXT_PUBLIC_API_URL: ${API_URL:?set API_URL in .env.staging}
         NEXT_PUBLIC_STORAGE_URL: ${FILES_URL:?set FILES_URL in .env.staging}
         NEXT_PUBLIC_LIVEKIT_URL: ${LIVEKIT_URL:?set LIVEKIT_URL in .env.staging}
+        # ADR 067: the other media server during a switch (LiveKit Cloud <-> self-hosted); empty otherwise.
+        NEXT_PUBLIC_LIVEKIT_EXTRA_URLS: ${LIVEKIT_EXTRA_URLS:-}
     image: hrvo-web:staging
     restart: unless-stopped
     read_only: true

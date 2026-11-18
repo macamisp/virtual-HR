@@ -1,0 +1,108 @@
+# Self-hosted LiveKit media server for HRVO (ADR 067; runbook docs/runbooks/livekit-selfhost.md),
+# co-located with the application on its EC2 host (2 vCPU, ~7.6 GB).
+#
+# Layout follows LiveKit's official VM deployment (livekit/generate): host networking, Caddy with the
+# layer4 module on 443 routing by SNI (signalling domain -> LiveKit :7880, TURN domain -> LiveKit's
+# TURN listener), Redis on loopback. Media (UDP 50000-60000, TCP 7881, TURN/UDP 3478) goes straight
+# to the host: never through Cloudflare's proxy or any HTTP reverse proxy.
+#
+#   cd /opt/hrvo-livekit
+#   ./configure.sh init-secrets     # once: secrets.env + redis.env (600), new key pair, never printed
+#   ./configure.sh render           # generated/livekit.yaml + generated/caddy.yaml + .env
+#   sudo hrvo-livekit-guard check && sudo hrvo-imds-guard check
+#   docker compose up -d
+#
+# Security (ADR 067 §6): host networking bypasses ADR 047's bridge rules, so every service runs with
+# the group LIVEKIT_GID, and the host table `inet hrvo_livekit` (livekit-guard.sh) drops that group's
+# packets to the instance metadata service. cap_drop ALL + no-new-privileges: nothing inside can
+# change its group. scripts/livekit-compose-policy.ts checks all of this on the rendered project.
+#
+# No Egress (recording) here: it needs >= 4 CPUs per LiveKit's guidance, more than this host has.
+# Separate Compose project from the application: nothing here joins its networks, volumes or Redis.
+# Images are pinned to their multi-arch index digests (tag kept for readability).
+
+name: hrvo-livekit
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }
+
+x-hardening: &hardening
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  # Under memory pressure the kernel kills these before the application's containers.
+  oom_score_adj: 500
+  restart: unless-stopped
+  network_mode: host
+
+volumes:
+  caddy_data:
+
+services:
+  caddy:
+    image: livekit/caddyl4:v2.11.3@sha256:9dd090159a6042a907dbff0ce9dda27a21d2a559dc7b03b60a8e6b1b60b8348e
+    command: ["run", "--config", "/etc/caddy.yaml", "--adapter", "yaml"]
+    <<: *hardening
+    # Root (owner of its data volume) for ports 80/443, with only NET_BIND_SERVICE; LiveKit's group.
+    user: "0:${LIVEKIT_GID:?run ./configure.sh render}"
+    cap_add: [NET_BIND_SERVICE]
+    volumes:
+      - ./generated/caddy.yaml:/etc/caddy.yaml:ro,z
+      - caddy_data:/data
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.5
+    pids_limit: 128
+    # No container healthcheck: a probe without a TLS hello is logged by layer4 as an error every
+    # time. The external check of https://<LIVEKIT_DOMAIN>/ (runbook §4) covers Caddy end to end.
+    logging: *logging
+
+  livekit:
+    image: livekit/livekit-server:v1.13.11@sha256:25cd902de7cacbd5f1f779f6a6ac1eae20ba8f56b0935934ce6b0ab80d1e3d20
+    command: ["--config", "/etc/livekit.yaml"]
+    <<: *hardening
+    user: "0:${LIVEKIT_GID:?run ./configure.sh render}"
+    # LIVEKIT_KEYS ("<key>: <secret>") and REDIS_PASSWORD: never in the config file or the command line.
+    env_file: [secrets.env]
+    volumes:
+      - ./generated/livekit.yaml:/etc/livekit.yaml:ro,z
+    depends_on:
+      redis: { condition: service_healthy }
+    # Rehearsal: 40 participants used 0.13 cores and ~200 MB. One core keeps media from starving the API.
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1.0
+    pids_limit: 512
+    ulimits:
+      nofile: { soft: 65536, hard: 65536 }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:${LIVEKIT_PORT:-7880}/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *logging
+
+  redis:
+    image: redis:7.4.6-alpine@sha256:3b73847e72874be07e6657b129a94761662b79bc0f679273757d4218573b2a98
+    <<: *hardening
+    user: "redis:${LIVEKIT_GID:?run ./configure.sh render}"
+    # Only the Redis password (not the LiveKit key pair).
+    env_file: [redis.env]
+    # Loopback only, own port (the application's Redis is elsewhere); password via a 600 file.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        test -n "$$REDIS_PASSWORD" &&
+        umask 077 && printf 'bind 127.0.0.1\nport ${REDIS_PORT:-6389}\nrequirepass %s\nprotected-mode yes\nappendonly no\nsave ""\nmaxmemory 32mb\nmaxmemory-policy noeviction\n' "$$REDIS_PASSWORD" > /tmp/redis.conf &&
+        exec redis-server /tmp/redis.conf
+    mem_limit: 64m
+    memswap_limit: 64m
+    cpus: 0.25
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli -p ${REDIS_PORT:-6389} ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging

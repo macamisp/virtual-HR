@@ -1,0 +1,55 @@
+# LiveKit server configuration for HRVO (ADR 067). Rendered by configure.sh into generated/livekit.yaml.
+# No secrets here: the key pair arrives as LIVEKIT_KEYS and the Redis password as REDIS_PASSWORD.
+
+# Signalling and the Twirp API listen on loopback only; Caddy terminates TLS for @LIVEKIT_DOMAIN@
+# on 443 and forwards here.
+port: @LIVEKIT_PORT@
+bind_addresses: ["127.0.0.1"]
+
+log_level: info
+logging:
+  json: true
+  pion_level: error
+
+rtc:
+  # ICE over UDP (preferred), then ICE over TCP for networks that block UDP.
+  port_range_start: @RTC_PORT_RANGE_START@
+  port_range_end: @RTC_PORT_RANGE_END@
+  tcp_port: @RTC_TCP_PORT@
+  # AWS: the instance sees only its private address; STUN discovers the public one unless
+  # NODE_IP pins it (set NODE_IP to the Elastic IP).
+  use_external_ip: @USE_EXTERNAL_IP@
+  @NODE_IP_LINE@
+
+redis:
+  address: 127.0.0.1:@REDIS_PORT@
+
+turn:
+  # TURN/TLS on 443 through Caddy (TLS terminated there, so LiveKit reads plain TURN on tls_port,
+  # which stays closed to the Internet), and TURN/UDP on 3478 for networks that only allow UDP to
+  # a relay. Restrictive firewalls usually still pass TLS on 443.
+  enabled: true
+  domain: @TURN_DOMAIN@
+  tls_port: @TURN_TLS_PORT@
+  external_tls: @TURN_EXTERNAL_TLS@
+  udp_port: @TURN_UDP_PORT@
+  @TURN_CERT_LINES@
+
+# Every room, participant and recording event goes to the HRVO API, signed with this key
+# (verified by apps/api/src/media/livekit.ts; it must be the key in LIVEKIT_KEYS).
+webhook:
+  api_key: @LIVEKIT_API_KEY_NAME@
+  urls:
+    - @WEBHOOK_URL@
+
+room:
+  # HRVO creates rooms through tokens (proximity, office, meetings); defaults otherwise.
+  auto_create: true
+  empty_timeout: 300
+  departure_timeout: 20
+  max_participants: @ROOM_MAX_PARTICIPANTS@
+
+limit:
+  # Guard rails for a small node: refuse new tracks instead of degrading every call.
+  num_tracks: @LIMIT_NUM_TRACKS@
+  bytes_per_sec: @LIMIT_BYTES_PER_SEC@
